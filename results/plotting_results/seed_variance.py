@@ -213,6 +213,32 @@ def build_trend(
     return trend
 
 
+def annotate_offscale(ax, ks: List[int], trend: Dict[str, List[float]], envs: List[str],
+                      lines: Dict[str, "plt.Line2D"]) -> None:
+    """Zoom the y-axis past the worst environment, labelling its clipped points numerically."""
+    peaks = sorted(np.nanmax(trend[e]) for e in envs if trend.get(e))
+    if len(peaks) < 2 or not np.isfinite(peaks[-2]):
+        return
+    y_top = float(peaks[-2]) * 1.08
+    ax.set_ylim(0, y_top)
+
+    for env in envs:
+        vals = trend.get(env, [])
+        off = [(k, v) for k, v in zip(ks, vals) if v > y_top]
+        if not off:
+            continue
+        color = lines[env].get_color()
+        for k, v in off:
+            # Arrow at the top edge marks where the curve leaves the axes.
+            ax.plot([k], [y_top * 0.995], marker="^", markersize=6, color=color,
+                    clip_on=False, zorder=11)
+            ax.annotate(f"{v:.0f}", xy=(k, y_top), xytext=(7, -3),
+                        textcoords="offset points", ha="left", va="top",
+                        fontsize=9, color=color, zorder=12,
+                        bbox=dict(boxstyle="round,pad=0.15", facecolor="white",
+                                  edgecolor="none", alpha=0.75))
+
+
 def plot_results(
         rows: List[List], trend: Dict[str, List[float]], envs: List[str],
         seeds_small: List[int], seeds_large: List[int], out_path: Path,
@@ -231,25 +257,27 @@ def plot_results(
     ax_bar.set_xticks(x)
     ax_bar.set_xticklabels(env_labels, rotation=30, ha="right")
     ax_bar.set_ylabel("95% CI half-width (% of mean)")
-    ax_bar.set_title("CI width: small vs. large seed set")
     ax_bar.legend()
     ax_bar.grid(True, axis="y", linestyle="--", alpha=0.4)
 
     ks = list(range(2, len(seeds_large) + 1))
+    lines = {}
     for env in envs:
         vals = trend.get(env, [])
         if not vals:
             continue
-        ax_line.plot(ks, vals, marker="o", markersize=3, label=TRANSLATIONS.get(env, env), alpha=0.85)
+        lines[env], = ax_line.plot(ks, vals, marker="o", markersize=3,
+                                   label=TRANSLATIONS.get(env, env), alpha=0.85)
 
     overall = np.nanmean(np.array([trend[e] for e in envs if trend.get(e)]), axis=0)
     ax_line.plot(ks, overall, color="black", linewidth=3, label="Average", zorder=10)
 
+    annotate_offscale(ax_line, ks, trend, envs, lines)
+
     ax_line.axvline(len(seeds_small), linestyle="--", color="gray", linewidth=1)
     ax_line.axvline(len(seeds_large), linestyle="--", color="gray", linewidth=1)
-    ax_line.set_xlabel("Number of seeds (cumulative)")
+    ax_line.set_xlabel("Number of seeds")
     ax_line.set_ylabel("95% CI half-width (% of mean)")
-    ax_line.set_title("CI width vs. number of seeds")
     ax_line.legend(fontsize=9, ncol=1, loc="upper right")
     ax_line.grid(True, linestyle="--", alpha=0.4)
 
@@ -308,7 +336,7 @@ def build_args() -> argparse.ArgumentParser:
         omit=("seeds", "layout", "threshold"),
         stats=True,
         out_name="seed_variance",
-        algos=["ppo", "ppo_cost", "ppo_lag", "ppo_pid", "ppo_saute", "p3o", "focops"],
+        algos=["ppo", "ppo_cost", "ppo_lag", "ppo_pid", "ppo_saute", "p3o", "focops", "crpo"],
     )
     p.add_argument("--seeds_small", type=int, nargs="+", default=[1, 2, 3])
     p.add_argument("--seeds_large", type=int, nargs="+", default=[*range(1, 11)])
