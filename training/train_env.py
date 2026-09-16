@@ -77,21 +77,29 @@ def main():
         env = envs.get_environment(env_name, level=difficulty, **env_kwargs)
         eval_env = envs.get_environment(env_name, level=difficulty, **env_kwargs)
 
+        # Determine the episode length
+        episode_length = config.episode_length or env_kwargs.get('episode_length') or getattr(env, 'episode_length', None)
+
         # Periodic mid-training video, --vision only: a dedicated single-env
         # (num_envs=1) vision-wrapped rollout env, reading frames straight off
         # its own GPU (MJWarp) pixel observations.
         video_fn = None
         if config.vision and not config.skip_video:
-            periodic_video_env = envs.get_environment(
+            video_env_kwargs = {k: v for k, v in env_kwargs.items() if k != 'episode_length'}
+            periodic_video_env = envs.create(
                 env_name, level=difficulty,
+                episode_length=episode_length,
+                auto_reset=True,
+                batch_size=1,
                 vision=True,
                 vision_kwargs=dict(**vision_kwargs, num_envs=1),
-                **env_kwargs,
+                **video_env_kwargs,
             )
             video_fn = make_periodic_vision_video_fn(
                 periodic_video_env,
                 every_steps=config.video_every_steps,
                 steps=config.periodic_video_steps,
+                num_episodes=config.num_video_episodes,
                 pixel_camera=config.vision_camera,
                 # Same extra-camera set vector-obs training's end-of-run video
                 # uses (config.cameras, default ["fixedfar", "vision"]) minus
@@ -106,9 +114,6 @@ def main():
                 log_to_wandb=config.use_wandb,
                 seed=seed,
             )
-
-        # Determine the episode length
-        episode_length = config.episode_length or env_kwargs.get('episode_length') or getattr(env, 'episode_length', None)
 
         print(f"Training environment '{env_name}' instantiated with difficulty {difficulty}.")
         print(f"Evaluation environment '{env_name}' instantiated with difficulty {difficulty}.")

@@ -647,6 +647,7 @@ def make_periodic_vision_video_fn(
         env,
         every_steps: int,
         steps: int = 1000,
+        num_episodes: int = 1,
         pixel_camera: str = 'vision',
         extra_cameras: Optional[List[str]] = None,
         high_res: bool = True,
@@ -667,9 +668,10 @@ def make_periodic_vision_video_fn(
     (MJWarp) pixel observations (the same ones the policy is actually
     trained on). So `env` must stay wrapped with `GpuPixelObservationWrapper`
     at the policy's native training resolution (e.g. via
-    `envs.get_environment(..., vision=True, vision_kwargs=...)`) with
-    `num_envs=1` and the same camera/height/width/obs_mode/frame_stack it was
-    trained with, or actions won't match training behavior.
+    `envs.create(..., vision=True, vision_kwargs=...)`) with
+    `num_envs=1`/`batch_size=1` and the same
+    camera/height/width/obs_mode/frame_stack it was trained with, or actions
+    won't match training behavior.
 
     That's independent from what resolution the video itself is saved at,
     controlled by `high_res`:
@@ -696,8 +698,8 @@ def make_periodic_vision_video_fn(
     Args:
         env: single-env (num_envs=1), vision-wrapped rollout environment.
         every_steps: minimum env-step gap between clips. <=0 disables.
-        steps: env steps to render per clip (kept short; this runs many
-            times over a training run).
+        steps: env steps to render per episode
+        num_episodes: how many episodes to concatenate into one clip
         pixel_camera: the camera `env` is wrapped with. Drives the policy's
             actual observations always. Also one of the logged clips (at
             `width`x`height` if `high_res`, else the training resolution).
@@ -778,18 +780,25 @@ def make_periodic_vision_video_fn(
         state['last_bucket'] = bucket
 
         if state['jit_rollout'] is None:
-            # Built lazily (once) on first call and reused for every later
-            # call -- `make_policy` is the same object every time ppo.train()
-            # invokes this, so this is a one-time JIT compile, not per-clip.
+            # Built lazily (once) on first call and reused for every later call
             state['jit_rollout'] = _build_rollout(make_policy)
 
-        state['key'], call_key = jax.random.split(state['key'])
-        frames, pipeline_states = jax.device_get(state['jit_rollout'](params, call_key))
+        # Use one jitted single-episode rollout, replayed `num_episodes` times from
+        # fresh reset keys and concatenated along time
+        episodes = []
+        for _ in range(max(1, int(num_episodes))):
+            state['key'], call_key = jax.random.split(state['key'])
+            episodes.append(jax.device_get(state['jit_rollout'](params, call_key)))
+
+        frames = np.concatenate([ep[0] for ep in episodes], axis=0)
+        pipeline_states = jax.tree_util.tree_map(
+            lambda *xs: np.concatenate(xs, axis=0), *[ep[1] for ep in episodes]
+        )
+        total_steps = steps * max(1, int(num_episodes))
 
         clips = {}
         if not high_res:
-            # Zero-cost path: read straight off the GPU pixel obs that already
-            # drove the policy, at the training resolution.
+            # Read straight off the GPU pixel obs at the training resolution
             pixel_frames = np.asarray(frames)[:, 0]  # drop num_envs=1 axis -> (T, H, W, C)
             if frame_stack > 1:
                 pixel_frames = pixel_frames[..., -3:]  # most recent RGB frame only
@@ -802,7 +811,7 @@ def make_periodic_vision_video_fn(
                     jax.tree_util.tree_map(lambda x, t=t: x[t, 0], pipeline_states),
                     camera,
                 )
-                for t in range(steps)
+                for t in range(total_steps)
             ])
 
         for camera, camera_frames in clips.items():
