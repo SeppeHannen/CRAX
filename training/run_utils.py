@@ -646,7 +646,7 @@ def record_episode_video(
 def make_periodic_vision_video_fn(
         env,
         every_steps: int,
-        steps: int = 300,
+        steps: int = 1000,
         pixel_camera: str = 'vision',
         extra_cameras: Optional[List[str]] = None,
         high_res: bool = True,

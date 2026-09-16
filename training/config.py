@@ -224,7 +224,7 @@ def add_shared_training_args(parser: argparse.ArgumentParser) -> argparse.Argume
     parser.add_argument("--video_every_steps", type=int, default=25_000_000,
                         help="--vision only: log a short clip to wandb roughly every this many env "
                              "steps, rendered directly from the policy's own GPU (MJWarp) pixel observations.")
-    parser.add_argument("--periodic_video_steps", type=int, default=300,
+    parser.add_argument("--periodic_video_steps", type=int, default=1000,
                         help="--vision only: env steps per periodic clip.")
 
     return parser
