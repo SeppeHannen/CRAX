@@ -30,22 +30,16 @@ from crax import envs
 
 def parse_args():
     p = argparse.ArgumentParser(description="Visualise egocentric pixel observations")
-    p.add_argument("--env", type=str, default="safe_goal_point",
-                   help="Environment name (default: safe_goal_point)")
-    p.add_argument("--level", type=int, default=0,
-                   help="Difficulty level (default: 0)")
-    p.add_argument("--camera", type=str, default="vision",
-                   help="Camera name from the MuJoCo XML (default: 'vision')")
-    p.add_argument("--num_steps", type=int, default=200,
-                   help="Number of steps to record (default: 200)")
-    p.add_argument("--height", type=int, default=128,
-                   help="Render height in pixels (default: 128)")
-    p.add_argument("--width", type=int, default=128,
-                   help="Render width in pixels (default: 128)")
+    p.add_argument("--env", type=str, default="safe_goal_point", help="Environment name")
+    p.add_argument("--level", type=int, default=1, help="Difficulty level")
+    p.add_argument("--camera", type=str, default="vision", help="Camera name from the MuJoCo XML")
+    p.add_argument("--num_steps", type=int, default=200, help="Number of steps to record")
+    p.add_argument("--height", type=int, default=128, help="Render height in pixels")
+    p.add_argument("--width", type=int, default=128, help="Render width in pixels")
+    p.add_argument("--backend", type=str, default="mjx", help="Physics backend")
     p.add_argument("--seed", type=int, default=0, help="Random seed")
-    p.add_argument("--fps", type=int, default=30, help="Output video FPS (default: 30)")
-    p.add_argument("--output", type=str, default="videos",
-                   help="Output directory (default: videos/)")
+    p.add_argument("--fps", type=int, default=30, help="Output video FPS")
+    p.add_argument("--output", type=str, default="videos", help="Output directory")
     return p.parse_args()
 
 
@@ -79,6 +73,7 @@ def main():
     gpu_env = envs.get_environment(
         args.env,
         level=args.level,
+        backend=args.backend,
         vision=True,
         vision_kwargs=dict(
             num_envs=num_envs,
@@ -90,7 +85,7 @@ def main():
     )
 
     # Raw env (no vision wrapper) – used only to access sys for CPU rendering.
-    raw_env = envs.get_environment(args.env, level=args.level)
+    raw_env = envs.get_environment(args.env, level=args.level, backend=args.backend)
 
     obs_key = f"pixels/{args.camera}"
     action_size = gpu_env.action_size
