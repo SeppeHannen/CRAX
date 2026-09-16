@@ -20,7 +20,7 @@
 # pylint:disable=g-multiple-import
 """Environments for training and evaluating policies."""
 
-from typing import Any, Dict, Optional, Type
+from typing import Any, Callable, Dict, Optional, Type
 
 import jax
 from jax import numpy as jp
@@ -226,6 +226,7 @@ def create(
         level: Optional[int] = None,
         vision: bool = False,
         vision_kwargs: Optional[Dict[str, Any]] = None,
+        pre_vision_fn: Optional[Callable[[Env], Any]] = None,
         **kwargs,
 ) -> Env:
     """Creates an environment with training wrappers.
@@ -246,6 +247,11 @@ def create(
              overrides for supported environments.
       vision: use MJWarp for pixel observations. Applied after Episode/Vmap/AutoReset
       vision_kwargs: keyword arguments for GpuPixelObservationWrapper
+      pre_vision_fn: called with the wrapped env immediately before
+             GpuPixelObservationWrapper is constructed. The wrapper hands
+             mj_model to MJWarp at construction time, so any change to the
+             model that should show up in the rendered pixels (e.g. geom_rgba
+             recolouring) has to happen here, not on the returned env.
       **kwargs: keyword arguments that get passed to the Env class constructor
 
     Returns:
@@ -266,6 +272,8 @@ def create(
 
     if vision:
         from crax.envs.wrappers.pixel_observation_gpu import GpuPixelObservationWrapper
+        if pre_vision_fn is not None:
+            pre_vision_fn(env)
         vision_kwargs = dict(vision_kwargs or {})
         num_envs = vision_kwargs.pop('num_envs', batch_size)
         if num_envs is None:

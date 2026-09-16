@@ -210,6 +210,8 @@ def add_shared_training_args(parser: argparse.ArgumentParser) -> argparse.Argume
     parser.add_argument("--vision_width", type=int, default=64, help="Render width in pixels")
     parser.add_argument("--vision_obs_mode", type=str, choices=["pixels", "pixels+state"], default="pixels",
                         help="'pixels' (pixels only) or 'pixels+state' (pixels + state vector)")
+    parser.add_argument("--vision_limb_colors", action="store_true",
+                        help="Give each of the agent's limbs a distinct colour for training")
     parser.add_argument("--vision_frame_stack", type=int, default=3,
                         help="Number of frames to stack channel-wise (3 is standard for RGB dm_control-style pixel RL, e.g. DrQ/RAD)")
 

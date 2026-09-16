@@ -19,6 +19,7 @@ from training.run_utils import (
     make_vision_network_factory, morphology_override, VISION_CAMERA_OVERRIDES,
     make_periodic_vision_video_fn,
 )
+from crax.envs.limb_colors import colorize_env_limbs
 
 
 def main():
@@ -48,9 +49,7 @@ def main():
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
         run_name = f"{env_name}_Level_{difficulty}_{alg_name}_seed{seed}_{timestamp}"
 
-        # Build vision kwargs if vision mode is enabled. Pixel-obs wrapping
-        # happens inside the training function (GpuPixelObservationWrapper
-        # must be applied after env vmapping, not here at env construction time.
+        # Build vision kwargs. Pixel-obs wrapping happens inside the training function
         vision_kwargs = None
         if config.vision:
             vision_kwargs = dict(
@@ -66,26 +65,36 @@ def main():
                 f"{config.vision_width}x{config.vision_height}"
             )
 
-        # Create environments with difficulty level
+        # Create environments with a difficulty level
         env_kwargs = config.env_kwargs or {}
         if env_name == 'safe_velocity':
             env_kwargs['agent'] = config.agent
         if config.vision:
-            # GpuPixelObservationWrapper reads geom_xpos/cam_xpos, which only
-            # the MJX pipeline populates.
+            # GpuPixelObservationWrapper reads geom_xpos/cam_xpos, which only the MJX pipeline populates.
             env_kwargs.setdefault('backend', 'mjx')
         env = envs.get_environment(env_name, level=difficulty, **env_kwargs)
         eval_env = envs.get_environment(env_name, level=difficulty, **env_kwargs)
 
+        # Distinct per-limb colours in the pixel observations
+        if config.vision and config.vision_limb_colors:
+            n_colored = colorize_env_limbs(env, env_name)
+            colorize_env_limbs(eval_env, env_name)
+            if n_colored:
+                print(f"Vision mode: recoloured {n_colored} limb geoms for pixel observations.")
+            else:
+                print(f"Vision mode: --vision_limb_colors set but '{env_name}' has no limb "
+                      f"colour scheme (see crax/envs/limb_colors.py); left unchanged.")
+
         # Determine the episode length
         episode_length = config.episode_length or env_kwargs.get('episode_length') or getattr(env, 'episode_length', None)
 
-        # Periodic mid-training video, --vision only: a dedicated single-env
-        # (num_envs=1) vision-wrapped rollout env, reading frames straight off
-        # its own GPU (MJWarp) pixel observations.
+        # Periodic mid-training video, --vision only: a dedicated single-env vision-wrapped
+        # rollout env, reading frames straight off its own GPU (MJWarp) pixel observations.
         video_fn = None
         if config.vision and not config.skip_video:
             video_env_kwargs = {k: v for k, v in env_kwargs.items() if k != 'episode_length'}
+            # Re-colour inside `pre_vision_fn`, not on the returned env
+            use_limb_colors = config.vision and config.vision_limb_colors
             periodic_video_env = envs.create(
                 env_name, level=difficulty,
                 episode_length=episode_length,
@@ -93,6 +102,7 @@ def main():
                 batch_size=1,
                 vision=True,
                 vision_kwargs=dict(**vision_kwargs, num_envs=1),
+                pre_vision_fn=(lambda e: colorize_env_limbs(e, env_name)) if use_limb_colors else None,
                 **video_env_kwargs,
             )
             video_fn = make_periodic_vision_video_fn(
@@ -153,11 +163,7 @@ def main():
         train_fn_base = get_algorithm_train_fn(alg_name)
         train_kwargs = filter_kwargs_for_fn(train_fn_base, cfg)
 
-        # Inject vision network factory + pixel-obs wrapping kwargs if vision
-        # mode is enabled. 'vision_kwargs' is only accepted by train_fns that
-        # support GpuPixelObservationWrapper (ppo and its pass-throughs). For
-        # others, it's silently dropped by `filter_kwargs_for_fn` below if the
-        # target signature doesn't declare it, so re-filter after adding it.
+        # Inject vision network factory + pixel-obs wrapping kwargs if vision mode is enabled
         if config.vision:
             state_obs_key = 'state' if config.vision_obs_mode == 'pixels+state' else ''
             train_kwargs['network_factory'] = make_vision_network_factory(
@@ -215,10 +221,7 @@ def main():
 
         if not config.skip_video:
             if config.vision:
-                # Force one last clip from the actual final params, bypassing
-                # the every_steps cadence gate. This covers the case where the
-                # last periodic call during training landed before the true
-                # final step.
+                # Force one last clip from the actual final params
                 video_fn(int(config.num_timesteps), make_inference_fn, params, force=True)
             else:
                 video_length = config.video_length if config.video_length else config.episode_length
