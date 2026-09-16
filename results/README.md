@@ -26,7 +26,8 @@ per seed:
 
 | Experiment | Path |
 |------------|------|
-| Main results | `data/<env>/level_<level>/<algo>/seed_<n>.parquet` |
+| Main results (vector obs) | `data/<env>/level_<level>/<algo>/seed_<n>.parquet` |
+| Main results (pixel obs) | `data/<env>/level_<level>/<algo>/vision_<camera>/seed_<n>.parquet` |
 | Hyperparameter sweeps | `data/<env>/level_<level>/<algo>/<hparam>_<value>/seed_<n>.parquet` |
 | Safety bounds | `data/<env>/level_<level>/<algo>/safety_bound_<value>/seed_<n>.parquet` |
 | Curriculum | `data/curriculum/<env>/<algo>/seed_<n>.parquet` |
@@ -40,10 +41,11 @@ environments log their reward under a different key, resolved by
 `REWARD_METRIC_MAP` / `get_metrics_for_env` in `common.py` (e.g.
 `safe_velocity_ant` uses `episodic/forward_reward`).
 
-> **Note on `--output`.** Download scripts resolve `--output` relative to
-> `results/download/`, while plotting scripts resolve `--input` relative to
-> `results/`. To download straight into the tree the plotters read, pass
-> `--output ../data`.
+> **Note on `--output`.** Both `--output` and `--input` resolve against
+> `results/` (`common.results_path`), and both default to `data`, so the
+> defaults already line up: downloads land in `results/data/` and the plotters
+> read them from there. Passing `--output ../data` writes to a `data/` at the
+> repo root that nothing reads by default.
 
 ## Downloading (`download/`)
 
@@ -64,11 +66,13 @@ existing files are skipped unless `--overwrite` is passed.
 
 ```bash
 # Baselines for one env, all levels, into results/data/
-python -m results.download.main_results \
-  --project my-crax-project --envs safe_goal_point --levels 1 2 3 --output ../data
+python -m results.download.main_results --project my-crax-project --envs safe_goal_point --levels 1 2 3
+
+# Pixel-observation runs only, separated by camera
+python -m results.download.main_results --project my-crax-project --obs vision --levels 1
 
 # Safe-RL hyperparameter sweep
-python -m results.download.safety_param_sweep --project my-crax-project --output ../data
+python -m results.download.safety_param_sweep --project my-crax-project
 ```
 
 ## Plotting (`plotting_results/`)
@@ -76,6 +80,7 @@ python -m results.download.safety_param_sweep --project my-crax-project --output
 | Script | Produces |
 |--------|----------|
 | `alg_comp.py` | Reward/cost training curves per environment, mean ± CI across seeds, with the safety threshold drawn in. |
+| `obs_comparison.py` | Vector vs. pixel observations (one line/bar per camera), for each algorithm. Training curves by default, final-performance bars with `--bars`. |
 | `alg_comp_bars.py` | Final-performance bar charts (per level and aggregated) plus LaTeX result tables (`--latex` prints them; `--output_latex base.tex` writes `base_summary.tex` and `base_appendix.tex`). |
 | `sample_efficiency.py` | Reward AUC and cumulative constraint violation per (env, algo, seed) — how fast a method gets good, and how much it violates on the way. |
 | `seed_variance.py` | CI width vs. number of seeds: small seed set vs. large, plus the full CI-vs-#seeds trend. |
@@ -106,10 +111,16 @@ python -m results.plotting_results.alg_comp \
 
 # Final bars + LaTeX table for all levels
 python -m results.plotting_results.alg_comp_bars \
-  --levels 1 2 3 --latex --output_latex results/figures/baselines.tex  # -> *_summary.tex, *_appendix.tex
+  --levels 1 2 3 --latex --output_latex results/figures/baselines.tex
 
 # Throughput comparison (no flags; reads data/performance/)
 python -m results.plotting_results.throughput_comparison
+
+# Vector vs. pixel observations curves and bars (currently one figure per algorithm)
+python -m results.plotting_results.obs_comparison \
+  --envs safe_goal_point safe_push_point --algos ppo_lag --level 1
+python -m results.plotting_results.obs_comparison --bars \
+  --envs safe_goal_point safe_push_point --algos ppo_lag --level 1
 ```
 
 `throughput_comparison.py` consumes benchmark CSVs produced by

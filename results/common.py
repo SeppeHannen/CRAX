@@ -63,6 +63,12 @@ TRANSLATIONS = {
     "safe_velocity_hopper": "Hopper Velocity",
     "safe_velocity_swimmer": "Swimmer Velocity",
     "safe_velocity_walker2d": "Walker Velocity",
+    # Observation modalities
+    "vector": "Vector",
+    "vision_vision": "Pixels (Egocentric)",
+    "vision_fixedfar": "Pixels (Fixed Far)",
+    "vision_track": "Pixels (Tracking)",
+    "vision_vision_back": "Pixels (Rear Ego)",
     # Hyperparameter sweep names
     "lagrangian_coef_rate": "Lagrangian LR",
     "pid_kp": "PID Kp",
@@ -122,7 +128,29 @@ BASELINES_COLORS: Dict[str, str] = {
     "crpo": "#B8860B",  # darkgoldenrod: tab10 is exhausted by the other 10 baselines, needs distinct 11th hue
 }
 
-# Environments were renamed mid-project
+# Observation-modality palette
+DEFAULT_OBS_MODES: List[str] = [
+    "vector", "vision_vision", "vision_fixedfar", "vision_track",
+]
+OBS_MODE_COLORS: Dict[str, str] = {
+    "vector": "#2F2F2F",
+    "vision_vision": "#D55E00",
+    "vision_fixedfar": "#0072B2",
+    "vision_track": "#009E73",
+    "vision_vision_back": "#CC79A7",
+}
+
+
+def obs_mode_dir(obs_mode: str) -> str:
+    """Sub-directory an observation mode's per-seed parquets live in.
+
+    Mirrors `download.main_results.obs_mode_segment`: vector runs keep the flat
+    `<algo>/seed_<n>.parquet` layout, pixel runs sit one level deeper under
+    `<algo>/vision_<camera>/`.
+    """
+    return "" if obs_mode == "vector" else obs_mode
+
+# Environments were renamed mid-project. Will be removed in the future
 WANDB_ENV_NAME_ALIASES: Dict[str, List[str]] = {
     "safe_goal_point": ["safe_point_goal"],
     "safe_pathway_walker2d": ["safe_walker"],
