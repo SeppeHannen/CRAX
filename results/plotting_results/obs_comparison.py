@@ -159,6 +159,7 @@ def plot_curves(store: RunStore, args: argparse.Namespace, algo: str) -> None:
             if ax.get_ylim()[1] >= 1000:
                 ax.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
             ax.yaxis.get_major_formatter().set_useOffset(False)
+            ax.set_xlim(0.0, args.x_max)
 
             if metric == "cost" and not args.no_threshold:
                 thr = ax.axhline(args.threshold, linestyle="--", color="red", linewidth=1.8)
@@ -291,6 +292,7 @@ def build_args() -> argparse.ArgumentParser:
                         "baseline, 'vision_<camera>' are pixel runs.")
     p.add_argument("--bars", action="store_true",
                    help="Draw final-performance bars instead of training curves.")
+    p.add_argument("--x_max", type=float, default=5e8, help="Curves only: upper x limit (env steps)")
     p.add_argument("--last_k", type=int, default=10,
                    help="--bars only: logged points averaged to get each run's final value.")
     p.add_argument("--no_threshold", action="store_true", help="Hide safety threshold lines.")
