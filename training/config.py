@@ -218,13 +218,13 @@ def add_shared_training_args(parser: argparse.ArgumentParser) -> argparse.Argume
     parser.add_argument("--video_width", type=int, default=320, help="Output video width")
     parser.add_argument("--video_height", type=int, default=240, help="Output video height")
     parser.add_argument("--video_length", type=int, default=None, help="Number of frames in the video")
-    parser.add_argument("--video_fps", type=int, default=100, help="Output video FPS")
+    parser.add_argument("--video_fps", type=int, default=60, help="Output video FPS")
     parser.add_argument("--video_frame_stride", type=int, default=1, help="Output video frame stride")
     parser.add_argument("--num_video_episodes", type=int, default=3, help="Number of episodes to record per evaluation")
     parser.add_argument("--video_every_steps", type=int, default=25_000_000,
                         help="--vision only: log a short clip to wandb roughly every this many env "
                              "steps, rendered directly from the policy's own GPU (MJWarp) pixel observations.")
-    parser.add_argument("--periodic_video_steps", type=int, default=1000,
+    parser.add_argument("--periodic_video_steps", type=int, default=500,
                         help="--vision only: env steps per periodic clip.")
 
     return parser
