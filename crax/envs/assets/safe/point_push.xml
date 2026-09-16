@@ -21,6 +21,7 @@
 
     <!-- Agent body -->
     <body name="agent" pos="0 0 .1">
+      <camera name="track" pos="0 -2.5 2.5" zaxis="0 -1 1" mode="trackcom"/>
       <camera name="vision" pos="0 0 .15" xyaxes="0 -1 0 .4 0 1" fovy="90"/>
       <camera name="vision_back" pos="0 0 .15" xyaxes="0 1 0 0 0 1" fovy="90"/>
       <joint type="slide" axis="1 0 0" name="x" damping="0.01"/>

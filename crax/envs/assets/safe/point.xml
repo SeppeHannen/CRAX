@@ -18,6 +18,7 @@
     <geom name="inner_floor" type="box" size="3.0 3.0 0.01" pos="0 0 0.01" rgba="0.8 0.8 0.6 1" contype="0" conaffinity="0"/>
     <camera name="fixedfar" pos="0 -5 5" zaxis="0 -1 1.15" mode="fixed"/>
     <body name="agent" pos="0 0 .1">
+      <camera name="track" pos="0 -2.5 2.5" zaxis="0 -1 1" mode="trackcom"/>
       <camera name="vision" pos="0 0 .15" xyaxes="0 -1 0 .4 0 1" fovy="90"/>
       <camera name="vision_back" pos="0 0 .15" xyaxes="0 1 0 0 0 1" fovy="90"/>
       <joint type="slide" axis="1 0 0" name="x" damping="0.01"/>
