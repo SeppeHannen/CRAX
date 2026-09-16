@@ -3,7 +3,7 @@
 CRAX is a high-performance benchmark for **Constrained Reinforcement Learning (Safe RL)** built on top of [Brax](https://github.com/google/brax) and [MuJoCo XLA (MJX)](https://mujoco.readthedocs.io/en/stable/mjx.html). It provides GPU/TPU-accelerated environments with safety constraints and a suite of state-of-the-art safe RL algorithms.
 
 <p align="center">
-  <img src="assets/envs/envs.gif" alt="CRAX Environments" width="100%" style="max-width: 400px;" />
+  <img src="assets/envs/envs.gif" alt="CRAX Environments: Goal, Push, Reacher, Lift, Pathway and Height tasks" width="100%" />
 </p>
 
 ## Features
