@@ -66,6 +66,7 @@ TRANSLATIONS = {
     # Observation modalities
     "vector": "Vector",
     "vision_vision": "Pixels (Egocentric)",
+    "vision_allocentric": "Pixels (Allocentric)",
     "vision_fixedfar": "Pixels (Fixed Far)",
     "vision_track": "Pixels (Tracking)",
     "vision_vision_back": "Pixels (Rear Ego)",
@@ -129,26 +130,55 @@ BASELINES_COLORS: Dict[str, str] = {
 }
 
 # Observation-modality palette
-DEFAULT_OBS_MODES: List[str] = [
-    "vector", "vision_vision", "vision_fixedfar", "vision_track",
-]
+# vision_allocentric can be different cameras (check ALLOCENTRIC_CAMERAS below)
+ALLOCENTRIC_MODE = "vision_allocentric"
+DEFAULT_OBS_MODES: List[str] = ["vector", "vision_vision", ALLOCENTRIC_MODE]
 OBS_MODE_COLORS: Dict[str, str] = {
     "vector": "#2F2F2F",
     "vision_vision": "#D55E00",
+    ALLOCENTRIC_MODE: "#0072B2",
     "vision_fixedfar": "#0072B2",
     "vision_track": "#009E73",
     "vision_vision_back": "#CC79A7",
 }
 
+# Which external camera each env's allocentric runs were rendered from.
+ALLOCENTRIC_CAMERAS: Dict[str, str] = {
+    "safe_goal_point": "track",
+    "safe_push_point": "track",
+    "safe_button_point": "track",
+    "safe_circle_point": "fixedfar",
+    "safe_reacher": "fixedfar",
+    "safe_velocity_ant": "track",
+    "safe_velocity_humanoid": "track",
+    "safe_velocity_halfcheetah": "track",
+    "safe_velocity_walker2d": "track",
+    "safe_pathway_walker2d": "track",
+    "safe_lift_spider": "track",
+    "safe_height_humanoid": "track",
+}
+DEFAULT_ALLOCENTRIC_CAMERA = "fixedfar"
 
-def obs_mode_dir(obs_mode: str) -> str:
+
+def allocentric_camera(env_name: str) -> str:
+    """Camera whose runs stand in for the allocentric mode in `env_name`."""
+    return ALLOCENTRIC_CAMERAS.get(env_name, DEFAULT_ALLOCENTRIC_CAMERA)
+
+
+def obs_mode_dir(obs_mode: str, env_name: Optional[str] = None) -> str:
     """Sub-directory an observation mode's per-seed parquets live in.
 
     Mirrors `download.main_results.obs_mode_segment`: vector runs keep the flat
     `<algo>/seed_<n>.parquet` layout, pixel runs sit one level deeper under
-    `<algo>/vision_<camera>/`.
+    `<algo>/vision_<camera>/`. ALLOCENTRIC_MODE resolves to whichever camera
+    `env_name` used; without an `env_name` it falls back to the default one.
     """
-    return "" if obs_mode == "vector" else obs_mode
+    if obs_mode == "vector":
+        return ""
+    if obs_mode == ALLOCENTRIC_MODE:
+        camera = allocentric_camera(env_name) if env_name else DEFAULT_ALLOCENTRIC_CAMERA
+        return f"vision_{camera}"
+    return obs_mode
 
 # Environments were renamed mid-project. Will be removed in the future
 WANDB_ENV_NAME_ALIASES: Dict[str, List[str]] = {

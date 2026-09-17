@@ -16,6 +16,10 @@ dimension and overlaying algorithms on top of it is unreadable.
 Data layout (see `download.main_results.obs_mode_segment`):
     vector  -> data/<env>/level_<l>/<algo>/seed_<n>.parquet
     pixels  -> data/<env>/level_<l>/<algo>/vision_<camera>/seed_<n>.parquet
+
+The external camera differs per task (`track` where `fixedfar` is too coarse to
+resolve the objects, `fixedfar` elsewhere), so both are plotted as one
+"allocentric" mode, opposite the egocentric one. See `common.ALLOCENTRIC_CAMERAS`.
 """
 
 import argparse
@@ -50,7 +54,7 @@ def load_runs(base: Path, env: str, level: int, algo: str, obs_mode: str,
               seeds: List[int], metrics: List[str]) -> RunStore:
     """Load every seed of one (env, level, algo, obs_mode) cell."""
     out: RunStore = {}
-    folder = base / env / f"level_{level}" / algo / obs_mode_dir(obs_mode)
+    folder = base / env / f"level_{level}" / algo / obs_mode_dir(obs_mode, env)
     for metric in metrics:
         key = (env, algo, obs_mode, metric)
         out[key] = []
@@ -289,7 +293,9 @@ def build_args() -> argparse.ArgumentParser:
     )
     p.add_argument("--obs_modes", type=str, nargs="+", default=list(DEFAULT_OBS_MODES),
                    help="Observation modes to compare. 'vector' is the state-observation "
-                        "baseline, 'vision_<camera>' are pixel runs.")
+                        "baseline, 'vision_vision' the agent's own (egocentric) camera, and "
+                        "'vision_allocentric' the external view, resolved per env to "
+                        "whichever camera that env used.")
     p.add_argument("--bars", action="store_true",
                    help="Draw final-performance bars instead of training curves.")
     p.add_argument("--x_max", type=float, default=5e8, help="Curves only: upper x limit (env steps)")
