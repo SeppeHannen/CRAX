@@ -10,8 +10,14 @@ Able to plot both curves and bars, sharing the same loader and selection flags:
     # final-performance bars
     python -m results.plotting_results.obs_comparison --bars --envs safe_goal_point --algos ppo_lag
 
-Currently, one figure per algorithm, since obs mode is already the line/bar
-dimension and overlaying algorithms on top of it is unreadable.
+    # all modes side by side, algos grouped within each
+    python -m results.plotting_results.obs_comparison --grouped --max_cols 3 \
+        --envs safe_goal_point safe_push_point safe_circle_point
+
+One figure per algorithm, since obs mode is already the line/bar dimension and
+overlaying algorithms on top of it is unreadable. The exception is `--grouped`,
+a single summary bar figure with the modes on the x axis and the algorithms
+grouped within each.
 
 Data layout (see `download.main_results.obs_mode_segment`):
     vector  -> data/<env>/level_<l>/<algo>/seed_<n>.parquet
@@ -32,6 +38,7 @@ import pandas as pd
 
 from results import cli
 from results.common import (
+    BASELINES_COLORS,
     DEFAULT_METRIC_COLS as METRIC_COLS,
     DEFAULT_OBS_MODES,
     OBS_MODE_COLORS,
@@ -48,6 +55,16 @@ from results.common import (
 
 # (env, algo, obs_mode, metric) -> one DataFrame['_step', 'value'] per seed
 RunStore = Dict[Tuple[str, str, str, str], List[pd.DataFrame]]
+
+# Axis-tick labels for --grouped
+SHORT_MODE_LABELS: Dict[str, str] = {
+    "vector": "Vector",
+    "vision_vision": "Ego",
+    "vision_allocentric": "Allo",
+    "vision_fixedfar": "Fixed",
+    "vision_track": "Track",
+    "vision_vision_back": "Rear",
+}
 
 
 def load_runs(base: Path, env: str, level: int, algo: str, obs_mode: str,
@@ -96,8 +113,20 @@ def _present_obs_modes(store: RunStore, args: argparse.Namespace, algo: str) -> 
     ]
 
 
+def _present_algos(store: RunStore, args: argparse.Namespace, obs_mode: str) -> List[str]:
+    """Algos that actually have data for this obs mode, in the requested order.
+
+    Only `plot_grouped_bars` needs this. The per-figure plots split by algo.
+    """
+    return [
+        algo for algo in args.algos
+        if any(store.get((env, algo, obs_mode, metric))
+               for env in args.envs for metric in args.metrics)
+    ]
+
+
 def _finalize(fig, handles: Dict[str, plt.Line2D], n_entries: int,
-              args: argparse.Namespace, algo: str, kind: str) -> None:
+              args: argparse.Namespace, suffix: str, kind: str) -> None:
     """Attach the shared bottom legend and write the figure out."""
     if handles:
         labels, hs = zip(*handles.items())
@@ -108,7 +137,7 @@ def _finalize(fig, handles: Dict[str, plt.Line2D], n_entries: int,
 
     out_dir = results_path(args.output_fig_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{args.out_name}_{kind}_level_{args.level}_{algo}.pdf"
+    out_path = out_dir / f"{args.out_name}_{kind}_level_{args.level}_{suffix}.pdf"
     fig.savefig(out_path, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved figure: {out_path}")
@@ -261,6 +290,89 @@ def plot_bars(store: RunStore, args: argparse.Namespace, algo: str) -> None:
     _finalize(fig, handles, len(obs_modes), args, algo, "bars")
 
 
+def plot_grouped_bars(store: RunStore, args: argparse.Namespace) -> None:
+    """Obs modes on the x axis, algos as grouped bars within each mode.
+
+    Every other mode here splits obs mode across figures. This one keeps all of
+    them side by side so the modality gap and its consistency across algorithms
+    are readable in a single panel.
+    """
+    set_mpl_style()
+    envs, metrics = args.envs, args.metrics
+    m = len(metrics)
+    nrows, ncols_env = nice_grid(len(envs), max_cols=args.max_cols)
+
+    fig, axs = plt.subplots(nrows, ncols_env * m,
+                            figsize=(args.panel_w * ncols_env * m, args.panel_h * nrows),
+                            squeeze=False)
+    # A single row of panels leaves no gap under the axes for the figure-level
+    # legend, which would then land on top of the bars. Reserve the band here.
+    fig.subplots_adjust(left=0.06, right=0.98, top=0.92,
+                        bottom=0.30 if nrows == 1 else 0.12,
+                        wspace=0.35, hspace=0.55)
+
+    def get_ax(env_i: int, metric_i: int):
+        return axs[env_i // ncols_env, (env_i % ncols_env) * m + metric_i]
+
+    handles: Dict[str, plt.Line2D] = {}
+    obs_modes = [om for om in args.obs_modes if _present_algos(store, args, om)]
+    algos = [
+        algo for algo in args.algos
+        if any(store.get((env, algo, om, metric))
+               for env in envs for om in obs_modes for metric in metrics)
+    ]
+    group_w = 0.8
+    bar_w = group_w / max(len(algos), 1)
+
+    for env_i, env in enumerate(envs):
+        for metric_i, metric in enumerate(metrics):
+            ax = get_ax(env_i, metric_i)
+
+            for algo_i, algo in enumerate(algos):
+                positions, heights, errors = [], [], []
+                for group_i, obs_mode in enumerate(obs_modes):
+                    stat = _final_value(store.get((env, algo, obs_mode, metric), []),
+                                        args.last_k)
+                    if stat is None:
+                        # Missing cell: leave its slot empty rather than
+                        # shifting the rest, so bars stay aligned by algo.
+                        continue
+                    mean, ci, n_seeds = stat
+                    positions.append(group_i - group_w / 2 + bar_w * (algo_i + 0.5))
+                    heights.append(mean)
+                    errors.append(ci)
+
+                if not positions:
+                    continue
+                bars = ax.bar(positions, heights, width=bar_w, yerr=errors, capsize=3,
+                              color=BASELINES_COLORS.get(algo),
+                              edgecolor="black", linewidth=0.6)
+                handles.setdefault(algo, bars[0])
+
+            ax.set_xticks(range(len(obs_modes)))
+            ax.set_xticklabels([SHORT_MODE_LABELS.get(om, TRANSLATIONS.get(om, om))
+                                for om in obs_modes])
+            ax.set_ylabel(TRANSLATIONS.get(metric, metric.capitalize()))
+            ax.axhline(0.0, color="black", linewidth=0.8)
+
+            if metric == "cost" and not args.no_threshold:
+                thr = ax.axhline(args.threshold, linestyle="--", color="red", linewidth=1.8)
+                handles.setdefault("Threshold", thr)
+            if args.grid:
+                ax.grid(True, axis="y", linestyle="--", linewidth=0.9, alpha=0.45)
+
+        left = get_ax(env_i, 0).get_position()
+        right = get_ax(env_i, m - 1).get_position()
+        fig.text(0.5 * (left.x0 + right.x1), max(left.y1, right.y1) + 0.01,
+                 TRANSLATIONS.get(env, env), ha="center", va="bottom", fontsize=14)
+
+    for env_i in range(len(envs), nrows * ncols_env):
+        for metric_i in range(m):
+            get_ax(env_i, metric_i).axis("off")
+
+    _finalize(fig, handles, len(algos), args, "grouped", "bars")
+
+
 def main(args: argparse.Namespace) -> None:
     store = load_all(args)
     if not any(store.values()):
@@ -268,6 +380,10 @@ def main(args: argparse.Namespace) -> None:
             "No data loaded. Check --input/--envs/--algos/--level/--seeds, and that "
             "the pixel runs were downloaded (main_results.py --obs vision)."
         )
+
+    if args.grouped:
+        plot_grouped_bars(store, args)
+        return
 
     for algo in args.algos:
         if not any(store.get((env, algo, om, metric))
@@ -298,6 +414,9 @@ def build_args() -> argparse.ArgumentParser:
                         "whichever camera that env used.")
     p.add_argument("--bars", action="store_true",
                    help="Draw final-performance bars instead of training curves.")
+    p.add_argument("--grouped", action="store_true",
+                   help="A single bar chart with the observation modes on the x axis and "
+                        "the algorithms grouped within each mode.")
     p.add_argument("--x_max", type=float, default=5e8, help="Curves only: upper x limit (env steps)")
     p.add_argument("--last_k", type=int, default=10,
                    help="--bars only: logged points averaged to get each run's final value.")
