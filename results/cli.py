@@ -34,7 +34,7 @@ DEFAULT_ENVS: List[str] = [
     "safe_velocity_humanoid",
 ]
 DEFAULT_ALGOS: List[str] = [
-    "ppo", "ppo_cost", "ppo_lag", "ppo_saute", "ppo_pid", "p3o", "focops",
+    "ppo", "ppo_cost", "ppo_lag", "ppo_saute", "ppo_pid", "p3o", "focops", "crpo",
     "sac", "sac_lag", "sac_pid",
 ]
 # Smaller sets the plotting scripts tend to use.
