@@ -353,7 +353,7 @@ def build_args() -> argparse.ArgumentParser:
     p.add_argument("--legend_fontsize", type=float, default=12.5,
                    help="Font size of the line-plot legend")
     p.add_argument("--seeds_small", type=int, nargs="+", default=[1, 2, 3])
-    p.add_argument("--seeds_large", type=int, nargs="+", default=[*range(1, 11)])
+    p.add_argument("--seeds_large", type=int, nargs="+", default=[*range(1, 21)])
     return p
 
 
