@@ -221,12 +221,25 @@ class GpuPixelObservationWrapper(Wrapper):
             return pixels
         return jnp.concatenate([pixels] * self._frame_stack, axis=-1)
 
-    def _update_frame_buffer(self, new_pixels, prev_stacked):
+    def _update_frame_buffer(self, new_pixels, prev_stacked, done=None):
+        """Shift the stack by one frame and append `new_pixels`.
+
+        If the episode just finished, we should reset instead of shifting.
+        Pixel from the "done" step are already the next episodes first frame.
+        Shifting would leave the last frames of the finished episode in the
+        stack for `frame_stack - 1` more steps, feeding the policy a weird
+        jump-cut of visual flow across the episode boundary.
+        """
         if self._frame_stack <= 1:
             return new_pixels
-        return jnp.concatenate(
+        shifted = jnp.concatenate(
             [prev_stacked[..., self._channels:], new_pixels], axis=-1
         )
+        if done is None:
+            return shifted
+        if done.shape:
+            done = jnp.reshape(done, [shifted.shape[0]] + [1] * (shifted.ndim - 1))
+        return jnp.where(done > 0, self._init_frame_buffer(new_pixels), shifted)
 
     # ------------------------------------------------------------------
     # Wrapper interface
@@ -250,9 +263,7 @@ class GpuPixelObservationWrapper(Wrapper):
         # Stash the inner env's native obs so step() can hand it back down
         # unchanged on the next call. The inner Episode/AutoReset/Vmap chain
         # (below) is never aware we replace `obs` with a pixel dict. Feeding
-        # it our dict back in would break its internal action_repeat scan
-        # (carry pytree must stay the inner env's own plain-obs shape across
-        # iterations).
+        # it our dict back in would break its internal action_repeat scan.
         state.info['_orig_state_obs'] = orig_obs
         return state.replace(obs=self._build_obs(orig_obs, pixels_out))
 
@@ -267,7 +278,12 @@ class GpuPixelObservationWrapper(Wrapper):
 
         if self._frame_stack > 1:
             prev = state.info.get('_gpu_pixel_buffer', self._init_frame_buffer(pixels))
-            stacked = self._update_frame_buffer(pixels, prev)
+            # We should reset the buffer only if the episode finished and
+            # when we have an AutoResetWrapper. To determine this, we can
+            # check whether "first_pipeline_state" is in the info. Without
+            # it, a done state is terminal and never stepped again anyway.
+            done = state.done if 'first_pipeline_state' in state.info else None
+            stacked = self._update_frame_buffer(pixels, prev, done)
             state.info['_gpu_pixel_buffer'] = stacked
             pixels_out = stacked
         else:
