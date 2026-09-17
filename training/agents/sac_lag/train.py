@@ -14,8 +14,8 @@
 # limitations under the License.
 #
 # This file is derived from Brax 0.12.3 (training/agents/sac/train.py) and has been
-# substantially modified by the CRAX Authors: adds the Lagrangian constraint machinery — a cost critic, a Lagrange multiplier
-# updated against the safety bound, and cost-aware actor losses.
+# substantially modified by the CRAX Authors: adding the Lagrangian constraint machinery,
+# a cost critic, a Lagrange multiplier updated against the safety bound, and cost-aware actor losses.
 
 """SAC-Lagrangian training.
 
@@ -208,7 +208,7 @@ def train(
     reward_scaling: float = 1.0,
     tau: float = 0.005,
     min_replay_size: int = 0,
-    max_replay_size: Optional[int] = None,
+    max_replay_size: Optional[int] = 1e7,
     grad_updates_per_step: int = 32,
     deterministic_eval: bool = False,
     network_factory: types.NetworkFactory[
@@ -297,22 +297,6 @@ def train(
         raise ValueError(
             'No training will happen because min_replay_size >= num_timesteps'
         )
-    if max_replay_size is None:
-        if vision_kwargs is not None:
-            # num_timesteps (the flat-state default) sizes a buffer of raw
-            # pixel frames catastrophically -- e.g. 1e8 transitions x two
-            # 64x64x3 uint8 frames is ~2.5TB. Default to something that fits
-            # on a single accelerator instead; pass --max_replay_size to
-            # override.
-            max_replay_size = min(num_timesteps, 100_000)
-            logging.info(
-                'vision_kwargs set and max_replay_size not given -- '
-                'defaulting replay buffer to %d transitions (pass '
-                'max_replay_size explicitly to change this).',
-                max_replay_size,
-            )
-        else:
-            max_replay_size = num_timesteps
     num_timesteps = int(num_timesteps)
     max_replay_size = int(max_replay_size)
     min_replay_size = int(min_replay_size)
@@ -404,10 +388,7 @@ def train(
     qc_optimizer = optax.adam(learning_rate=learning_rate)
 
     if isinstance(obs_size, dict):
-        # uint8 for pixel keys (matches GpuPixelObservationWrapper's output
-        # dtype -- keeping it here, not float32, is the whole point of using
-        # PytreeUniformSamplingQueue below), float32 for everything else
-        # (e.g. 'state' in --vision_obs_mode pixels+state).
+        # uint8 for pixel keys (matches GpuPixelObservationWrapper's output dtype
         dummy_obs = {
             key: jnp.zeros(
                 shape, jnp.uint8 if key.startswith('pixels/') else jnp.float32
