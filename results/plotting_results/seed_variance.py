@@ -239,26 +239,34 @@ def annotate_offscale(ax, ks: List[int], trend: Dict[str, List[float]], envs: Li
                                   edgecolor="none", alpha=0.75))
 
 
-def plot_results(
-        rows: List[List], trend: Dict[str, List[float]], envs: List[str],
-        seeds_small: List[int], seeds_large: List[int], out_path: Path,
-) -> None:
-    set_mpl_style()
-    fig, (ax_bar, ax_line) = plt.subplots(1, 2, figsize=(13, 5))
-
+def plot_bars(ax, rows: List[List], seeds_small: List[int], seeds_large: List[int]) -> None:
+    """Per-env bar chart of the small- vs large-seed-set CI."""
     env_labels = [r[0] for r in rows]
     ci_small = [r[2] for r in rows]
     ci_large = [r[4] for r in rows]
 
     x = np.arange(len(env_labels))
     width = 0.35
-    ax_bar.bar(x - width / 2, ci_small, width, label=f"n={len(seeds_small)} seeds", color="tab:orange")
-    ax_bar.bar(x + width / 2, ci_large, width, label=f"n={len(seeds_large)} seeds", color="tab:blue")
-    ax_bar.set_xticks(x)
-    ax_bar.set_xticklabels(env_labels, rotation=30, ha="right")
-    ax_bar.set_ylabel("95% CI half-width (% of mean)")
-    ax_bar.legend()
-    ax_bar.grid(True, axis="y", linestyle="--", alpha=0.4)
+    ax.bar(x - width / 2, ci_small, width, label=f"n={len(seeds_small)} seeds", color="tab:orange")
+    ax.bar(x + width / 2, ci_large, width, label=f"n={len(seeds_large)} seeds", color="tab:blue")
+    ax.set_xticks(x)
+    ax.set_xticklabels(env_labels, rotation=30, ha="right")
+    ax.set_ylabel("95% CI on final score (± % of mean)")
+    ax.legend()
+    ax.grid(True, axis="y", linestyle="--", alpha=0.4)
+
+
+def plot_results(
+        rows: List[List], trend: Dict[str, List[float]], envs: List[str],
+        seeds_small: List[int], seeds_large: List[int], out_path: Path,
+        bars: bool = False, legend_fontsize: float = 12.5,
+) -> None:
+    set_mpl_style()
+    if bars:
+        fig, (ax_bar, ax_line) = plt.subplots(1, 2, figsize=(13, 5))
+        plot_bars(ax_bar, rows, seeds_small, seeds_large)
+    else:
+        fig, ax_line = plt.subplots(1, 1, figsize=(7, 5))
 
     ks = list(range(2, len(seeds_large) + 1))
     lines = {}
@@ -266,8 +274,7 @@ def plot_results(
         vals = trend.get(env, [])
         if not vals:
             continue
-        lines[env], = ax_line.plot(ks, vals, marker="o", markersize=3,
-                                   label=TRANSLATIONS.get(env, env), alpha=0.85)
+        lines[env], = ax_line.plot(ks, vals, marker="o", markersize=3, label=TRANSLATIONS.get(env, env), alpha=0.85)
 
     overall = np.nanmean(np.array([trend[e] for e in envs if trend.get(e)]), axis=0)
     ax_line.plot(ks, overall, color="black", linewidth=3, label="Average", zorder=10)
@@ -276,9 +283,11 @@ def plot_results(
 
     ax_line.axvline(len(seeds_small), linestyle="--", color="gray", linewidth=1)
     ax_line.axvline(len(seeds_large), linestyle="--", color="gray", linewidth=1)
+    if ks:
+        ax_line.set_xlim(ks[0], ks[-1])
     ax_line.set_xlabel("Number of seeds")
-    ax_line.set_ylabel("95% CI half-width (% of mean)")
-    ax_line.legend(fontsize=9, ncol=1, loc="upper right")
+    ax_line.set_ylabel("95% CI on final score (± % of mean)")
+    ax_line.legend(fontsize=legend_fontsize, ncol=1, loc="upper right")
     ax_line.grid(True, linestyle="--", alpha=0.4)
 
     fig.tight_layout()
@@ -326,7 +335,8 @@ def main(args: argparse.Namespace) -> None:
     trend = build_trend(final_values_by_metric, args.envs, args.algos, args.metrics, seeds_large,
                         method=args.ci_method)
     out_path = results_path(args.output_fig_dir) / f"{args.out_name}.pdf"
-    plot_results(rows, trend, args.envs, seeds_small, seeds_large, out_path)
+    plot_results(rows, trend, args.envs, seeds_small, seeds_large, out_path,
+                 bars=args.bars, legend_fontsize=args.legend_fontsize)
     print(f"Saved figure: {out_path}")
 
 
@@ -338,6 +348,10 @@ def build_args() -> argparse.ArgumentParser:
         out_name="seed_variance",
         algos=["ppo", "ppo_cost", "ppo_lag", "ppo_pid", "ppo_saute", "p3o", "focops", "crpo"],
     )
+    p.add_argument("--bars", action="store_true",
+                   help="Also draw the per-env bar chart next to the CI-vs-#seeds line plot")
+    p.add_argument("--legend_fontsize", type=float, default=12.5,
+                   help="Font size of the line-plot legend")
     p.add_argument("--seeds_small", type=int, nargs="+", default=[1, 2, 3])
     p.add_argument("--seeds_large", type=int, nargs="+", default=[*range(1, 11)])
     return p
