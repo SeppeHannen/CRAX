@@ -84,7 +84,7 @@ def main():
                 policy_obs_key=state_obs_key,
                 value_obs_key=state_obs_key,
             )
-            cfg['augment_pixels'] = True
+            cfg['augment_pixels'] = args.vision_augment
 
         # Build wandb config for per-algorithm runs
         wandb_config = None

@@ -171,7 +171,7 @@ def main():
                 policy_obs_key=state_obs_key,
                 value_obs_key=state_obs_key,
             )
-            train_kwargs['augment_pixels'] = True
+            train_kwargs['augment_pixels'] = config.vision_augment
             train_kwargs['vision_kwargs'] = vision_kwargs
             if video_fn is not None:
                 train_kwargs['policy_params_fn'] = video_fn

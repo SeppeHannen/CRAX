@@ -106,7 +106,7 @@ def main():
                 policy_obs_key=state_obs_key,
                 value_obs_key=state_obs_key,
             )
-            train_kwargs['augment_pixels'] = True
+            train_kwargs['augment_pixels'] = config.vision_augment
 
         # Train with curriculum
         policy_fn, final_params, results, eval_env = curriculum.train_curriculum(
