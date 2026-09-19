@@ -806,8 +806,11 @@ def train(
         )
 
     _dbg("Replicating training state to devices...")
-    training_state = jax.device_put_replicated(
-        training_state, jax.local_devices()[:local_devices_to_use]
+    # Add a leading device dimension for vmap/pmap.
+    # This replaces jax.device_put_replicated (removed in newer JAX).
+    training_state = jax.tree_util.tree_map(
+        lambda x: jnp.broadcast_to(x, (local_devices_to_use,) + x.shape),
+        training_state,
     )
     _dbg("Training state replicated.")
 
