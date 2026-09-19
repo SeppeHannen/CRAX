@@ -18,7 +18,8 @@ from training.config import build_base_parser
 from training.run_utils import (
     setup_gpu_environment, get_algorithm_train_fn, filter_kwargs_for_fn,
     custom_progress_fn, record_episode_video, make_vision_network_factory,
-    morphology_override, VISION_CAMERA_OVERRIDES,
+    morphology_override, VISION_CAMERA_OVERRIDES, install_performance_tracker,
+    require_wandb_login,
 )
 
 
@@ -29,7 +30,6 @@ def main():
 
     alg_name = config.alg
     env_name = config.env_name
-    use_wandb = config.use_wandb
 
     # Fill in the morphology-specific pixel-obs training camera
     if config.vision_camera is None:
@@ -37,6 +37,8 @@ def main():
 
     # Setup GPU environment
     setup_gpu_environment(vision=config.vision)
+    # Every run is tracked in W&B; abort before compiling anything if credentials are missing
+    require_wandb_login()
 
     # Run training for each seed
     for seed in config.seeds:
@@ -61,18 +63,16 @@ def main():
         for i, stage in enumerate(stages):
             print(f"  {i + 1}. {stage.env_name}: {stage.num_steps:,} steps")
 
-        if use_wandb:
-            # Prepare wandb config
-            wandb_config = cfg.copy()
-            wandb.init(
-                project=config.wandb_project,
-                name=run_name,
-                id=run_name,
-                config=wandb_config,
-                group=config.wandb_group if config.wandb_group else env_name,
-                job_type=alg_name,
-                tags=config.wandb_tags,
-            )
+        wandb.init(
+            entity=config.wandb_entity,
+            project=config.wandb_project,
+            name=run_name,
+            id=run_name,
+            config=cfg.copy(),
+            group=config.wandb_group if config.wandb_group else env_name,
+            job_type=alg_name,
+            tags=config.wandb_tags,
+        )
 
         if config.store_model:
             root_dir = Path(__file__).parent.parent.resolve()  # repo root, not training/
@@ -81,7 +81,7 @@ def main():
             cfg["save_checkpoint_path"] = ckpt_root
 
         # Setup metrics collection
-        progress_fn = functools.partial(custom_progress_fn, use_wandb=use_wandb, verbose=not config.quiet)
+        progress_fn = functools.partial(custom_progress_fn, verbose=not config.quiet)
 
         # Get the appropriate training function
         train_fn_base = get_algorithm_train_fn(alg_name)
@@ -108,6 +108,11 @@ def main():
             )
             train_kwargs['augment_pixels'] = config.vision_augment
 
+        # Optional performance measurement (--measure_performance / --profile_epochs).
+        # One tracker spans all stages, so recompiles at stage boundaries show up
+        # in the compile count and per-epoch records.
+        performance_tracker = install_performance_tracker(config, run_name)
+
         # Train with curriculum
         policy_fn, final_params, results, eval_env = curriculum.train_curriculum(
             stages=stages,
@@ -116,6 +121,7 @@ def main():
             progress_fn=progress_fn,
             seed=seed,
         )
+        performance_tracker.finish()
 
         # Print final summary
         print("\n" + "=" * 60)
@@ -145,14 +151,11 @@ def main():
                 fps=config.video_fps,
                 frame_stride=config.video_frame_stride,
                 out_name=run_name,
-                log_to_wandb=config.use_wandb,
                 seed=seed,
                 num_episodes=config.num_video_episodes,
             )
 
-        # Finish wandb run if active
-        if use_wandb and wandb.run is not None:
-            wandb.finish()
+        wandb.finish()
 
     print("\nAll experiments completed!")
 

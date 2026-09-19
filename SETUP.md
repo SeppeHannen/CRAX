@@ -98,29 +98,38 @@ All three scripts share the same argument set, defined in
 full list, including the per-algorithm sections (`--safety_bound`, `--pid_kp`,
 `--nu_lr`, `--tau`, ...).
 
-Boolean flags (`--use_wandb`, `--store_model`, `--normalize_observations`,
+Boolean flags (`--store_model`, `--normalize_observations`,
 `--deterministic_eval`) accept `true/false`, `1/0`, `yes/no` in either case,
-and default to `True` when passed bare (`--use_wandb` == `--use_wandb true`).
+and default to `True` when passed bare (`--store_model` == `--store_model true`).
 Anything else is a parse error.
 
 
 ## 5. Weights & Biases (wandb)
 
-Training logs to wandb by default. Log in once:
+Every run is tracked in W&B; there is no switch to turn it off. All runs from
+all machines go into one project (`training/config.py`: `WANDB_ENTITY` /
+`WANDB_PROJECT`, currently `g-g-hannen-eindhoven-university-of-technology/crax`);
+use `--wandb_group` and `--wandb_tags` to organise them.
+
+Training aborts before compiling anything if no credentials are found. Get
+your API key from https://wandb.ai/authorize and make it available once per
+machine, in whichever way suits it:
 
 ```bash
-wandb login
+# Laptop / workstation / cluster login node: put it in your shell profile
+echo 'export WANDB_API_KEY=<key>' >> ~/.bashrc
+
+# Alternative: `wandb login` writes the same key to ~/.netrc
+
+# Batch job on a node without internet: also set
+export WANDB_MODE=offline        # then `wandb sync <run dir>` from a node that has
 ```
 
 ```bash
-# Disable wandb
-python -m training.train_env --env_name safe_goal_point --alg ppo_lag --use_wandb false
-
-# Set project, group, and tags
+# Group and tag runs
 python -m training.train_env --env_name safe_goal_point --alg ppo_lag \
-  --wandb_project crax-experiments \
   --wandb_group safe_goal_point \
-  --wandb_tags tag1 tag2
+  --wandb_tags baseline seed-sweep
 ```
 
 ## Troubleshooting

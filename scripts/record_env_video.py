@@ -297,7 +297,6 @@ def main(args: argparse.Namespace) -> None:
             num_episodes=episodes,
             fps=fps,
             seed=args.seed,
-            log_to_wandb=False,
         )
         return
 

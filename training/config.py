@@ -44,6 +44,11 @@ def bool_type(s):
     raise argparse.ArgumentTypeError(f"Expected a boolean value, got {s!r}")
 
 
+# Single home for every experiment, on every machine. Override per run with
+# --wandb_entity / --wandb_project only if you really mean it.
+WANDB_ENTITY = "g-g-hannen-eindhoven-university-of-technology"
+WANDB_PROJECT = "crax"
+
 DEFAULT_ENV_KWARGS: Dict[str, Any] = {
     "physics": {
         "backend": "mjx",
@@ -196,8 +201,13 @@ def add_shared_training_args(parser: argparse.ArgumentParser) -> argparse.Argume
                         help="SAC-Lag: gradient updates per environment step")
 
     # --- WandB ---
-    parser.add_argument("--use_wandb", type=bool_type, nargs="?", const=True, default=True, help="Enable wandb logging")
-    parser.add_argument("--wandb_project", type=str, default="crax", help="W&B project")
+    # W&B is the system of record for every experiment and cannot be switched off.
+    # The run aborts before compiling anything if no credentials are found
+    # (WANDB_API_KEY, or ~/.netrc from `wandb login`). Offline nodes: WANDB_MODE=offline + `wandb sync`.
+    parser.add_argument("--wandb_entity", type=str, default=WANDB_ENTITY,
+                        help="W&B entity (team/user). Pinned so runs from any machine land in the same place.")
+    parser.add_argument("--wandb_project", type=str, default=WANDB_PROJECT,
+                        help="W&B project. Everything (local + cluster) goes into one project; use groups/tags to organise.")
     parser.add_argument("--wandb_group", type=str, default=None, help="W&B group")
     parser.add_argument("--wandb_tags", type=str, nargs='+', help="JSON list or path of tags")
 
@@ -229,6 +239,24 @@ def add_shared_training_args(parser: argparse.ArgumentParser) -> argparse.Argume
                              "steps, rendered directly from the policy's own GPU (MJWarp) pixel observations.")
     parser.add_argument("--periodic_video_steps", type=int, default=500,
                         help="--vision only: env steps per periodic clip.")
+
+    # --- Performance measurement (training/performance) ---
+    parser.add_argument("--measure_performance", type=bool_type, nargs="?", const=True, default=False,
+                        help="Record per-epoch wall-clock/SPS, compile time and count, and compiler "
+                             "program statistics (FLOPs, bytes, peak memory) to the W&B run "
+                             "(performance/* history + summary) and to "
+                             "<performance_dir>/<run_name>/performance.json. No measurable overhead.")
+    parser.add_argument("--profile_epochs", type=int, nargs="*", default=None,
+                        help="Epoch indices (0-based; 0 is the compile epoch) to record a jax.profiler "
+                             "trace for. The trace is uploaded to W&B as an `xprof-trace` artifact; fetch and "
+                             "view it with `python -m training.performance.fetch_traces <run_name>`. "
+                             "Implies --measure_performance. Trace ONE epoch: tracing slows that epoch "
+                             "~3x and produces ~200 MB; untraced epochs are unaffected.")
+    parser.add_argument("--performance_dir", type=str, default="runs/performance",
+                        help="Root directory for performance JSON and traces")
+    parser.add_argument("--log_compiles", type=bool_type, nargs="?", const=True, default=False,
+                        help="Set jax_log_compiles so every XLA compilation is logged with its shapes. "
+                             "Useful to find unintended recompiles.")
 
     return parser
 

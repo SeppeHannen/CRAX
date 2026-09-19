@@ -40,6 +40,7 @@ from crax import envs
 from training import acting
 from training import gradients
 from training import logger as metric_logger
+from training import performance
 from training import pmap
 from training import types
 from training.acme import running_statistics
@@ -334,12 +335,13 @@ def train(
     Returns:
       Tuple of (make_policy function, network params, metrics)
     """
-    import sys as _sys  # debug
-    def _dbg(msg):
-        print(f"[DEBUG ppo/train] {msg}")
-        _sys.stdout.flush()
-
-    _dbg(f"train() called: num_envs={num_envs}, num_timesteps={num_timesteps}, episode_length={episode_length}, augment_pixels={augment_pixels}")
+    # Process-wide performance tracker; a no-op NullTracker unless the entry
+    # point installed one (see training/performance).
+    tracker = performance.get_tracker()
+    tracker.note(
+        f"train() called: num_envs={num_envs}, num_timesteps={num_timesteps}, "
+        f"episode_length={episode_length}, augment_pixels={augment_pixels}"
+    )
 
     assert batch_size * num_minibatches % num_envs == 0
 
@@ -391,7 +393,6 @@ def train(
 
     assert num_envs % device_count == 0
 
-    _dbg("Wrapping environment...")
     env = _maybe_wrap_env(
         environment,
         wrap_env,
@@ -404,7 +405,6 @@ def train(
         randomization_fn,
         vision_kwargs,
     )
-    _dbg(f"Environment wrapped. obs_size={env.observation_size}, action_size={env.action_size}")
     use_pmap = local_devices_to_use > 1
     if use_pmap:
         reset_fn = jax.pmap(env.reset, axis_name=_PMAP_AXIS_NAME)
@@ -415,22 +415,18 @@ def train(
     key_envs = jnp.reshape(
         key_envs, (local_devices_to_use, -1) + key_envs.shape[1:]
     )
-    _dbg(f"Calling reset_fn (use_pmap={use_pmap}, key_envs.shape={key_envs.shape})... This triggers JIT + pixel rendering.")
-    _t0 = time.time()
-    env_state = reset_fn(key_envs)
-    _dbg(f"reset_fn completed in {time.time() - _t0:.1f}s")
+    with tracker.phase("environment_reset"):
+        env_state = reset_fn(key_envs)
+        jax.tree_util.tree_map(lambda x: x.block_until_ready(), env_state.obs)
     # Discard the batch axes over devices and envs.
     obs_shape = jax.tree_util.tree_map(lambda x: x.shape[2:], env_state.obs)
-    _dbg(f"obs_shape after reset: {obs_shape}")
 
     normalize = lambda x, y: x
     if normalize_observations:
         normalize = running_statistics.normalize
-    _dbg(f"Creating PPO network (network_factory={network_factory.__name__ if hasattr(network_factory, '__name__') else type(network_factory)})...")
     ppo_network = network_factory(
         obs_shape, env.action_size, preprocess_observations_fn=normalize
     )
-    _dbg(f"PPO network created. cost_value_network={'yes' if ppo_network.cost_value_network else 'no'}")
     make_policy = ppo_networks.make_inference_fn(ppo_network)
 
     def _policy_params_tuple(state: 'TrainingState') -> Tuple[Any, ...]:
@@ -594,41 +590,47 @@ def train(
             )
             return (next_state, next_key), data
 
-        (state, _), data = jax.lax.scan(
-            f,
-            (state, key_generate_unroll),
-            (),
-            length=batch_size * num_minibatches // num_envs,
-        )
-        # Have leading dimensions (batch_size * num_minibatches, unroll_length)
-        data = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 1, 2), data)
-        data = jax.tree_util.tree_map(
-            lambda x: jnp.reshape(x, (-1,) + x.shape[2:]), data
-        )
+        # `tracker.scope` is jax.named_scope: it only names regions in profiler
+        # traces and HLO, and does not change the compiled program.
+        with tracker.scope("rollout"):
+            (state, _), data = jax.lax.scan(
+                f,
+                (state, key_generate_unroll),
+                (),
+                length=batch_size * num_minibatches // num_envs,
+            )
+            # Have leading dimensions (batch_size * num_minibatches, unroll_length)
+            data = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 1, 2), data)
+            data = jax.tree_util.tree_map(
+                lambda x: jnp.reshape(x, (-1,) + x.shape[2:]), data
+            )
         assert data.discount.shape[1:] == (unroll_length,)
 
-        jax.debug.callback(
-            metrics_aggregator.update_env_metrics,
-            data.extras['state_extras']['episode_metrics'],
-            data.extras['state_extras']['episode_done'],
-            training_state.env_steps + env_step_per_training_step,
-        )
+        with tracker.scope("environment_metrics_callback"):
+            jax.debug.callback(
+                metrics_aggregator.update_env_metrics,
+                data.extras['state_extras']['episode_metrics'],
+                data.extras['state_extras']['episode_done'],
+                training_state.env_steps + env_step_per_training_step,
+            )
 
         # Update normalization params and normalize observations.
-        normalizer_params = running_statistics.update(
-            training_state.normalizer_params,
-            _remove_pixels(data.observation),
-            pmap_axis_name=pmap_axis_name,
-        )
+        with tracker.scope("observation_normalizer_update"):
+            normalizer_params = running_statistics.update(
+                training_state.normalizer_params,
+                _remove_pixels(data.observation),
+                pmap_axis_name=pmap_axis_name,
+            )
 
-        (optimizer_state, params, _), metrics = jax.lax.scan(
-            functools.partial(
-                sgd_step, data=data, normalizer_params=normalizer_params, aux_state=training_state.aux_state
-            ),
-            (training_state.optimizer_state, training_state.params, key_sgd),
-            (),
-            length=num_updates_per_batch,
-        )
+        with tracker.scope("sgd"):
+            (optimizer_state, params, _), metrics = jax.lax.scan(
+                functools.partial(
+                    sgd_step, data=data, normalizer_params=normalizer_params, aux_state=training_state.aux_state
+                ),
+                (training_state.optimizer_state, training_state.params, key_sgd),
+                (),
+                length=num_updates_per_batch,
+            )
 
         new_training_state = TrainingState(
             optimizer_state=optimizer_state,
@@ -640,15 +642,17 @@ def train(
 
         # Apply post-step hook if provided (for Lagrange multiplier updates, etc.)
         if post_step_fn is not None:
-            new_training_state, extra_metrics = post_step_fn(new_training_state, metrics)
+            with tracker.scope("post_step"):
+                new_training_state, extra_metrics = post_step_fn(new_training_state, metrics)
             metrics = {**metrics, **extra_metrics}
 
         if log_training_metrics:
-            jax.debug.callback(
-                metrics_aggregator.update_train_metrics,
-                metrics,
-                new_training_state.env_steps,
-            )
+            with tracker.scope("training_metrics_callback"):
+                jax.debug.callback(
+                    metrics_aggregator.update_train_metrics,
+                    metrics,
+                    new_training_state.env_steps,
+                )
 
         return (new_training_state, state, new_key), metrics
 
@@ -705,26 +709,21 @@ def train(
     if ppo_network.encoder_network is not None:
         encoder_params = ppo_network.encoder_network.init(key_encoder)
 
-    _dbg("Initializing network params...")
     init_params = ppo_losses.PPONetworkParams(
         policy=ppo_network.policy_network.init(key_policy),
         value=ppo_network.value_network.init(key_value),
         cost_value=cost_value_params,
         encoder=encoder_params,
     )
-    _dbg(f"Network params initialized. policy keys: {list(init_params.policy['params'].keys()) if isinstance(init_params.policy, dict) and 'params' in init_params.policy else 'N/A'}")
 
     # Initialize aux_state if init function provided (for Lagrange multipliers, PID state, etc.)
     initial_aux_state = None
     if init_aux_state_fn is not None:
         initial_aux_state = init_aux_state_fn()
 
-    _dbg("Building obs_spec and TrainingState...")
     obs_spec = jax.tree_util.tree_map(
         lambda x: specs.Array(x.shape[-1:], jnp.dtype('float32')), env_state.obs
     )
-    _dbg(f"obs_spec: {obs_spec}")
-    _dbg(f"obs_spec after _remove_pixels: {_remove_pixels(obs_spec)}")
     training_state = TrainingState(  # pytype: disable=wrong-arg-types  # jax-ndarray
         optimizer_state=optimizer.init(init_params),  # pytype: disable=wrong-arg-types  # numpy-scalars
         params=init_params,
@@ -734,7 +733,6 @@ def train(
         env_steps=types.UInt64(hi=0, lo=0),
         aux_state=initial_aux_state,
     )
-    _dbg("TrainingState created.")
 
     def _check_normalizer_shape_compatible(loaded_normalizer, current_normalizer):
         """Check if loaded normalizer has compatible shape with current env."""
@@ -805,14 +803,12 @@ def train(
             {},
         )
 
-    _dbg("Replicating training state to devices...")
     # Add a leading device dimension for vmap/pmap.
     # This replaces jax.device_put_replicated (removed in newer JAX).
     training_state = jax.tree_util.tree_map(
         lambda x: jnp.broadcast_to(x, (local_devices_to_use,) + x.shape),
         training_state,
     )
-    _dbg("Training state replicated.")
 
     # Only create evaluator if evaluation is enabled
     evaluator = None
@@ -829,7 +825,6 @@ def train(
             randomization_fn=randomization_fn,
             vision_kwargs=vision_kwargs,
         )
-        _dbg(f"Creating Evaluator (num_eval_envs={num_eval_envs})...")
         evaluator = acting.Evaluator(
             eval_env,
             functools.partial(make_policy, deterministic=deterministic_eval),
@@ -838,26 +833,31 @@ def train(
             action_repeat=action_repeat,
             key=eval_key,
         )
-        _dbg("Evaluator created.")
 
     # Run initial eval
     metrics = {}
     if process_id == 0 and num_evals > 1 and evaluator is not None:
-        _dbg("Running initial evaluation...")
-        _t0 = time.time()
-        metrics = evaluator.run_evaluation(
-            _unpmap(_policy_params_tuple(training_state)),
-            training_metrics={},
-        )
-        _dbg(f"Initial evaluation completed in {time.time() - _t0:.1f}s")
+        with tracker.phase("initial_evaluation"):
+            metrics = evaluator.run_evaluation(
+                _unpmap(_policy_params_tuple(training_state)),
+                training_metrics={},
+            )
         logging.info(metrics)
         progress_fn(0, metrics)
 
     training_metrics = {}
     training_walltime = 0
     current_step = 0
+    epoch_index = 0
+    environment_steps_per_epoch = int(
+        num_training_steps_per_epoch * env_step_per_training_step
+    )
 
-    _dbg(f"Entering main training loop: {num_evals_after_init} iterations, {max(num_resets_per_eval, 1)} resets/eval, {num_training_steps_per_epoch} steps/epoch")
+    tracker.note(
+        f"training loop: {num_evals_after_init} iterations x "
+        f"{max(num_resets_per_eval, 1)} epochs, {num_training_steps_per_epoch} "
+        f"training steps ({environment_steps_per_epoch:,} env steps) per epoch"
+    )
     for it in range(num_evals_after_init):
         logging.info('starting iteration %s %s', it, time.time() - xt)
 
@@ -865,12 +865,19 @@ def train(
             # optimization
             epoch_key, local_key = jax.random.split(local_key)
             epoch_keys = jax.random.split(epoch_key, local_devices_to_use)
-            _dbg(f"Starting training_epoch_with_timing (iter {it})... (includes JIT compile on first call)")
-            _t0 = time.time()
-            (training_state, env_state, training_metrics) = (
-                training_epoch_with_timing(training_state, env_state, epoch_keys)
-            )
-            _dbg(f"training_epoch_with_timing completed in {time.time() - _t0:.1f}s (iter {it})")
+            if epoch_index == 0:
+                # Ahead-of-time compile so compile time is reported separately
+                # from the first epoch's run time. A no-op when no tracker is
+                # installed (returns the jitted function unchanged).
+                training_state, env_state = _strip_weak_type((training_state, env_state))
+                training_epoch = tracker.compile_epoch_function(
+                    training_epoch, training_state, env_state, epoch_keys
+                )
+            with tracker.epoch(epoch_index, environment_steps=environment_steps_per_epoch):
+                (training_state, env_state, training_metrics) = (
+                    training_epoch_with_timing(training_state, env_state, epoch_keys)
+                )
+            epoch_index += 1
             current_step = int(_unpmap(training_state.env_steps))
             progress_fn(current_step, training_metrics)
 

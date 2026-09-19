@@ -17,7 +17,7 @@ from training.run_utils import (
     collect_rollout_metrics, record_episode_video, setup_gpu_environment,
     get_algorithm_train_fn, filter_kwargs_for_fn, custom_progress_fn,
     make_vision_network_factory, morphology_override, VISION_CAMERA_OVERRIDES,
-    make_periodic_vision_video_fn,
+    make_periodic_vision_video_fn, install_performance_tracker, require_wandb_login,
 )
 from crax.envs.limb_colors import colorize_env_limbs
 
@@ -30,7 +30,6 @@ def main():
     env_name = config.env_name
     alg_name = config.alg
     difficulty = config.difficulty
-    use_wandb = config.use_wandb
 
     # Fill in the morphology-specific pixel-obs training camera, but only if
     # the user didn't explicitly pass --vision_camera
@@ -39,6 +38,8 @@ def main():
 
     # Setup GPU environment
     setup_gpu_environment(vision=config.vision)
+    # Every run is tracked in W&B; abort before compiling anything if credentials are missing
+    require_wandb_login()
 
     # Run training for each seed
     for seed in config.seeds:
@@ -121,7 +122,6 @@ def main():
                 fps=config.video_fps,
                 run_name=run_name,
                 deterministic=config.deterministic_eval,
-                log_to_wandb=config.use_wandb,
                 seed=seed,
             )
 
@@ -132,23 +132,16 @@ def main():
         runtime_cfg = {"seed": seed, "timestamp": timestamp, "episode_length": episode_length}
         cfg = {**cli_cfg, **runtime_cfg}
 
-        if use_wandb:
-            # Prepare wandb config
-            wandb_config = cfg.copy()
-            wandb_project = config.wandb_project
-            wandb_group = config.wandb_group if config.wandb_group else env_name
-            wandb_tags = config.wandb_tags
-
-            # Initialize wandb
-            wandb.init(
-                project=wandb_project,
-                name=run_name,
-                id=run_name,
-                config=wandb_config,
-                group=wandb_group,
-                job_type=alg_name,
-                tags=wandb_tags,
-            )
+        wandb.init(
+            entity=config.wandb_entity,
+            project=config.wandb_project,
+            name=run_name,
+            id=run_name,
+            config=cfg.copy(),
+            group=config.wandb_group if config.wandb_group else env_name,
+            job_type=alg_name,
+            tags=config.wandb_tags,
+        )
 
         if config.store_model:
             root_dir = Path(__file__).parent.parent.resolve()  # repo root, not training/
@@ -157,7 +150,7 @@ def main():
             cfg["save_checkpoint_path"] = ckpt_root
 
         # Setup metrics collection
-        progress_fn = functools.partial(custom_progress_fn, use_wandb=use_wandb, verbose=not config.quiet)
+        progress_fn = functools.partial(custom_progress_fn, verbose=not config.quiet)
 
         # Get the appropriate training function
         train_fn_base = get_algorithm_train_fn(alg_name)
@@ -186,6 +179,9 @@ def main():
         # Create the training function
         train_fn = functools.partial(train_fn_base, **train_kwargs)
 
+        # Optional performance measurement (--measure_performance / --profile_epochs)
+        performance_tracker = install_performance_tracker(config, run_name)
+
         # Train the agent
         make_inference_fn, params, final_metrics, eval_env = train_fn(
             environment=env,
@@ -193,9 +189,10 @@ def main():
             progress_fn=progress_fn
         )
         print("Training finished.")
+        performance_tracker.finish()
 
         # Log final metrics to wandb
-        if use_wandb and wandb.run is not None and final_metrics:
+        if final_metrics:
             final_log_data = {}
             for key, value in final_metrics.items():
                 if value is not None:
@@ -241,14 +238,11 @@ def main():
                     fps=config.video_fps,
                     frame_stride=config.video_frame_stride,
                     out_name=run_name,
-                    log_to_wandb=config.use_wandb,
                     seed=seed,
                     num_episodes=config.num_video_episodes,
                 )
 
-        # Finish wandb run if active
-        if config.use_wandb and wandb.run is not None:
-            wandb.finish()
+        wandb.finish()
 
     print("\nAll experiments completed!")
 

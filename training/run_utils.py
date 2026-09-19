@@ -49,14 +49,16 @@ def morphology_override(env_name, overrides):
     return None
 
 
-def custom_progress_fn(num_steps: int, metrics: Dict[str, Any], use_wandb: bool = False, verbose: bool = True) -> None:
+def custom_progress_fn(num_steps: int, metrics: Dict[str, Any], verbose: bool = True) -> None:
     """
-    Progress function to print metrics and log to Weights & Biases.
+    Progress function to print metrics and log them to the active Weights & Biases run.
+
+    Metrics are buffered while no run is active (e.g. transfer.py logs per phase)
+    and flushed on the first call that finds one.
 
     Args:
         num_steps: Current training step
         metrics: Metrics dictionary
-        use_wandb: Whether to use wandb logging
         verbose: Whether to print metrics to console
     """
     global metrics_buffer
@@ -86,11 +88,23 @@ def custom_progress_fn(num_steps: int, metrics: Dict[str, Any], use_wandb: bool 
 
     metrics_buffer.append({"step": num_steps, **log_data})
 
-    if use_wandb and wandb.run is not None:
+    if wandb.run is not None:
         for row in metrics_buffer:
             wandb.log({k: row[k] for k in log_data.keys()}, step=row["step"])  # log summarized scalars only
         # clear the logged history from the buffer
         metrics_buffer.clear()
+
+
+def print_progress_fn(num_steps: int, metrics: Dict[str, Any], verbose: bool = True) -> None:
+    """Console-only progress function for callers that log to W&B themselves
+    (e.g. ``transfer.benchmark_safety_transfer``, which logs per phase)."""
+    if not verbose:
+        return
+    print(f"Step {num_steps}:")
+    for key, value in metrics.items():
+        if any(tok in key for tok in ("lambda", "cost", "constraint", "reward")):
+            arr = np.asarray(value)
+            print(f"  {key}: {arr.reshape(-1).mean().item() if arr.size else value}")
 
 
 def setup_gpu_environment(vision: bool = False):
@@ -129,6 +143,66 @@ def setup_gpu_environment(vision: bool = False):
             'Something went wrong during installation. Check the error message above '
             'for more information.'
         ) from e
+
+
+class WandbNotLoggedIn(SystemExit):
+    """Raised (as a clean exit) when W&B is required but no credentials exist."""
+
+
+def require_wandb_login() -> None:
+    """Fail fast, before any compilation, if no W&B credentials are available.
+
+    Every experiment is tracked in W&B, locally and on the cluster; there is no
+    switch to turn it off. The check reads the stored credentials (``~/.netrc``
+    written by ``wandb login``, or the ``WANDB_API_KEY`` environment variable)
+    without contacting the server, so it is safe on compute nodes without
+    internet. On such nodes set ``WANDB_MODE=offline`` and ``wandb sync`` the
+    run directory afterwards; the credentials are still required for the sync.
+    """
+    mode = os.environ.get('WANDB_MODE', '').lower()
+    if mode in ('disabled', 'dryrun'):
+        raise WandbNotLoggedIn(
+            f"\nWANDB_MODE={mode} would discard all results. Unset it, or use WANDB_MODE=offline "
+            "and `wandb sync` afterwards.\n"
+        )
+    if not wandb.api.api_key:
+        raise WandbNotLoggedIn(
+            "\n"
+            "No Weights & Biases credentials found. Every CRAX run is tracked in W&B.\n"
+            "  Get your API key       : https://wandb.ai/authorize\n"
+            "  Interactive machine    : run `wandb login` once (writes ~/.netrc)\n"
+            "  Cluster / batch job    : `export WANDB_API_KEY=<key>` in ~/.bashrc or the job script,\n"
+            "                           or copy your laptop's ~/.netrc entry for api.wandb.ai (chmod 600)\n"
+            "  Node without internet  : additionally `export WANDB_MODE=offline`, then `wandb sync` later\n"
+        )
+    if mode == 'offline':
+        print("W&B running with WANDB_MODE=offline; run `wandb sync <run dir>` when back online.")
+
+
+def install_performance_tracker(config, run_name: str):
+    """Install the process-wide performance tracker if the CLI asked for one.
+
+    Call after ``wandb.init`` so the tracker's scalars, summary and trace
+    artifact attach to that run. Returns the tracker (a ``NullTracker`` when
+    measurement is off) so the caller can ``finish()`` it after training. Safe
+    to call once per seed; a previous tracker is finished automatically.
+    """
+    from training import performance
+
+    profile_epochs = getattr(config, 'profile_epochs', None)
+    wants_measurement = config is not None and (
+        bool(getattr(config, 'measure_performance', False)) or profile_epochs is not None
+    )
+    if not wants_measurement:
+        performance.uninstall()
+        return performance.get_tracker()
+    return performance.install(
+        run_name=run_name,
+        output_dir=getattr(config, 'performance_dir', 'runs/performance'),
+        profile_epochs=profile_epochs or (),
+        log_compiles=bool(getattr(config, 'log_compiles', False)),
+        verbose=not getattr(config, 'quiet', False),
+    )
 
 
 def get_algorithm_train_fn(alg_name: str):
@@ -464,7 +538,6 @@ def record_episode_video(
         fps: int = 100,
         frame_stride=1,
         out_name: str = "rollout",
-        log_to_wandb: bool = True,
         seed: int = 0,
         show_metrics: bool = True,  # Print the cost on the screen
         font: str = "DejaVuSans-Bold",  # Font for overlay text, if available
@@ -637,7 +710,7 @@ def record_episode_video(
         mp4_path = os.path.join("videos", file_name)
         iio.imwrite(mp4_path, np.stack(rendering), fps=fps)
 
-        if log_to_wandb and wandb.run is not None:
+        if wandb.run is not None:
             wandb.log({f"video/{camera}": wandb.Video(mp4_path, fps=fps, format="mp4")})
 
         print("Saved video:", mp4_path)
@@ -658,7 +731,6 @@ def make_periodic_vision_video_fn(
         out_dir: str = "videos",
         run_name: str = "run",
         deterministic: bool = False,
-        log_to_wandb: bool = True,
         seed: int = 0,
 ):
     """Builds a `policy_params_fn`-compatible callback that periodically
@@ -720,9 +792,9 @@ def make_periodic_vision_video_fn(
         out_dir: local directory for the mp4s (also uploaded to wandb).
         run_name: filename prefix.
         deterministic: whether to use the deterministic policy for the clip.
-        log_to_wandb: whether to wandb.log the clip (skipped if wandb.run
-            is None even when True).
         seed: seed for the rollout RNG stream (advances across calls).
+
+    Clips are logged to the active W&B run, if any.
     """
     extra_cameras = list(extra_cameras or [])
     cpu_cameras = list(extra_cameras) + ([pixel_camera] if high_res else [])
@@ -819,7 +891,7 @@ def make_periodic_vision_video_fn(
             iio.imwrite(mp4_path, camera_frames, fps=fps)
             print(f"[periodic vision video] step {step}: saved {mp4_path}")
 
-            if log_to_wandb and wandb.run is not None:
+            if wandb.run is not None:
                 wandb.log({f"video/{camera}": wandb.Video(mp4_path, fps=fps, format="mp4")}, step=step)
 
     return video_fn

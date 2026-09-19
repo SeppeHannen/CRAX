@@ -153,6 +153,7 @@ def benchmark_safety_transfer(
         wandb_config: Optional[Dict[str, Any]] = None,
         use_checkpoint_transfer: bool = True,
         checkpoint_dir: Optional[str] = None,
+        performance_config: Optional[Any] = None,
 ) -> Tuple[Any, Dict[str, TransferResult]]:
     """Benchmark safety transfer across multiple safe RL algorithms.
 
@@ -182,10 +183,17 @@ def benchmark_safety_transfer(
         checkpoint_dir: Directory to save checkpoint files. If None, uses a
             temporary directory (cleaned up after transfer) or the directory
             from train_kwargs['save_checkpoint_path'] if provided.
+        performance_config: Optional CLI config (argparse namespace) carrying
+            the ``--measure_performance`` / ``--profile_epochs`` flags. A
+            performance tracker is then installed per W&B run (one for the
+            unsafe phase, one per safe algorithm) so every run gets its own
+            performance summary and trace artifact.
 
     Returns:
         Tuple of (unsafe_params, dict mapping algorithm names to TransferResult).
     """
+    from training.run_utils import install_performance_tracker
+
     train_kwargs = train_kwargs or {}
     unsafe_train_kwargs = unsafe_train_kwargs or {}
 
@@ -203,10 +211,9 @@ def benchmark_safety_transfer(
         transfer_checkpoint_dir.mkdir(parents=True, exist_ok=True)
         print(f"Transfer checkpoint directory: {transfer_checkpoint_dir}")
 
-    # Determine if wandb is enabled
-    use_wandb = (wandb_config is not None and
-                 wandb_config.get('enabled', False) and
-                 _WANDB_AVAILABLE)
+    # A W&B run is opened per phase when a wandb_config is given (always, from the CLI).
+    # Library callers may pass None to skip W&B; the entry points never do.
+    use_wandb = wandb_config is not None and _WANDB_AVAILABLE
 
     print("=" * 70)
     print("SAFETY TRANSFER BENCHMARK")
@@ -241,7 +248,8 @@ def benchmark_safety_transfer(
         run_config['algorithm'] = 'ppo'
         run_config['phase'] = 'unsafe'
         wandb.init(
-            project=wandb_config.get('project', 'safety-transfer'),
+            entity=wandb_config.get('entity'),
+            project=wandb_config.get('project', 'crax'),
             name=f"{base_name}_ppo",
             id=f"{base_name}_ppo",
             group=wandb_config.get('group', env_name),
@@ -272,9 +280,12 @@ def benchmark_safety_transfer(
 
     unsafe_kwargs['progress_fn'] = unsafe_progress_fn
 
+    base_name = (wandb_config or {}).get('base_name', f'{env_name}_transfer')
+    performance_tracker = install_performance_tracker(performance_config, f"{base_name}_ppo")
     start_time = time.time()
     unsafe_make_policy, unsafe_params, unsafe_final_metrics, returned_eval_env = unsafe_train_fn(**unsafe_kwargs)
     unsafe_training_time = time.time() - start_time
+    performance_tracker.finish()
 
     print(f"\nUnsafe training complete:")
     print(f"  Time: {unsafe_training_time:.1f}s")
@@ -329,7 +340,6 @@ def benchmark_safety_transfer(
             fps=train_kwargs.get('video_fps'),
             frame_stride=train_kwargs.get('video_frame_stride'),
             out_name=out_name,
-            log_to_wandb=use_wandb and wandb.run is not None,
             seed=seed,
             num_episodes=train_kwargs.get('num_video_episodes', 1),
         )
@@ -354,7 +364,8 @@ def benchmark_safety_transfer(
             run_config['phase'] = 'safe'
             run_config['pretrained_from'] = 'ppo'
             wandb.init(
-                project=wandb_config.get('project', 'safety-transfer'),
+                entity=wandb_config.get('entity'),
+                project=wandb_config.get('project', 'crax'),
                 name=f"{base_name}_{algo_name}",
                 id=f"{base_name}_{algo_name}",
                 group=wandb_config.get('group', env_name),
@@ -407,9 +418,11 @@ def benchmark_safety_transfer(
 
         safe_kwargs['progress_fn'] = make_safe_progress_fn(algo_name, safe_metrics_history)
 
+        performance_tracker = install_performance_tracker(performance_config, f"{base_name}_{algo_name}")
         start_time = time.time()
         safe_make_policy, safe_params, safe_final_metrics, returned_eval_env_safe = safe_train_fn(**safe_kwargs)
         safe_training_time = time.time() - start_time
+        performance_tracker.finish()
 
         print(f"    {algo_name} complete:")
         print(f"      Time: {safe_training_time:.1f}s")
@@ -436,7 +449,6 @@ def benchmark_safety_transfer(
                 fps=train_kwargs.get('video_fps'),
                 frame_stride=train_kwargs.get('video_frame_stride'),
                 out_name=out_name,
-                log_to_wandb=use_wandb and wandb.run is not None,
                 seed=seed,
                 num_episodes=train_kwargs.get('num_video_episodes', 1),
             )

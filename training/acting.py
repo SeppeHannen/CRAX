@@ -38,8 +38,11 @@ def actor_step(
     extra_fields: Sequence[str] = (),
 ) -> Tuple[State, Transition]:
   """Collect data."""
-  actions, policy_extras = policy(env_state.obs, key)
-  nstate = env.step(env_state, actions)
+  # named_scope only labels ops in profiler traces; it does not change the program.
+  with jax.named_scope('policy_forward'):
+    actions, policy_extras = policy(env_state.obs, key)
+  with jax.named_scope('environment_step'):
+    nstate = env.step(env_state, actions)
   state_extras = {x: nstate.info[x] for x in extra_fields}
   return nstate, Transition(  # pytype: disable=wrong-arg-types  # jax-ndarray
       observation=env_state.obs,

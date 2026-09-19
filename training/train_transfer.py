@@ -19,8 +19,8 @@ from pathlib import Path
 from training import transfer
 from training.config import bool_type, build_base_parser
 from training.run_utils import (
-    setup_gpu_environment, get_algorithm_train_fn, custom_progress_fn,
-    make_vision_network_factory,
+    setup_gpu_environment, get_algorithm_train_fn, print_progress_fn,
+    make_vision_network_factory, require_wandb_login,
 )
 import wandb
 
@@ -42,6 +42,8 @@ def main():
 
     # Setup GPU environment
     setup_gpu_environment()
+    # Every run is tracked in W&B; abort before compiling anything if credentials are missing
+    require_wandb_login()
 
     # Build safe algorithm train fns via utility, and unsafe as base PPO
     safe_train_fns = {name: get_algorithm_train_fn(name) for name in args.algorithms}
@@ -86,22 +88,21 @@ def main():
             )
             cfg['augment_pixels'] = args.vision_augment
 
-        # Build wandb config for per-algorithm runs
-        wandb_config = None
-        if args.use_wandb:
-            wandb_config = {
-                'enabled': True,
-                'project': args.wandb_project,
-                'group': args.wandb_group if args.wandb_group else f"{args.env_name}_transfer",
-                'tags': args.wandb_tags or [],
-                'base_name': base_run_name,
-                'config': cfg,
-            }
+        # W&B config for the per-algorithm runs the transfer module opens
+        wandb_config = {
+            'entity': args.wandb_entity,
+            'project': args.wandb_project,
+            'group': args.wandb_group if args.wandb_group else f"{args.env_name}_transfer",
+            'tags': args.wandb_tags or [],
+            'base_name': base_run_name,
+            'config': cfg,
+        }
 
-        # Progress logger (no wandb logging here - handled per-algorithm in transfer module)
-        progress = functools.partial(custom_progress_fn, use_wandb=False, verbose=not args.quiet)
+        # Console progress only; the transfer module logs to W&B per phase itself
+        progress = functools.partial(print_progress_fn, verbose=not args.quiet)
 
-        # Execute benchmark (transfer module will manage wandb runs per algorithm)
+        # Execute benchmark (transfer module will manage wandb runs per algorithm,
+        # and one performance tracker per run if --measure_performance is set)
         unsafe_params, results = transfer.benchmark_safety_transfer(
             env_name=args.env_name,
             unsafe_train_fn=unsafe_train_fn,
@@ -114,6 +115,7 @@ def main():
             wandb_config=wandb_config,
             use_checkpoint_transfer=args.use_checkpoint_transfer,
             checkpoint_dir=args.transfer_checkpoint_dir,
+            performance_config=args,
         )
 
         # Detailed results

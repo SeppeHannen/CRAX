@@ -631,13 +631,15 @@ class SafeGoal(PipelineEnv, ABC):
         ctrl_cost = jp.sum(jp.square(action)) * self._ctrl_cost_weight
 
         # Safety cost (distance-based penalty near hazards)
-        cost = self._calculate_safety_cost(data, hazard_positions)
+        with jax.named_scope('safety_cost'):
+            cost = self._calculate_safety_cost(data, hazard_positions)
 
         # Total reward
         reward = dist_reward + goal_reward
 
         # Get observation and metrics
-        obs = self._get_obs(data)
+        with jax.named_scope('observation'):
+            obs = self._get_obs(data)
         metrics = self._get_metrics(data, reward, cost, dist_goal, last_dist_goal, ctrl_cost)
 
         # Update info

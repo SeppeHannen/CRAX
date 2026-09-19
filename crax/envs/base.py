@@ -143,7 +143,9 @@ class PipelineEnv(Env):
           None,
       )
 
-    return jax.lax.scan(f, pipeline_state, (), self._n_frames)[0]
+    # named_scope only labels ops in profiler traces; it does not change the program.
+    with jax.named_scope('physics'):
+      return jax.lax.scan(f, pipeline_state, (), self._n_frames)[0]
 
   @property
   def dt(self) -> jax.Array:
