@@ -105,6 +105,19 @@ def add_shared_training_args(parser: argparse.ArgumentParser) -> argparse.Argume
         help="JSON dict string for env kwargs to override env defaults (if not specified, env uses its own defaults)",
     )
 
+    # --- Context distributions (training/contexts; docs/acl) ---
+    # With a training distribution other than 'none', every parallel slot gets
+    # its own context per episode, one compiled call is one training round, and
+    # the policy is evaluated on the deployment distribution w and on Uniform(Ω).
+    # Spec grammar (both flags): 'uniform' | 'level:<n>' | 'staged:<n>,<n>,...'
+    parser.add_argument("--context_distribution", type=str, default="none",
+                        help="Distribution the student trains on. 'none' (default) = stock CRAX at --difficulty. "
+                             "'uniform' = Uniform(Ω); 'level:3' = that difficulty level only; "
+                             "'staged:1,2,3' = manual curriculum, equal split of the rounds.")
+    parser.add_argument("--deployment_distribution", type=str, default="level:3",
+                        help="Distribution w the policy is for; evaluated on it (eval/deployment/*) next to "
+                             "Uniform(Ω) (eval/uniform/*). Same grammar as --context_distribution.")
+
     # --- Algorithm ---
     parser.add_argument("--alg", type=str, default="ppo_lag", help="Algorithm name (e.g., ppo, ppo_lag)")
     parser.add_argument("--max_devices_per_host", type=int, default=None, help="Limit devices per host")

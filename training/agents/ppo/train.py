@@ -42,6 +42,7 @@ from training import gradients
 from training import logger as metric_logger
 from training import performance
 from training import pmap
+from training import rounds
 from training import types
 from training.acme import running_statistics
 from training.acme import specs
@@ -83,6 +84,13 @@ def _strip_weak_type(tree):
         return leaf.astype(leaf.dtype)
 
     return jax.tree_util.tree_map(f, tree)
+
+
+def _evaluation_metric_name(key: str, evaluation_name: Optional[str]) -> str:
+    """`eval/x` -> `eval/<name>/x` for a named evaluation distribution."""
+    if evaluation_name is None or not key.startswith('eval/'):
+        return key
+    return f'eval/{evaluation_name}/{key[len("eval/"):]}'
 
 
 def _maybe_wrap_env(
@@ -250,6 +258,9 @@ def train(
         post_step_fn: Optional[PostStepFn] = None,
         extra_fields: Tuple[str, ...] = ('truncation', 'episode_metrics', 'episode_done'),
         init_aux_state_fn: Optional[Callable[[], Any]] = None,
+        # curriculum hooks
+        round_hook: Optional[rounds.RoundHook] = None,
+        evaluation_wrap_env_fns: Optional[Mapping[str, Callable[[Any], Any]]] = None,
 ):
     """PPO training.
 
@@ -331,6 +342,15 @@ def train(
         For constrained RL, add 'cost'.
       init_aux_state_fn: Optional function to initialize aux_state in TrainingState.
         Returns initial aux_state value. Used for Lagrange multipliers, PID state, etc.
+      round_hook: optional `training.rounds.RoundHook`. When set, one compiled
+        call is one training step (a *round*); the hook's `extra_fields` are
+        recorded per transition and handed to `hook.observe` during the round,
+        and `hook.on_round_end` runs on the host after every round and may edit
+        the environment state for the next one. Evaluations still happen
+        `num_evals` times. Incompatible with `num_resets_per_eval > 0`.
+      evaluation_wrap_env_fns: optional `name -> wrap_env_fn`. One evaluator per
+        entry, all on the same eval environment, reported under `eval/<name>/...`.
+        Default: one evaluator using `wrap_env_fn`, reported under `eval/...`.
 
     Returns:
       Tuple of (make_policy function, network params, metrics)
@@ -380,6 +400,15 @@ def train(
                 * max(num_resets_per_eval, 1)
         )
     ).astype(int)
+    epochs_per_evaluation = max(num_resets_per_eval, 1)
+    if round_hook is not None:
+        # The hook acts between compiled calls, so run the same training steps
+        # one per call instead of all inside one call.
+        if num_resets_per_eval > 0:
+            raise ValueError('round_hook is incompatible with num_resets_per_eval > 0')
+        epochs_per_evaluation = int(num_training_steps_per_epoch)
+        num_training_steps_per_epoch = 1
+        extra_fields = tuple(dict.fromkeys(extra_fields + tuple(round_hook.extra_fields)))
 
     key = jax.random.PRNGKey(seed)
     global_key, local_key = jax.random.split(key)
@@ -613,6 +642,10 @@ def train(
                 data.extras['state_extras']['episode_done'],
                 training_state.env_steps + env_step_per_training_step,
             )
+        if round_hook is not None:
+            # Every transition's recorded `extra_fields`, to the host.
+            with tracker.scope("round_hook_callback"):
+                jax.debug.callback(round_hook.observe, data.extras['state_extras'])
 
         # Update normalization params and normalize observations.
         with tracker.scope("observation_normalizer_update"):
@@ -810,38 +843,45 @@ def train(
         training_state,
     )
 
-    # Only create evaluator if evaluation is enabled
-    evaluator = None
+    # Only create evaluators if evaluation is enabled: one per named evaluation
+    # distribution (metrics under eval/<name>/...), or the single default one.
+    evaluators: Dict[Optional[str], acting.Evaluator] = {}
     if num_evals > 0:
-        eval_env = _maybe_wrap_env(
-            eval_env or environment,
-            wrap_env,
-            num_eval_envs,
-            episode_length,
-            action_repeat,
-            device_count=1,  # eval on the host only
-            key_env=eval_key,
-            wrap_env_fn=wrap_env_fn,
-            randomization_fn=randomization_fn,
-            vision_kwargs=vision_kwargs,
-        )
-        evaluator = acting.Evaluator(
-            eval_env,
-            functools.partial(make_policy, deterministic=deterministic_eval),
-            num_eval_envs=num_eval_envs,
-            episode_length=episode_length,
-            action_repeat=action_repeat,
-            key=eval_key,
-        )
+        raw_eval_env = eval_env or environment
+        for name, evaluation_wrap_env_fn in (evaluation_wrap_env_fns or {None: wrap_env_fn}).items():
+            eval_env = _maybe_wrap_env(
+                raw_eval_env,
+                wrap_env,
+                num_eval_envs,
+                episode_length,
+                action_repeat,
+                device_count=1,  # eval on the host only
+                key_env=eval_key,
+                wrap_env_fn=evaluation_wrap_env_fn,
+                randomization_fn=randomization_fn,
+                vision_kwargs=vision_kwargs,
+            )
+            evaluators[name] = acting.Evaluator(
+                eval_env,
+                functools.partial(make_policy, deterministic=deterministic_eval),
+                num_eval_envs=num_eval_envs,
+                episode_length=episode_length,
+                action_repeat=action_repeat,
+                key=eval_key,
+            )
+
+    def run_evaluations(params, training_metrics: Metrics) -> Metrics:
+        metrics = dict(training_metrics)
+        for name, evaluator in evaluators.items():
+            for key, value in evaluator.run_evaluation(params, training_metrics={}).items():
+                metrics[_evaluation_metric_name(key, name)] = value
+        return metrics
 
     # Run initial eval
     metrics = {}
-    if process_id == 0 and num_evals > 1 and evaluator is not None:
+    if process_id == 0 and num_evals > 1 and evaluators:
         with tracker.phase("initial_evaluation"):
-            metrics = evaluator.run_evaluation(
-                _unpmap(_policy_params_tuple(training_state)),
-                training_metrics={},
-            )
+            metrics = run_evaluations(_unpmap(_policy_params_tuple(training_state)), training_metrics={})
         logging.info(metrics)
         progress_fn(0, metrics)
 
@@ -855,13 +895,13 @@ def train(
 
     tracker.note(
         f"training loop: {num_evals_after_init} iterations x "
-        f"{max(num_resets_per_eval, 1)} epochs, {num_training_steps_per_epoch} "
+        f"{epochs_per_evaluation} epochs, {num_training_steps_per_epoch} "
         f"training steps ({environment_steps_per_epoch:,} env steps) per epoch"
     )
     for it in range(num_evals_after_init):
         logging.info('starting iteration %s %s', it, time.time() - xt)
 
-        for _ in range(max(num_resets_per_eval, 1)):
+        for _ in range(epochs_per_evaluation):
             # optimization
             epoch_key, local_key = jax.random.split(local_key)
             epoch_keys = jax.random.split(epoch_key, local_devices_to_use)
@@ -877,9 +917,12 @@ def train(
                 (training_state, env_state, training_metrics) = (
                     training_epoch_with_timing(training_state, env_state, epoch_keys)
                 )
-            epoch_index += 1
             current_step = int(_unpmap(training_state.env_steps))
-            progress_fn(current_step, training_metrics)
+            round_metrics = {}
+            if round_hook is not None:  # one round per epoch, so epoch_index is the round index
+                env_state, round_metrics = round_hook.on_round_end(epoch_index, env_state)
+            epoch_index += 1
+            progress_fn(current_step, {**training_metrics, **round_metrics})
 
             key_envs = jax.vmap(
                 lambda x, s: jax.random.split(x[0], s), in_axes=(0, None)
@@ -907,11 +950,8 @@ def train(
             )
 
         # Only run evaluation if enabled
-        if num_evals > 0 and evaluator is not None:
-            metrics = evaluator.run_evaluation(
-                params,
-                training_metrics,
-            )
+        if evaluators:
+            metrics = run_evaluations(params, training_metrics)
             logging.info(metrics)
             progress_fn(current_step, metrics)
 

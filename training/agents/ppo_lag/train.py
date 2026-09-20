@@ -4,13 +4,14 @@ Thin wrapper around the base PPO trainer with Lagrangian constraint handling.
 See: https://arxiv.org/pdf/1707.06347.pdf
 """
 
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 
 from crax import base
 from crax import envs
+from training import rounds
 from training import types
 from training.agents.ppo_lag import losses as ppo_lag_losses
 from training.agents.ppo import networks as ppo_networks
@@ -73,6 +74,9 @@ def train(
         # transfer learning / curriculum support
         pretrained_params: Optional[Any] = None,
         init_cost_value_from: str = 'value',
+        # per-round host hook and named evaluation distributions (see ppo.train)
+        round_hook: Optional[rounds.RoundHook] = None,
+        evaluation_wrap_env_fns: Optional[Mapping[str, Callable[[Any], Any]]] = None,
 ):
     """PPO-Lagrange training.
 
@@ -221,4 +225,6 @@ def train(
         post_step_fn=post_step_fn,
         extra_fields=extra_fields,
         init_aux_state_fn=init_aux_state_fn,
+        round_hook=round_hook,
+        evaluation_wrap_env_fns=evaluation_wrap_env_fns,
     )

@@ -76,6 +76,9 @@ def custom_progress_fn(num_steps: int, metrics: Dict[str, Any], verbose: bool = 
 
     log_data = {}
     for key, value in metrics.items():
+        if isinstance(value, wandb.Histogram):
+            log_data[key] = value  # W&B media: pass through untouched
+            continue
         value = _mean_value(value)
         # Print only key categories to keep console light
         if verbose and any(tok in key for tok in ("lambda", "cost", "constraint", "reward")):

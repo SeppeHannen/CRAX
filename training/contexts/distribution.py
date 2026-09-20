@@ -20,13 +20,15 @@ Uniform sampling is the degenerate case: ``update`` returns ``params`` unchanged
 from __future__ import annotations
 
 import dataclasses
-from typing import Any, Dict, Protocol, runtime_checkable
+from typing import Any, Dict, Protocol, Union, runtime_checkable
 
 import jax
+import numpy as np
 
 from training.contexts.space import ContextSpace, Contexts
 
 Params = Any  # a pytree of jax arrays; checkpointed as part of the run state
+HostArray = Union[np.ndarray, jax.Array]  # feedback lives on the host; NumPy in practice
 
 
 @dataclasses.dataclass(frozen=True)
@@ -35,19 +37,20 @@ class EpisodeFeedback:
 
     All arrays have a leading axis of length ``num_completed``. This is what a
     distribution learns from; it deliberately contains episodic aggregates only.
+    Built on the host by :func:`training.contexts.rollout.completed_episodes`.
     """
 
-    contexts: Contexts  # [N, D] the context each episode was run in
-    returns: jax.Array  # [N]    undiscounted episodic return R(τ)
-    costs: jax.Array  # [N]      undiscounted episodic cost C(τ)
-    lengths: jax.Array  # [N]    steps until termination or truncation
+    contexts: HostArray  # [N, D] the context each episode was run in
+    returns: HostArray  # [N]    undiscounted episodic return R(τ)
+    costs: HostArray  # [N]      undiscounted episodic cost C(τ)
+    lengths: HostArray  # [N]    steps until termination or truncation
     round_index: int
 
     @property
     def num_completed(self) -> int:
         return int(self.contexts.shape[0])
 
-    def safe(self, cost_threshold: float) -> jax.Array:
+    def safe(self, cost_threshold: float) -> HostArray:
         """Boolean ``[N]``: episode satisfied the cost budget."""
         return self.costs <= cost_threshold
 

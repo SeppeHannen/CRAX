@@ -12,6 +12,7 @@ import numpy as np
 
 import wandb
 from crax import envs
+from training import contexts
 from training.config import build_base_parser
 from training.run_utils import (
     collect_rollout_metrics, record_episode_video, setup_gpu_environment,
@@ -48,7 +49,10 @@ def main():
         print(f"{'=' * 50}\n")
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-        run_name = f"{env_name}_Level_{difficulty}_{alg_name}_seed{seed}_{timestamp}"
+        if config.context_distribution == contexts.NO_DISTRIBUTION:
+            run_name = f"{env_name}_Level_{difficulty}_{alg_name}_seed{seed}_{timestamp}"
+        else:
+            run_name = f"{env_name}_ctx_{contexts.spec_label(config.context_distribution)}_{alg_name}_seed{seed}_{timestamp}"
 
         # Build vision kwargs. Pixel-obs wrapping happens inside the training function
         vision_kwargs = None
@@ -128,9 +132,24 @@ def main():
         print(f"Training environment '{env_name}' instantiated with difficulty {difficulty}.")
         print(f"Evaluation environment '{env_name}' instantiated with difficulty {difficulty}.")
 
+        # Context-distribution training (docs/acl): per-slot contexts, one
+        # compiled call per round, evaluation on w and Uniform(Ω). None when off.
+        context_setup = contexts.context_training_setup(
+            env_name,
+            config.context_distribution,
+            config.deployment_distribution,
+            num_timesteps=int(config.num_timesteps),
+            batch_size=config.batch_size,
+            unroll_length=config.unroll_length,
+            num_minibatches=config.num_minibatches,
+        )
+
         cli_cfg = vars(config)
         runtime_cfg = {"seed": seed, "timestamp": timestamp, "episode_length": episode_length}
         cfg = {**cli_cfg, **runtime_cfg}
+        if context_setup is not None:
+            cfg.update(context_setup.wandb_config())
+            print(f"Contexts: {context_setup.describe()}")
 
         wandb.init(
             entity=config.wandb_entity,
@@ -155,6 +174,16 @@ def main():
         # Get the appropriate training function
         train_fn_base = get_algorithm_train_fn(alg_name)
         train_kwargs = filter_kwargs_for_fn(train_fn_base, cfg)
+
+        if context_setup is not None:
+            context_kwargs = context_setup.train_kwargs()
+            unsupported = set(context_kwargs) - set(filter_kwargs_for_fn(train_fn_base, context_kwargs))
+            if unsupported:
+                raise ValueError(
+                    f"--context_distribution {config.context_distribution} needs train() parameters "
+                    f"{sorted(unsupported)}, which algorithm '{alg_name}' does not accept yet."
+                )
+            train_kwargs.update(context_kwargs)
 
         # Inject vision network factory + pixel-obs wrapping kwargs if vision mode is enabled
         if config.vision:

@@ -14,7 +14,13 @@ the *same* layout for the whole run. This wrapper instead, on every step:
 
 Every slot therefore starts each episode in a newly sampled ω with a newly
 sampled layout, and ``state.info["context"]`` always holds the context of the
-episode currently running in that slot.
+episode currently running in that slot. ``state.info["transition_context"]``
+holds the context the *last transition* was generated in: the two differ only
+on the step an episode ends, where ``context`` is already the next episode's ω
+while ``transition_context`` is the finished episode's. The trainer collects
+``transition_context`` per transition, so the realised curriculum q̂ and the
+per-episode feedback (read at ``episode_done`` transitions, alongside
+``episode_metrics``) both refer to the context the data actually came from.
 
 Cost: the reset runs for all slots on every step whether or not any slot is
 done — that is how per-slot conditionals work on a GPU (see
@@ -36,7 +42,7 @@ PPO-Lagrange read are untouched. The env's ``reset`` is therefore called via
 from __future__ import annotations
 
 import functools
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -47,6 +53,7 @@ from training.contexts.distribution import ContextDistribution, Params
 from training.contexts.space import Contexts
 
 CONTEXT_KEY = "context"
+TRANSITION_CONTEXT_KEY = "transition_context"
 PARAMS_KEY = "distribution_params"
 RNG_KEY = "context_rng"
 
@@ -86,7 +93,8 @@ class ContextualAutoResetWrapper(Wrapper):
         contexts = self.distribution.sample(params, sample_key, num_slots)
         state = self._reset_in_contexts(reset_keys, contexts)
         state.info[CONTEXT_KEY] = contexts
-        state.info[PARAMS_KEY] = _broadcast_params(params, num_slots)
+        state.info[TRANSITION_CONTEXT_KEY] = contexts
+        state.info[PARAMS_KEY] = _broadcast_params(params, (num_slots,))
         state.info[RNG_KEY] = next_rng
         return state
 
@@ -142,10 +150,13 @@ class ContextualAutoResetWrapper(Wrapper):
         # step above.
         info = dict(stepped.info)
         for key, fresh_value in fresh.info.items():
-            if key in _EPISODE_BOOKKEEPING or key in (PARAMS_KEY, RNG_KEY):
+            if key in _EPISODE_BOOKKEEPING or key in _WRAPPER_OWNED:
                 continue
             if key in info and _same_structure(fresh_value, info[key]):
                 info[key] = jax.tree_util.tree_map(where_done, fresh_value, info[key])
+        # The transition just taken happened in the context that was running
+        # before any reset; the slot's context switches where done.
+        info[TRANSITION_CONTEXT_KEY] = stepped.info[CONTEXT_KEY]
         info[CONTEXT_KEY] = where_done(new_contexts, stepped.info[CONTEXT_KEY])
         info[PARAMS_KEY] = state.info[PARAMS_KEY]
         info[RNG_KEY] = next_rng
@@ -153,6 +164,7 @@ class ContextualAutoResetWrapper(Wrapper):
 
 
 _EPISODE_BOOKKEEPING = frozenset({"steps", "truncation", "episode_done", "episode_metrics"})
+_WRAPPER_OWNED = frozenset({CONTEXT_KEY, TRANSITION_CONTEXT_KEY, PARAMS_KEY, RNG_KEY})
 
 
 def _same_structure(a, b) -> bool:
@@ -201,39 +213,43 @@ def _add_episode_fields(state: State, keys: jax.Array) -> State:
     return state
 
 
-def _broadcast_params(params: Params, num_slots: int) -> Params:
-    return jax.tree_util.tree_map(lambda x: jnp.broadcast_to(x, (num_slots,) + jnp.shape(x)), params)
+def _broadcast_params(params: Params, batch_shape: Tuple[int, ...]) -> Params:
+    return jax.tree_util.tree_map(lambda x: jnp.broadcast_to(x, tuple(batch_shape) + jnp.shape(x)), params)
 
 
-def _unbroadcast_params(params: Params) -> Params:
-    return jax.tree_util.tree_map(lambda x: x[0], params)
+def _unbroadcast_params(params: Params, batch_axes: int = 1) -> Params:
+    return jax.tree_util.tree_map(lambda x: x[(0,) * batch_axes], params)
 
 
 # --------------------------------------------------------------------------- #
 # Host-side helpers
 # --------------------------------------------------------------------------- #
+#
+# Inside the wrapper the leading axis is the slot axis. The trainer's state has
+# one more leading axis (devices, size 1 on a single GPU), so these helpers
+# derive the batch shape from ``state.done`` instead of assuming one axis.
 
 
 def attach_parameters(state: State, params: Params) -> State:
     """Hand the distribution parameters for the coming round to the batched state.
 
-    ``params`` is broadcast over the slot axis so every slot samples from the
-    same φ_k. Call between training rounds, after ``distribution.update``.
-    Broadcasting keeps the pytree *structure* identical to what the compiled
-    program was traced with, so no recompile.
+    ``params`` is broadcast over every batch axis of the state so all slots
+    sample from the same φ_k. Call between training rounds, after
+    ``distribution.update``. Broadcasting keeps the pytree *structure* identical
+    to what the compiled program was traced with, so no recompile.
     """
     info = dict(state.info)
-    info[PARAMS_KEY] = _broadcast_params(params, state.done.shape[0])
+    info[PARAMS_KEY] = _broadcast_params(params, state.done.shape)
     return state.replace(info=info)
 
 
 def current_parameters(state: State) -> Params:
     """The (un-batched) parameters currently attached to a batched state."""
-    return _unbroadcast_params(state.info[PARAMS_KEY])
+    return _unbroadcast_params(state.info[PARAMS_KEY], batch_axes=state.done.ndim)
 
 
 def current_contexts(state: State) -> Contexts:
-    """``[num_slots, D]`` contexts of the episodes currently running."""
+    """``[..., num_slots, D]`` contexts of the episodes currently running."""
     return state.info[CONTEXT_KEY]
 
 

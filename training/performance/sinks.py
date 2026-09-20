@@ -76,7 +76,11 @@ class WandbSink:
             self._defined_step_metric = True
         payload = {self.PREFIX + key: value for key, value in scalars.items()}
         payload[self.STEP_METRIC] = environment_steps
-        run.log(payload)
+        # Log at the trainer's step, not W&B's auto-incremented one: a call
+        # without `step=` would advance W&B's counter past `environment_steps`
+        # and make the trainer's own `wandb.log(..., step=environment_steps)`
+        # for the same round be rejected as out of order.
+        run.log(payload, step=environment_steps)
 
     def set_summary(self, summary: Mapping[str, Any]) -> None:
         run = self.run()
