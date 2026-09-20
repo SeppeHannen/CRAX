@@ -156,8 +156,11 @@ def _run(training_spec: str) -> Tuple[C.ContextTrainingSetup, List[Tuple[int, Di
     return setup, history, compile_seconds
 
 
+CURRICULUM = "training_curriculum/"
+
+
 def _round_entries(history):
-    return [(step, m) for step, m in history if "curriculum/round" in m]
+    return [(step, m) for step, m in history if CURRICULUM + "round" in m]
 
 
 @pytest.mark.parametrize("training_spec", ["uniform", "staged:1,2,3", "level:1"])
@@ -165,22 +168,22 @@ def test_end_to_end_one_round_per_call_with_both_evaluations(training_spec):
     setup, history, _ = _run(training_spec)
 
     round_entries = _round_entries(history)
-    assert [int(m["curriculum/round"]) for _, m in round_entries] == list(range(TOTAL_ROUNDS))
+    assert [int(m[CURRICULUM + "round"]) for _, m in round_entries] == list(range(TOTAL_ROUNDS))
     assert [step for step, _ in round_entries] == [STEPS_PER_ROUND * (k + 1) for k in range(TOTAL_ROUNDS)]
 
     # q̂ logged every round as a distribution over fixed bins
     for _, metrics in round_entries:
-        mass = [metrics[f"curriculum/experienced/velocity_threshold/bin_{i:02d}"] for i in BINS]
+        mass = [metrics[f"{CURRICULUM}experienced/velocity_threshold/bin_{i:02d}"] for i in BINS]
         assert sum(mass) == pytest.approx(1.0)
-        assert metrics["curriculum/num_transitions"] == STEPS_PER_ROUND
+        assert metrics[CURRICULUM + "num_transitions"] == STEPS_PER_ROUND
 
     # evaluation on w and r, at the initial eval and after each of the 2 blocks
-    evaluation_entries = [(s, m) for s, m in history if f"eval/{C.DEPLOYMENT_EVALUATION}/episode_reward" in m]
+    evaluation_entries = [(s, m) for s, m in history if f"evaluation/{C.DEPLOYMENT_EVALUATION}/episode_reward" in m]
     assert [s for s, _ in evaluation_entries] == [0, 3 * STEPS_PER_ROUND, 6 * STEPS_PER_ROUND]
     for _, metrics in evaluation_entries:
-        assert f"eval/{C.UNIFORM_EVALUATION}/episode_reward" in metrics
-        assert f"eval/{C.DEPLOYMENT_EVALUATION}/episode_cost" in metrics
-        assert not any(key.startswith("eval/episode_") for key in metrics), "unnamed eval metrics leaked"
+        assert f"evaluation/{C.UNIFORM_EVALUATION}/episode_reward" in metrics
+        assert f"evaluation/{C.DEPLOYMENT_EVALUATION}/episode_cost" in metrics
+        assert not any(key.startswith("eval/") for key in metrics), "unnamed eval metrics leaked"
 
 
 def test_end_to_end_staged_switches_levels_on_schedule_without_recompiling():
@@ -191,7 +194,7 @@ def test_end_to_end_staged_switches_levels_on_schedule_without_recompiling():
     assert list(staged.switch_rounds) == [2, 4]
 
     round_entries = _round_entries(history)
-    intended = [m["curriculum/intended/context/velocity_threshold"] for _, m in round_entries]
+    intended = [m[CURRICULUM + "intended/context/velocity_threshold"] for _, m in round_entries]
     # round k's intended context is the one in force during round k: L1,L1,L2,L2,L3,L3
     expected = [float(suite.level(l)[0]) for l in (1, 1, 2, 2, 3, 3)]
     assert intended == pytest.approx(expected)
@@ -203,7 +206,7 @@ def test_end_to_end_staged_switches_levels_on_schedule_without_recompiling():
     # A context is drawn when an episode *ends*, under the φ of that round, so the
     # first round of a stage may consist entirely of previous-stage data.
     level_1, level_3 = float(suite.level(1)[0]), float(suite.level(3)[0])
-    realised_mean = [m["curriculum/experienced/velocity_threshold/mean"] for _, m in round_entries]
+    realised_mean = [m[CURRICULUM + "experienced/velocity_threshold/mean"] for _, m in round_entries]
     assert realised_mean[0] == pytest.approx(level_1)
     assert all(level_3 <= mean <= level_1 for mean in realised_mean)
     # thresholds decrease with level: realised never runs *ahead* of intended ...
@@ -234,15 +237,15 @@ def test_stock_trainer_path_is_unchanged_without_a_hook():
     steps = [step for step, _ in history]
     # 2 evaluation blocks of one epoch each (3 rounds per epoch), initial eval at 0
     assert steps[0] == 0 and steps[-1] == NUM_TIMESTEPS
-    assert not any("curriculum/round" in m for _, m in history)
+    assert not any(CURRICULUM + "round" in m for _, m in history)
     final = history[-1][1]
     assert "eval/episode_reward" in final and "eval/episode_cost" in final
-    assert not any(key.startswith(f"eval/{C.DEPLOYMENT_EVALUATION}/") for key in final)
+    assert not any(key.startswith("evaluation/") for key in final)
 
 
 def test_end_to_end_uniform_realised_is_not_a_point_mass():
     _, history, _ = _run("uniform")
     last = _round_entries(history)[-1][1]
-    assert last["curriculum/experienced/velocity_threshold/std"] > 0.05
-    occupied = sum(1 for i in BINS if last[f"curriculum/experienced/velocity_threshold/bin_{i:02d}"] > 0)
+    assert last[CURRICULUM + "experienced/velocity_threshold/std"] > 0.05
+    occupied = sum(1 for i in BINS if last[f"{CURRICULUM}experienced/velocity_threshold/bin_{i:02d}"] > 0)
     assert occupied >= 3

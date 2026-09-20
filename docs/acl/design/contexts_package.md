@@ -59,7 +59,7 @@ grammar, no suite-specific arguments:
 ```
 
 Every context run is evaluated on `deployment` (w) **and** on `uniform` (r):
-`eval/deployment/*`, `eval/uniform/*`. Run names become
+`evaluation/deployment/*`, `evaluation/uniform/*`. Run names become
 `<env>_ctx_<uniform|staged123|level1>_<alg>_seed<s>_<ts>`; W&B config gains
 `context_space`, `training_distribution`, `deployment_distribution`,
 `rounds_total`, `steps_per_round`.
@@ -69,13 +69,13 @@ dimension `<d>`, 12 fixed bins over Ω):
 
 | key | meaning |
 |---|---|
-| `curriculum/round` | round index $k$ |
-| `curriculum/intended/*` | `distribution.summary(φ_k)` — $q_k$ as the distribution states it (`.../context/velocity_threshold`, `.../stage`) |
-| `curriculum/sampled/<d>` | `wandb.Histogram`: one count per *completed episode* — the empirical $q_k$ (which contexts were selected) |
-| `curriculum/experienced/<d>` | `wandb.Histogram`: one count per *transition* — $\hat q_k$ (which contexts the gradient came from) |
-| `curriculum/{sampled,experienced}/<d>/bin_NN`, `/mean`, `/std` | the same as scalars, for cross-run panels grouped by seed |
-| `curriculum/episode_length/<d>/bin_NN` | mean completed-episode length per bin — the mechanism behind sampled ≠ experienced |
-| `curriculum/num_transitions`, `num_completed_episodes`, `completed/mean_{return,cost,length}` | bookkeeping |
+| `training_curriculum/round` | round index $k$ |
+| `training_curriculum/intended/*` | `distribution.summary(φ_k)` — $q_k$ as the distribution states it (`.../context/velocity_threshold`, `.../stage`) |
+| `training_curriculum/sampled/<d>` | `wandb.Histogram`: one count per *completed episode* — the empirical $q_k$ (which contexts were selected) |
+| `training_curriculum/experienced/<d>` | `wandb.Histogram`: one count per *transition* — $\hat q_k$ (which contexts the gradient came from) |
+| `training_curriculum/{sampled,experienced}/<d>/bin_NN`, `/mean`, `/std` | the same as scalars, for cross-run panels grouped by seed |
+| `training_curriculum/episode_length/<d>/bin_NN` | mean completed-episode length per bin — the mechanism behind sampled ≠ experienced |
+| `training_curriculum/num_transitions`, `num_completed_episodes`, `completed/mean_{return,cost,length}` | bookkeeping |
 
 W&B renders a per-step sequence of `wandb.Histogram` as a heatmap over time;
 that is the "how does the curriculum evolve" view. Note `sampled` is defined
@@ -174,7 +174,7 @@ tiny `eval_wrap_env_fn` is the cleanest way to give eval its own distribution).
 4. **`train_curriculum.py`** still runs the old per-stage `train()` restart. It
    is superseded by `--context_distribution staged:1,2,3` for registered suites
    and should eventually route through it for them.
-5. **Thesis figures**: pull `curriculum/*/bin_NN` for all runs via the W&B API
+5. **Thesis figures**: pull `training_curriculum/*/bin_NN` for all runs via the W&B API
    into a DataFrame and plot heatmap-per-arm + mean-line panel (`results/`).
 
 ## First experiment (design)

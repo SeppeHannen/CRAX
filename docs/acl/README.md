@@ -36,9 +36,9 @@ Giuseppe Hannen's graduation project. Start here.
 ```
 
 Every context run is evaluated on the deployment distribution
-(`eval/deployment/*`, level 3 by default) and on uniform (`eval/uniform/*`),
+(`evaluation/deployment/*`, level 3 by default) and on uniform (`evaluation/uniform/*`),
 and logs the sampled and experienced context distribution every round
-(`curriculum/*`, as W&B histograms).
+(`training_curriculum/*`, as W&B histograms).
 
 CPU tests: `JAX_PLATFORMS=cpu .venv/bin/python -m pytest tests/test_contexts.py tests/test_context_training.py -q -p no:cacheprovider`
 

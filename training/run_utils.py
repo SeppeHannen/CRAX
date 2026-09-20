@@ -93,9 +93,36 @@ def custom_progress_fn(num_steps: int, metrics: Dict[str, Any], verbose: bool = 
 
     if wandb.run is not None:
         for row in metrics_buffer:
-            wandb.log({k: row[k] for k in log_data.keys()}, step=row["step"])  # log summarized scalars only
+            payload = {k: row[k] for k in log_data.keys()}
+            payload["environment_steps"] = row["step"]
+            wandb.log(payload, step=row["step"])  # log summarized scalars only
         # clear the logged history from the buffer
         metrics_buffer.clear()
+
+
+# What each W&B section holds. Every metric key starts with one of these, and
+# W&B groups panels by that first path segment, so the run page reads as:
+#   episodic/            training rollouts: mean over the episodes that ended in the logging window
+#   training/            optimiser and Lagrange multiplier, throughput
+#   training_curriculum/ which contexts the training rollouts were in (sampled vs experienced), per round
+#   evaluation/<name>/   the frozen policy scored on that distribution (deployment, uniform)
+#   eval/                same, for the single default evaluator of a stock run
+#   performance/         wall-clock, compile, SPS from training/performance
+WANDB_SECTIONS = ("episodic/", "training/", "training_curriculum/", "evaluation/", "eval/", "performance/")
+
+
+def declare_wandb_sections() -> None:
+    """Tell the active run about our sections and x-axis before the first log.
+
+    `define_metric` with a wildcard makes W&B create the section immediately and
+    use the trainer's environment-step counter as the x-axis for all of it, so
+    panels appear grouped and aligned from the first data point.
+    """
+    if wandb.run is None:
+        return
+    wandb.define_metric("environment_steps")
+    for section in WANDB_SECTIONS:
+        wandb.define_metric(section + "*", step_metric="environment_steps")
 
 
 def print_progress_fn(num_steps: int, metrics: Dict[str, Any], verbose: bool = True) -> None:

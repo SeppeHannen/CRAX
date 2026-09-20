@@ -9,7 +9,7 @@ A distribution is written as a short spec, the same grammar for both flags:
 
 The training distribution is what the student learns on. The deployment
 distribution w is what it is *for*; the policy is evaluated on w and, always,
-on r as well (metrics ``eval/deployment/...`` and ``eval/uniform/...``).
+on r as well (metrics ``evaluation/deployment/...`` and ``evaluation/uniform/...``).
 Nothing here is suite-specific: levels are resolved through the registry, and a
 suite without levels simply rejects ``level:``/``staged:`` specs.
 """

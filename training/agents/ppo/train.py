@@ -87,10 +87,15 @@ def _strip_weak_type(tree):
 
 
 def _evaluation_metric_name(key: str, evaluation_name: Optional[str]) -> str:
-    """`eval/x` -> `eval/<name>/x` for a named evaluation distribution."""
+    """`eval/x` -> `evaluation/<name>/x` for a named evaluation distribution.
+
+    The default (unnamed) evaluator keeps Brax's `eval/x`; named evaluators get
+    their own W&B section per distribution so the panels for "policy scored on
+    the deployment task" and "... on uniform" are never mixed with training data.
+    """
     if evaluation_name is None or not key.startswith('eval/'):
         return key
-    return f'eval/{evaluation_name}/{key[len("eval/"):]}'
+    return f'evaluation/{evaluation_name}/{key[len("eval/"):]}'
 
 
 def _maybe_wrap_env(
@@ -349,8 +354,9 @@ def train(
         the environment state for the next one. Evaluations still happen
         `num_evals` times. Incompatible with `num_resets_per_eval > 0`.
       evaluation_wrap_env_fns: optional `name -> wrap_env_fn`. One evaluator per
-        entry, all on the same eval environment, reported under `eval/<name>/...`.
-        Default: one evaluator using `wrap_env_fn`, reported under `eval/...`.
+        entry, all on the same eval environment, reported under
+        `evaluation/<name>/...`. Default: one evaluator using `wrap_env_fn`,
+        reported under `eval/...` as before.
 
     Returns:
       Tuple of (make_policy function, network params, metrics)
@@ -844,7 +850,7 @@ def train(
     )
 
     # Only create evaluators if evaluation is enabled: one per named evaluation
-    # distribution (metrics under eval/<name>/...), or the single default one.
+    # distribution (metrics under evaluation/<name>/...), or the single default one.
     evaluators: Dict[Optional[str], acting.Evaluator] = {}
     if num_evals > 0:
         raw_eval_env = eval_env or environment

@@ -50,13 +50,16 @@ class ContextRoundHook(RoundHook):
         self.last_feedback = feedback
         env_state = attach_parameters(env_state, self.parameters)
 
-        metrics: Dict[str, Any] = {"curriculum/round": float(round_index)}
+        # All of this describes the *training* rollouts, hence the prefix: it sits
+        # in W&B next to `episodic/*` (also training) and apart from `evaluation/*`.
+        prefix = "training_curriculum/"
+        metrics: Dict[str, Any] = {prefix + "round": float(round_index)}
         for key, value in self.distribution.summary(parameters).items():
-            metrics[f"curriculum/intended/{key}"] = value  # q as the distribution states it
+            metrics[f"{prefix}intended/{key}"] = value  # q as the distribution states it
         for key, value in curriculum_metrics(self.distribution.space, rollout).items():
-            metrics[f"curriculum/{key}"] = value  # q as sampled, q̂ as experienced
+            metrics[prefix + key] = value  # q as sampled, q̂ as experienced
         if feedback.num_completed:
-            metrics["curriculum/completed/mean_return"] = float(feedback.returns.mean())
-            metrics["curriculum/completed/mean_cost"] = float(feedback.costs.mean())
-            metrics["curriculum/completed/mean_length"] = float(feedback.lengths.mean())
+            metrics[f"{prefix}completed_episodes/mean_return"] = float(feedback.returns.mean())
+            metrics[f"{prefix}completed_episodes/mean_cost"] = float(feedback.costs.mean())
+            metrics[f"{prefix}completed_episodes/mean_length"] = float(feedback.lengths.mean())
         return env_state, metrics

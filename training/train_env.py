@@ -19,6 +19,7 @@ from training.run_utils import (
     get_algorithm_train_fn, filter_kwargs_for_fn, custom_progress_fn,
     make_vision_network_factory, morphology_override, VISION_CAMERA_OVERRIDES,
     make_periodic_vision_video_fn, install_performance_tracker, require_wandb_login,
+    declare_wandb_sections,
 )
 from crax.envs.limb_colors import colorize_env_limbs
 
@@ -161,6 +162,7 @@ def main():
             job_type=alg_name,
             tags=config.wandb_tags,
         )
+        declare_wandb_sections()
 
         if config.store_model:
             root_dir = Path(__file__).parent.parent.resolve()  # repo root, not training/
