@@ -168,6 +168,18 @@ class SafeVelocityBase(PipelineEnv, ABC):
         self._cost_mode = cost_mode
         self._reward_scaler = reward_scaler
 
+    # Names, in order, of the context coordinates this environment reads from
+    # ``state.info["context"]`` (see training/contexts). The constructor value
+    # is used when no context is present, so plain training is unchanged.
+    CONTEXT_PARAMETERS: Tuple[str, ...] = ("velocity_threshold",)
+
+    def _threshold(self, state: State) -> jax.Array:
+        """Per-slot velocity threshold: from the context if one is set, else fixed."""
+        context = state.info.get("context") if isinstance(state.info, dict) else None
+        if context is None:
+            return jp.asarray(self._velocity_threshold, jp.float32)
+        return context[..., self.CONTEXT_PARAMETERS.index("velocity_threshold")]
+
     def step(self, state: State, action: jax.Array) -> State:
         pipeline_state0 = state.pipeline_state
         assert pipeline_state0 is not None
@@ -175,14 +187,15 @@ class SafeVelocityBase(PipelineEnv, ABC):
         pipeline_state = next_state.pipeline_state
 
         velocity_value = self._compute_velocity(pipeline_state0, pipeline_state)
+        threshold = self._threshold(state)
 
         if self._cost_mode == "binary":
             cost, violation = binary_velocity_cost(
-                velocity_value, self._velocity_threshold, self._velocity_cost_weight
+                velocity_value, threshold, self._velocity_cost_weight
             )
         elif self._cost_mode == "hinge":
             cost, violation = hinge_velocity_cost(
-                velocity_value, self._velocity_threshold, self._velocity_cost_weight
+                velocity_value, threshold, self._velocity_cost_weight
             )
         else:
             raise ValueError(f"Unknown cost_mode: {self._cost_mode}")
@@ -192,7 +205,7 @@ class SafeVelocityBase(PipelineEnv, ABC):
             metrics,
             next_state.reward,
             velocity_value=velocity_value,
-            threshold=self._velocity_threshold,
+            threshold=threshold,
             violation=violation,
             cost=cost,
         )
@@ -203,7 +216,7 @@ class SafeVelocityBase(PipelineEnv, ABC):
             current_info,
             cost=cost,
             velocity_value=velocity_value,
-            threshold=self._velocity_threshold,
+            threshold=threshold,
             violation=violation,
             step_count=step_count,
         )
@@ -214,15 +227,25 @@ class SafeVelocityBase(PipelineEnv, ABC):
             info=info
         )
 
-    def reset(self, rng: jax.Array) -> State:
+    def reset_with_context(self, rng: jax.Array, context: jax.Array) -> State:
+        """Reset with a per-slot context (see training/contexts); the threshold
+        metric and info then reflect the context from the very first step."""
         state = super().reset(rng)
+        state.info["context"] = context
+        return self._finish_reset(state)
+
+    def reset(self, rng: jax.Array) -> State:
+        return self._finish_reset(super().reset(rng))
+
+    def _finish_reset(self, state: State) -> State:
         zero = jp.zeros_like(state.reward)
+        threshold = self._threshold(state)
         metrics = dict(state.metrics)
         add_velocity_cost_metrics(
             metrics,
             state.reward,
             velocity_value=zero,
-            threshold=self._velocity_threshold,
+            threshold=threshold,
             violation=zero,
             cost=zero,
         )
@@ -230,7 +253,7 @@ class SafeVelocityBase(PipelineEnv, ABC):
             state.info,
             cost=zero,
             velocity_value=zero,
-            threshold=self._velocity_threshold,
+            threshold=threshold,
             violation=zero,
             step_count=0,
         )

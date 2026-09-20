@@ -148,6 +148,17 @@ class UnifiedEnvAdapter(Wrapper):
         state = self.env.reset(rng)
         return self._ensure_unified_fields(state)
 
+    def reset_with_context(self, rng: jax.Array, context: jax.Array) -> State:
+        """Forward a context-conditioned reset (see training/contexts) if the
+        inner environment supports one; otherwise reset and attach the context."""
+        inner = getattr(self.env, 'reset_with_context', None)
+        if inner is not None:
+            state = inner(rng, context)
+        else:
+            state = self.env.reset(rng)
+            state.info['context'] = context
+        return self._ensure_unified_fields(state)
+
     def step(self, state: State, action: jax.Array) -> State:
         next_state = self.env.step(state, action)
         return self._ensure_unified_fields(next_state)
