@@ -52,11 +52,31 @@ them over the slot axis so the pytree *structure* matches what the program was
 traced with. Remember to `_strip_weak_type` the state after attaching, as
 `train()` already does on every call.
 
+## How the wrapper swap works (no trainer change needed for the swap itself)
+
+Every CRAX trainer (`ppo`, `ppo_lag`, `focops`, `p3o`, `crpo`, `ppo_pid`, `sac*`)
+already takes `wrap_env_fn: Optional[Callable]` and, in `_maybe_wrap_env`, calls
+`wrap_env_fn(env, episode_length=, action_repeat=, randomization_fn=)` **in place
+of** `crax.envs.training.wrap`. That hook is the swap point:
+
+```python
+from training import contexts
+train(environment=env, wrap_env_fn=contexts.make_wrap_env_fn(distribution), ...)
+```
+
+`make_wrap_env_fn` returns a callable with `wrap`'s exact signature that builds
+`ContextualAutoReset(Episode(Vmap(env)))` instead of `AutoReset(Episode(Vmap(env)))`.
+Nothing in `crax/envs/wrappers/training.py` changes; without a distribution the
+benchmark behaves exactly as before. The eval env goes through the same hook, so
+evaluation on w or r is `wrap_env_fn=make_wrap_env_fn(FixedContext(w))` etc.
+(the trainer currently uses one `wrap_env_fn` for both; a second parameter or a
+tiny `eval_wrap_env_fn` is the cleanest way to give eval its own distribution).
+
 ## Not yet done (next session)
 
 1. **Trainer wiring** (`training/agents/ppo/train.py`):
-   - accept a `context_distribution` (or a `wrap_env_fn` built from one) and use
-     `wrap_for_context_training` instead of `envs.training.wrap`;
+   - pass `wrap_env_fn=make_wrap_env_fn(distribution)` from the CLI (see 6),
+     and let eval use its own distribution;
    - make one compiled call = one training step (`num_training_steps_per_epoch = 1`,
      evaluation every N iterations) — see `training_round.md`;
    - in the loop body: build `EpisodeFeedback` from the finished episodes of the

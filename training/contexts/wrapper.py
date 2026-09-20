@@ -35,6 +35,7 @@ PPO-Lagrange read are untouched. The env's ``reset`` is therefore called via
 """
 from __future__ import annotations
 
+import functools
 from typing import Callable, Optional
 
 import jax
@@ -241,6 +242,7 @@ def wrap_for_context_training(
     distribution: ContextDistribution,
     episode_length: int,
     action_repeat: int = 1,
+    randomization_fn: Optional[Callable] = None,
 ) -> Wrapper:
     """Training wrapper stack with per-slot contexts.
 
@@ -248,8 +250,26 @@ def wrap_for_context_training(
     place of ``AutoResetWrapper``::
 
         ContextualAutoResetWrapper(EpisodeWrapper(VmapWrapper(env)))
+
+    ``randomization_fn`` (Brax domain randomisation of the physics `System`) is
+    accepted for signature compatibility with ``wrap`` but not supported
+    together with contexts: contexts are the mechanism for varying the task.
     """
+    if randomization_fn is not None:
+        raise NotImplementedError("randomization_fn is not supported with context distributions")
     env = VmapWrapper(env)
     env = EpisodeWrapper(env, episode_length, action_repeat)
     env = ContextualAutoResetWrapper(env, distribution)
     return env
+
+
+def make_wrap_env_fn(distribution: ContextDistribution) -> Callable[..., Wrapper]:
+    """A ``wrap_env_fn`` for ``train(...)`` that installs this distribution.
+
+    Every CRAX trainer accepts ``wrap_env_fn(env, episode_length=, action_repeat=,
+    randomization_fn=)`` in place of the default ``crax.envs.training.wrap``. This
+    is the only hook needed to switch the auto-reset wrapper::
+
+        train(environment=env, wrap_env_fn=make_wrap_env_fn(distribution), ...)
+    """
+    return functools.partial(wrap_for_context_training, distribution=distribution)

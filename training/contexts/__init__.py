@@ -31,6 +31,7 @@ from training.contexts.wrapper import (
     attach_parameters,
     current_contexts,
     current_parameters,
+    make_wrap_env_fn,
     wrap_for_context_training,
 )
 
@@ -52,6 +53,7 @@ __all__ = [
     "box",
     "current_contexts",
     "current_parameters",
+    "make_wrap_env_fn",
     "registered_environments",
     "suite_contexts",
     "wrap_for_context_training",

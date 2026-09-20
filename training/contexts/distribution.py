@@ -20,15 +20,13 @@ Uniform sampling is the degenerate case: ``update`` returns ``params`` unchanged
 from __future__ import annotations
 
 import dataclasses
-from typing import Any, Dict, Mapping, Protocol, TypeVar, runtime_checkable
+from typing import Any, Dict, Protocol, runtime_checkable
 
 import jax
-import jax.numpy as jnp
 
 from training.contexts.space import ContextSpace, Contexts
 
 Params = Any  # a pytree of jax arrays; checkpointed as part of the run state
-P = TypeVar("P")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -78,18 +76,3 @@ class ContextDistribution(Protocol):
 
     def summary(self, params: Params) -> Dict[str, float]:
         """Low-dimensional scalars describing φ, for logging each round."""
-
-
-def batched_log_probability_uniform(space: ContextSpace, contexts: Contexts) -> jax.Array:
-    """log-density of Uniform(Ω) at each context: constant inside, -inf outside."""
-    widths = space.high - space.low
-    # Degenerate (fixed) dimensions contribute no volume.
-    log_volume = jnp.sum(jnp.where(widths > 0, jnp.log(jnp.where(widths > 0, widths, 1.0)), 0.0))
-    inside = space.contains(contexts)
-    return jnp.where(inside, -log_volume, -jnp.inf)
-
-
-def as_dict(params: Params) -> Mapping[str, Any]:
-    """Best-effort flatten of a params pytree for logging."""
-    leaves, _ = jax.tree_util.tree_flatten_with_path(params)
-    return {"/".join(str(getattr(k, "key", getattr(k, "idx", k))) for k in path): leaf for path, leaf in leaves}
