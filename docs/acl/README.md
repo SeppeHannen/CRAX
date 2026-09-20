@@ -5,7 +5,7 @@ learning (ACL). This file is the **index by task**. Each task lists its status,
 the documents that hold the decisions it depends on, and the code it touches.
 Read only what the task you are picking up needs.
 
-Last updated: 2026-09-20 (commit `5d4d496`).
+Last updated: 2026-09-20 (T1–T3 landed in commit `0cc05ed`).
 
 ## Vocabulary (used everywhere; do not drift)
 
@@ -31,15 +31,16 @@ Last updated: 2026-09-20 (commit `5d4d496`).
 | D5 | Design: per-slot rule, round definition, $q$ vs $\hat q$ | `design/per_slot_constraints.md`, `design/training_round.md`, `design/intended_vs_realised_curriculum.md` |
 | D6 | `training/contexts` package, SafeVelocity reads context, 8 CPU tests | `design/contexts_package.md`, `training/contexts/`, `tests/test_contexts.py` |
 | D7 | Ω audit for all 9 suites (value / count / structural) | `design/context_spaces_by_suite.md` |
+| D8 (=T1) | Trainer wiring: generic `RoundHook` (epoch := 1 round), `ContextRoundHook` updates φ between calls, $q$ and $\hat q$ per round to W&B | `design/contexts_package.md` § how it is wired, `training/rounds.py`, `training/contexts/{round_data,realised_curriculum,round_hook}.py` |
+| D9 (=T2) | Eval on $w$ and $r$: `evaluation_wrap_env_fns` → `eval/deployment/*`, `eval/uniform/*` | `training/agents/ppo/train.py`, `training/contexts/setup.py` |
+| D10 (=T3) | CLI `--context_distribution none\|uniform\|level:<n>\|staged:<n>,..` and `--deployment_distribution` (same grammar); `train_env.py` wired; 9 CPU tests + GPU smoke run | `training/config.py`, `training/train_env.py`, `tests/test_context_training.py` |
 
 ### Next — in order
 | # | task | status | read first | touches |
 |---|---|---|---|---|
-| **T1** | **Trainer wiring**: epoch := 1 training step; `"context"` in `extra_fields`; build `EpisodeFeedback` from rollout (`episode_done`, `episode_metrics`); call `distribution.update` and `attach_parameters` + `_strip_weak_type` between calls; log $q$ and $\hat q$ histograms to W&B | not started | `design/training_round.md`, `design/contexts_package.md` (§ wrapper swap, § not yet done), `design/intended_vs_realised_curriculum.md` | `training/agents/ppo/train.py` (`train()` loop, `_maybe_wrap_env`, `training_epoch`), `training/contexts/wrapper.py` (`attach_parameters`, `current_contexts`), `training/contexts/distribution.py` (`EpisodeFeedback`) |
-| **T2** | **Eval on $w$ and $r$**: separate eval distribution (`eval_wrap_env_fn` or equivalent); report return/cost under both | not started | `design/contexts_package.md` § wrapper swap | `training/agents/ppo/train.py` (evaluator construction), `training/contexts/distributions/fixed.py` |
-| **T3** | **CLI**: `--context_distribution {level,uniform,staged}`, `--context_levels`, pass `wrap_env_fn=make_wrap_env_fn(...)` from entry points | not started | `design/contexts_package.md` | `training/train_env.py`, `training/train_curriculum.py`, `training/run_utils.py` |
-| **T4** | **Reset-cost measurement** (GPU — ask first): `ContextualAutoResetWrapper` runs `reset()` every step for all slots; measure SPS vs stock wrapper on `safe_velocity_ant` @8192 | not started | `performance_measurement.md`, `design/per_slot_constraints.md` (§ AutoReset discovery) | `training/contexts/wrapper.py`, `scripts/sweep_num_envs.py` as template |
-| **T5** | **First experiment** on `safe_velocity_ant`, 4 arms: direct L3 / staged L1→L2→L3 / uniform $r$ / direct L1; eval on $w$ and $r$; report $q$, $\hat q$ | blocked on T1–T3 | `design/intended_vs_realised_curriculum.md` | new `scripts/` or SLURM template |
+| **T5** | **First experiment** on `safe_velocity_ant`, 4 arms: direct L3 / staged L1→L2→L3 / uniform $r$ / direct L1; eval on $w$ and $r$; report $q$, $\hat q$ | **ready — GPU, ask first**; exact commands in the doc | `experiments/2026-09-20_uniform_vs_staged_velocity_ant.md`, `design/intended_vs_realised_curriculum.md` | none (CLI only); results section of the experiment doc |
+| **T4** | **Reset-cost measurement** (GPU — ask first): `--context_distribution level --difficulty 3` vs `none` with `--measure_performance`, `safe_velocity_ant` @8192; falls out of the T5 pilot | not started | `performance_measurement.md`, `design/per_slot_constraints.md` (§ AutoReset discovery) | `training/contexts/wrapper.py` if it turns out expensive |
+| T4b | Forward `round_hook` / `evaluation_wrap_env_fns` in the other PPO-family trainers (focops, p3o, crpo, ppo_pid, ppo_saute, ppo_cost); route `train_curriculum.py` through `staged` for registered suites | not started | `design/contexts_package.md` § not yet done | `training/agents/*/train.py`, `training/train_curriculum.py` |
 | T6 | Extend value-typed suites: height, push (step-side reads), lift (feet mask), pathway (`reset_with_context`) | not started | `design/context_spaces_by_suite.md` | `crax/envs/safe_{height,push,lift,pathway}.py`, `training/contexts/registry.py` |
 | T7 | Pad-and-mask suites: reach, circle | not started | `design/context_spaces_by_suite.md`, `design/per_slot_constraints.md` | env XML builders + lidar/cost code |
 | T8 | Union-model suites: goal, button (tell Tristan first) | not started | same as T7 | same as T7 |
@@ -51,7 +52,7 @@ Last updated: 2026-09-20 (commit `5d4d496`).
 - W&B is mandatory; `WANDB_API_KEY` lives in `~/.bashrc` (below the interactive guard — sbatch must export it).
 - Values not shapes. A new compiled program costs ~50 s; a per-slot value costs nothing.
 - One file per distribution; clear types, protocols, encapsulation; no abbreviations in code.
-- `epoch` in the trainer means one training step once T1 lands.
+- `epoch` in the trainer means one training step (= one round) whenever a `round_hook` is set, i.e. for every `--context_distribution` other than `none`.
 - Anything that changes Tristan's baselines (AutoReset replay, union models) gets flagged to him.
 
 ## Document map
@@ -61,11 +62,13 @@ docs/acl/
   profiling_options.md             tool survey behind D2 (historical)
   performance_measurement.md       how to use training/performance (user guide)
   measurements/                    dated logs; newest wins
+  experiments/                     one file per experiment: arms, commands, results
+    2026-09-20_uniform_vs_staged_velocity_ant.md   T5 (ready to launch)
   design/
     per_slot_constraints.md        what may differ between slots; AutoReset discovery
     training_round.md              epoch := 1 training step
     intended_vs_realised_curriculum.md   q vs q̂
-    contexts_package.md            training/contexts handoff + wrapper swap
+    contexts_package.md            training/contexts handoff, trainer wiring, logged keys, CLI
     context_spaces_by_suite.md     Ω per suite, value/count/structural
 ```
 Memory files for the assistant mirror this at `/memories/repo/project.md` and

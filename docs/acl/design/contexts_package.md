@@ -1,20 +1,106 @@
 # `training/contexts` — what exists, what is next
 
-Status (2026-09-20): package implemented and CPU-tested; **not yet wired into
-the trainer**. First target experiment: uniform vs manual curriculum on
-`safe_velocity_ant`.
+Status (2026-09-20, after review): package implemented, **wired into the
+trainer and the CLI**, CPU-tested end to end (17 tests) and smoke-tested on the
+GPU (`safe_velocity_ant`, `staged:1,2,3`, 8192 envs, 10 rounds — W&B group
+`smoke`). The first experiment can be launched; see
+`docs/acl/experiments/2026-09-20_uniform_vs_staged_velocity_ant.md`.
 
 ## What exists
 
 ```
+training/rounds.py             RoundHook (Protocol) — the trainer-side contract, curriculum-agnostic
 training/contexts/
-  space.py          ContextSpace, Dimension, box()      — Ω as a typed box; encode/decode/sample/contains
-  distribution.py   ContextDistribution (Protocol), EpisodeFeedback, Params
-  distributions.py  UniformDistribution (r), FixedContext (one level / target w), StagedContexts (manual curriculum)
-  registry.py       suite_contexts(env_name) -> SuiteContexts {space, level_contexts, parameter_names}
-  wrapper.py        ContextualAutoResetWrapper, wrap_for_context_training, attach_parameters, current_contexts
-tests/test_contexts.py   8 tests, CPU, ~25 s
+  space.py                     ContextSpace, Dimension, box()      — Ω as a typed box; encode/decode/sample/contains
+  distribution.py              ContextDistribution (Protocol), EpisodeFeedback, Params
+  distributions/{uniform,fixed,staged}.py   r, FixedContext (level / w), StagedContexts (manual curriculum)
+  registry.py                  suite_contexts(env_name) -> SuiteContexts {space, level_contexts, parameter_names}
+  wrapper.py                   ContextualAutoResetWrapper, make_wrap_env_fn, attach_parameters, current_*
+  rollout.py                   RoundRollout (all transitions of a round, host) -> EpisodeFeedback (completed episodes)
+  realised_curriculum.py       sampled (≈ q) and experienced (q̂) distributions per round, as wandb.Histogram + scalars
+  round_hook.py                ContextRoundHook(RoundHook): store rollout, update φ, attach it, log q and q̂
+  setup.py                     '--context_distribution' / '--deployment_distribution' specs -> train(**kwargs)
+tests/test_contexts.py            8 tests: wrapper mechanics (CPU, ~35 s)
+tests/test_context_training.py    9 tests: specs, rollout, metrics, tiny PPO-Lag runs per distribution (CPU, ~2 min)
 ```
+
+## How it is wired (T1–T3, done)
+
+The problem: a distribution *samples* inside the compiled training step from
+frozen φ and *learns* on the host between calls. So one compiled call must be
+one training step, the round's transitions must reach the host, and something
+must be allowed to edit the environment state before the next call.
+
+The trainer (`training/agents/ppo/train.py`) gained two optional arguments,
+forwarded by `ppo_lag` (other PPO-family trainers still need the two lines):
+
+- `round_hook: training.rounds.RoundHook` — three members: `extra_fields`
+  (which `state.info` keys to record per transition), `observe(rollout)` (host,
+  called from one `jax.debug.callback` next to the existing metrics callback,
+  receives every recorded field as NumPy), `on_round_end(round_index, env_state)`
+  (host, after each compiled call; may return an edited env state). When set,
+  the trainer runs the same training steps **one per compiled call** instead of
+  all inside one call (`epochs_per_evaluation = num_training_steps_per_epoch;
+  num_training_steps_per_epoch = 1`). Same rounds, same learning, same
+  evaluation cadence; only the call granularity changes. The trainer knows
+  nothing about contexts; `ContextRoundHook` is the one implementation.
+- `evaluation_wrap_env_fns: {name: wrap_env_fn}` — one `Evaluator` per name,
+  all wrapping the same raw eval env; metrics under `eval/<name>/...`.
+
+Without either argument the trainer runs exactly as before (test
+`test_stock_trainer_path_is_unchanged_without_a_hook`).
+
+CLI (`training/config.py`, used by `training/train_env.py`). Two flags, one
+grammar, no suite-specific arguments:
+
+```
+--context_distribution    none | uniform | level:<n> | staged:<n>,<n>,...    what the student trains on (default none = stock CRAX)
+--deployment_distribution uniform | level:<n> | staged:...                   w, what the policy is for (default level:3)
+```
+
+Every context run is evaluated on `deployment` (w) **and** on `uniform` (r):
+`eval/deployment/*`, `eval/uniform/*`. Run names become
+`<env>_ctx_<uniform|staged123|level1>_<alg>_seed<s>_<ts>`; W&B config gains
+`context_space`, `training_distribution`, `deployment_distribution`,
+`rounds_total`, `steps_per_round`.
+
+Per round `ContextRoundHook` logs, via `progress_fn` → W&B (per context
+dimension `<d>`, 12 fixed bins over Ω):
+
+| key | meaning |
+|---|---|
+| `curriculum/round` | round index $k$ |
+| `curriculum/intended/*` | `distribution.summary(φ_k)` — $q_k$ as the distribution states it (`.../context/velocity_threshold`, `.../stage`) |
+| `curriculum/sampled/<d>` | `wandb.Histogram`: one count per *completed episode* — the empirical $q_k$ (which contexts were selected) |
+| `curriculum/experienced/<d>` | `wandb.Histogram`: one count per *transition* — $\hat q_k$ (which contexts the gradient came from) |
+| `curriculum/{sampled,experienced}/<d>/bin_NN`, `/mean`, `/std` | the same as scalars, for cross-run panels grouped by seed |
+| `curriculum/episode_length/<d>/bin_NN` | mean completed-episode length per bin — the mechanism behind sampled ≠ experienced |
+| `curriculum/num_transitions`, `num_completed_episodes`, `completed/mean_{return,cost,length}` | bookkeeping |
+
+W&B renders a per-step sequence of `wandb.Histogram` as a heatmap over time;
+that is the "how does the curriculum evolve" view. Note `sampled` is defined
+by completed episodes, so the first round of a stage can be empty (`NaN` mean)
+while `experienced` is still 100 % previous-stage data — the lag the design doc
+predicts, visible in the smoke run.
+
+The wrapper also writes `state.info["transition_context"]`: the context the
+*last transition* was generated in. It differs from `context` only on the step
+an episode ends (where `context` is already the next episode's ω, because the
+env reads it at the next step). `RoundRollout` is built from
+`transition_context`, so both q̂ and the per-episode feedback pair each
+episode's return/cost with the context it actually ran in.
+
+### Found in the GPU smoke run
+
+- `training/performance/sinks.py` logged with `run.log(payload)` (no `step=`),
+  which advances W&B's step counter past the trainer's; the trainer's own
+  `wandb.log(..., step=env_steps)` for the same round was then rejected as out of
+  order and **every other round's metrics were silently dropped**. Latent since
+  the tracker was written; only fired now that something logs every round. Fixed
+  (`step=environment_steps`), verified 0 warnings.
+- SPS was 8–54 k and erratic because another process held 7.8 GB and ~11 % of
+  the GPU. Throughput numbers from a shared card are meaningless; run the pilot,
+  and especially the T4 `level:3` vs `none` pair, on an idle GPU.
 
 Environment side:
 
@@ -72,30 +158,24 @@ evaluation on w or r is `wrap_env_fn=make_wrap_env_fn(FixedContext(w))` etc.
 (the trainer currently uses one `wrap_env_fn` for both; a second parameter or a
 tiny `eval_wrap_env_fn` is the cleanest way to give eval its own distribution).
 
-## Not yet done (next session)
+## Not yet done
 
-1. **Trainer wiring** (`training/agents/ppo/train.py`):
-   - pass `wrap_env_fn=make_wrap_env_fn(distribution)` from the CLI (see 6),
-     and let eval use its own distribution;
-   - make one compiled call = one training step (`num_training_steps_per_epoch = 1`,
-     evaluation every N iterations) — see `training_round.md`;
-   - in the loop body: build `EpisodeFeedback` from the finished episodes of the
-     round, call `distribution.update`, `attach_parameters`, log
-     `distribution.summary(params)` and the realised curriculum;
-   - `extra_fields` must include `"context"` so every transition carries it.
-2. **Realised curriculum q̂**: histogram of `data.extras["state_extras"]["context"]`
-   per round → W&B (`curriculum/realised_*`), alongside `curriculum/intended_*`
-   from `summary()`. See `intended_vs_realised_curriculum.md`.
-3. **EpisodeFeedback from rollout data**: finished episodes are the transitions
-   where `episode_done == 1`; their `episode_metrics` (`sum_reward`, `cost`,
-   `length`) and `context` give returns, costs, lengths, contexts.
-4. **Evaluation on w and r**: the evaluator env can use `FixedContext(level 3)`
-   and `UniformDistribution` respectively; two evaluators or one with two
-   distributions.
-5. **Measure the reset-every-step cost** (`--measure_performance`, Ant @ 8192,
-   uniform vs the stock wrapper): the one open performance question.
-6. **CLI**: `--context_distribution {level,uniform,staged}` plus
-   `--context_levels 1 2 3` for staged; `--difficulty` maps to `FixedContext`.
+1. **Measure the reset-every-step cost** (T4; `--measure_performance`, Ant @
+   8192, `--context_distribution level:3` vs `none --difficulty 3`, idle GPU):
+   the one open performance question. `level:3` is the right comparison — same
+   task as stock, only the wrapper (and one-call-per-round) differs.
+2. **Other PPO-family trainers** (`focops`, `p3o`, `crpo`, `ppo_pid`,
+   `ppo_saute`, `ppo_cost`) need `round_hook` and `evaluation_wrap_env_fns`
+   forwarded like `ppo_lag` does (two parameters, two kwargs each).
+   `train_env.py` refuses `--context_distribution` for algorithms that lack them.
+3. **Checkpointing φ**: `ContextRoundHook.parameters` holds φ for the next round
+   but is not written to the checkpoint yet (matters for RQ4 branching, not for
+   the first experiment).
+4. **`train_curriculum.py`** still runs the old per-stage `train()` restart. It
+   is superseded by `--context_distribution staged:1,2,3` for registered suites
+   and should eventually route through it for them.
+5. **Thesis figures**: pull `curriculum/*/bin_NN` for all runs via the W&B API
+   into a DataFrame and plot heatmap-per-arm + mean-line panel (`results/`).
 
 ## First experiment (design)
 
