@@ -79,19 +79,25 @@ class EpochRecord:
     compile_seconds_during_epoch: float
     traced: bool
 
-    # Fraction of an epoch's wall-clock that may be spent compiling for the epoch
-    # to still count as steady state.  JAX compiles many tiny helper programs
-    # (dtype casts, reductions) lazily; those cost milliseconds and must not
-    # disqualify an epoch, whereas a recompiled epoch program (seconds) must.
-    STEADY_COMPILE_FRACTION = 0.02
+    # An epoch is steady unless a *substantial* program was compiled during it.
+    # JAX lazily compiles ~10 tiny helper programs per epoch (copy, squeeze,
+    # broadcast_in_dim, ... from the host-side glue around the epoch call), each
+    # ~10 ms; those must not disqualify an epoch. A recompiled epoch program
+    # costs seconds. So: total compile time in the epoch must be small in absolute
+    # terms AND not a large fraction of a (possibly very short) epoch.
+    STEADY_MAX_COMPILE_SECONDS = 0.5
+    STEADY_MAX_COMPILE_FRACTION = 0.10
 
     @property
     def is_steady(self) -> bool:
         """Usable for throughput statistics: not the compile epoch, not traced,
-        and not dominated by compilation."""
+        and no substantial compilation happened during it."""
         if self.index == 0 or self.traced or self.wall_seconds <= 0:
             return False
-        return self.compile_seconds_during_epoch <= self.STEADY_COMPILE_FRACTION * self.wall_seconds
+        return (
+            self.compile_seconds_during_epoch <= self.STEADY_MAX_COMPILE_SECONDS
+            and self.compile_seconds_during_epoch <= self.STEADY_MAX_COMPILE_FRACTION * self.wall_seconds
+        )
 
 
 @dataclasses.dataclass
