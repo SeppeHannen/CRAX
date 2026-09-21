@@ -12,13 +12,15 @@ Giuseppe Hannen's graduation project. Start here.
    seed at 500 M steps: uniform solves level 3, the curriculum collapses when the
    level switches (Lagrange multiplier blow-up) and never recovers. Write-up:
    `experiments/2026-09-20_uniform_vs_staged_velocity_ant.md`.
-3. **A W&B dashboard one can read.** The run page has 174 history keys; the
-   problem is not the count but that `episode_reward` means three populations.
-   `design/dashboard.md` derives the dashboard from what reviewing a run is
-   (verdict / mechanism / trust / detail; four review situations), classifies
-   every key (16 concept, ~125 noise or duplicate), and proposes eight primary
-   panels. Status: steps 1–2 written, under discussion; step 3 (how, in W&B)
-   not started.
+3. **A W&B dashboard one can read.** Done in code, not yet seen on a real
+   run. `design/dashboard.md` derives it from what reviewing a run is
+   (Verdict / Mechanism / Trust / Detail) and `training/dashboard/` implements
+   it: a metric registry every logged key must pass (35 kept with title and
+   unit, 47 dropped with a reason, anything else raises), budgets logged next
+   to costs, and `python -m training.dashboard --group <name>` saves a W&B
+   view whose four sections each open with a text panel stating population,
+   unit and cadence. Next: the first GPU run with it, then save the view for
+   that group and read it.
 4. **Let the learner know its context.** Today the policy sees only the state;
    the threshold enters only the cost, so it can learn one behaviour for all of
    Ω and nothing else. Two ways to change that, both change the benchmark's
@@ -69,9 +71,14 @@ Giuseppe Hannen's graduation project. Start here.
 Every context run is evaluated on the deployment distribution
 (`evaluation/deployment/*`, level 3 by default) and on uniform (`evaluation/uniform/*`),
 and logs the sampled and experienced context distribution every round
-(`training_curriculum/*`, as W&B histograms).
+(`training_curriculum/*`, as W&B histograms). What is logged and what each key
+means is `training/dashboard/metrics.py`; the W&B view for an experiment group:
 
-CPU tests: `JAX_PLATFORMS=cpu .venv/bin/python -m pytest tests/test_contexts.py tests/test_context_training.py -q -p no:cacheprovider`
+```bash
+.venv/bin/python -m training.dashboard --group <wandb_group>
+```
+
+CPU tests: `JAX_PLATFORMS=cpu .venv/bin/python -m pytest tests/test_contexts.py tests/test_context_training.py tests/test_dashboard.py -q -p no:cacheprovider`
 
 ## Rules
 

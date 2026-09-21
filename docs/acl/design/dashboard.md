@@ -1,8 +1,9 @@
 # A W&B dashboard one can read
 
-Status: step 1 (first principles, §1–5) and step 2 (inventory, §6) written
-2026-09-21 and discussed; §7 is the resulting design for step 3, awaiting a go
-before implementation. Nothing implemented yet.
+Status: steps 1–2 (§1–6) written and discussed 2026-09-21; §7 is the
+design for step 3 and is **implemented** (`training/dashboard/`, tests in
+`tests/test_dashboard.py`). §7.3 describes the code as built. Not yet done: a
+GPU run with the new logging, and saving the view for a fresh group.
 
 ## 1. What a run is for
 
@@ -47,7 +48,8 @@ A reviewer should be able to read any panel without opening the code:
    panel; $d/T = 0.025$ on per-step cost panels; the level thresholds on
    context panels.
 4. **x-axis** — environment steps, everywhere, including `performance/`
-   (today `performance/*` has its own step metric, `performance/environment_steps`, with the same values; harmless but a second name for the same axis).
+   (it used to carry its own step metric, `performance/environment_steps`, with
+   the same values — a second name for one axis; removed in step 3).
 
 The core problem is (1). `episode_reward` under `evaluation/deployment/`,
 `evaluation/uniform/` and `episodic/sum_reward` are three different
@@ -119,7 +121,7 @@ The population mismatch is real: `evaluation/deployment/episode_cost` is
 the distribution sampled, episodes ended in the last 1 M steps"*. Both are
 concepts, both are needed, and the name must say which is which.
 
-### `training_curriculum/*` — the round hook (`ContextRoundHook`, `curriculum_metrics`)
+### `training_curriculum/*` — the round hook (`ContextRoundHook`, then `curriculum_metrics`)
 
 | key | verdict |
 |---|---|
@@ -236,7 +238,7 @@ key tell the population: 780 = once per round, 390 = every second round
 | `training_curriculum/` | 54 (50 + 2 × `bins`/`values` of the histograms) | 780 | `ContextRoundHook.on_round_end` → `curriculum_metrics` | 6 concept (2 histograms, 2 `mean`, `intended/stage`, `intended/context/velocity_threshold`), 4 trust/diagnostic (`num_completed_episodes`, `num_transitions`, 2 `std`), 3 duplicate-population (`completed_episodes/*`, see decision 1), **37 to fold**: 24 `bin_NN` masses (second copy of the histograms), 12 `episode_length/bin_NN` (→ one histogram), `round` |
 | `evaluation/deployment/` | 41 | 21 | `acting.Evaluator` over `EvalWrapper` sums, renamed by `_evaluation_metric_name` | 2 concept (`episode_reward`, `episode_cost`), 4 trust (`episode_reward_std`, `episode_cost_std`, `avg_episode_length`, `std_episode_length`), 4 diagnostic (`episode_forward_reward`, `episode_velocity_value` and their `_std`), **31 noise** (the same duplicates as `episodic/` × 2 for `_std`, plus `epoch_eval_time`, `sps`, `walltime`; `episode_reward_survive` = `avg_episode_length` verified) |
 | `evaluation/uniform/` | 41 | 21 | same | same; verified that `episode_reward` on uniform equals deployment to within eval noise (ratio 1.00, spread 0.09) — the context-blind policy, as in the experiment note |
-| `performance/` | 5 in history (+24 summary-only) | 780 | `training/performance/sinks.WandbSink` | 4 trust + own step metric |
+| `performance/` | 5 in history (+24 summary-only) | 780 | `training/performance` tracker (at the time via its own W&B sink; now through the progress callback) | 4 trust + own step metric (removed) |
 | top level | `environment_steps`, `_step`, `_runtime`, `_timestamp` | 781 | `custom_progress_fn` / W&B | x-axis |
 
 Totals: **174 history keys** (172 for uniform). Concept 16, trust 12,
@@ -352,34 +354,44 @@ that survive the registry, `training_curriculum/*/std`,
 `training_curriculum/episode_length/<dim>` (one histogram per round),
 `training_curriculum/num_transitions`, `performance/epoch_wall_seconds`.
 
-### 7.3 One source of truth
+### 7.3 One source of truth (as built)
 
-`training/dashboard.py`, ~150 lines, W&B-specific, nothing in `contexts/`:
+`training/dashboard/`, W&B-specific, nothing in `contexts/`:
 
-```
-Metric(key_pattern, section, title, unit, reference=None)   # a registry entry
-METRICS: tuple[Metric, ...]                                  # the ~35 we keep
-def keep(key) -> bool                                        # is this key in the registry?
-def reference_values(key, config) -> dict                    # e.g. episodic/cost -> {"episodic/cost_budget": safety_bound}
-def build_view(entity, project, group, config) -> Workspace  # sections + text panels + line plots from METRICS
-```
+| file | holds |
+|---|---|
+| `metrics.py` | the registry. `Metric(pattern, title, unit, group, panel, histogram)` for the 35 keys we keep, `Dropped(pattern, reason)` for the 47 we do not; `registered(key)` returns the metric or `None`, and **raises `UnregisteredMetric`** for anything else. `select_for_logging(metrics, safety_bound)` is what the funnel calls; it also adds `<cost>_budget` next to each per-episode cost. |
+| `view.py` | `RunFacts` (the numbers the text panels state, read from `wandb.config`, missing key → `KeyError`), the four section texts, `plots_for(group, facts)` (metrics sharing a `panel` become one panel; `{evaluation}` expands to deployment and uniform, `{dimension}` to Ω's dimensions), `build_view(...)` → a `wandb_workspaces.Workspace`. |
+| `__main__.py` | `python -m training.dashboard --group <name>`: facts from the group's first run, build, save; re-saving updates the existing view. |
 
-- `run_utils.custom_progress_fn` (the one funnel) drops keys where
-  `keep(key)` is false and adds `reference_values`. The environments and the
-  trainer are untouched; the 125 noise keys simply never reach W&B.
+Around it:
+
+- `run_utils.wandb_progress_fn(safety_bound, verbose)` is the one funnel; it
+  requires an active run (no buffering), passes every key through
+  `select_for_logging`, and logs at `step=environment_steps`. Both entry
+  points (`train_env.py`, `train_curriculum.py`) use it. The environments and
+  the trainer are untouched; the dropped keys never reach W&B.
   `results/common.py` keeps reading `episodic/sum_reward`, `episodic/cost`,
   `episodic/forward_reward` — all kept.
-- `train_env.py` sets `training_metrics_steps` to the round size (decision 1),
-  and `wandb.config` carries `environment_steps_per_round`, `num_rounds`,
-  `context_space` so the text panels can be filled.
-- `python -m training.dashboard --group <name>` builds and saves the view;
-  the group's config values fill the text. Idempotent: re-saving the same
-  group updates the view.
-- Tests (CPU): every key in the two 500 M runs' inventory is either kept or
-  named in a `DROPPED` tuple with a reason (no silent drops); `build_view`
-  serialises offline (`_to_model()`) for a config with and without
-  `intended/*`; `keep` rejects every `bin_NN` and `_std` duplicate.
-- Package: `wandb-workspaces` added to `requirements.txt`.
+- `contexts/setup.py` passes `training_metrics_steps = steps_per_round` to
+  the trainer (decision 1) and puts `num_rounds`,
+  `environment_steps_per_round`, `context_space`, `deployment_distribution`
+  in `wandb.config` for the text panels.
+- `contexts/training_curriculum.py` (was `realised_curriculum.py`; it is the one
+  producer of `training_curriculum/*`, so it is named after the section) logs
+  three histograms per dimension
+  (sampled, experienced, mean episode length per bin) plus mean/std; the
+  `bin_NN` scalars, `completed_episodes/*` and `round` are gone (decisions
+  1–2).
+- Heatmaps: the workspaces SDK has no histogram panel type, so W&B's
+  auto-generated `training_curriculum` section keeps them; the Mechanism text
+  says where to look (the fallback foreseen in §7.4).
+- Tests (`tests/test_dashboard.py`, CPU): every key of the 500 M runs and of
+  a stock `eval/` run is registered; an unknown key raises with instructions;
+  the funnel drops the duplicates and adds the budgets; the view has the four
+  sections in order, text first, smoothing off, grouped by
+  `context_distribution`; the text states cadence, population and budget.
+- Package: `wandb-workspaces` in `requirements.txt` / `pyproject.toml`.
 
 ### 7.4 Decisions taken here
 

@@ -17,8 +17,8 @@ training/contexts/
   registry.py                  suite_contexts(env_name) -> SuiteContexts {space, level_contexts, parameter_names}
   wrapper.py                   ContextualAutoResetWrapper, make_wrap_env_fn, attach_parameters, current_*
   rollout.py                   RoundRollout (all transitions of a round, host) -> EpisodeFeedback (completed episodes)
-  realised_curriculum.py       sampled (≈ q) and experienced (q̂) distributions per round, as wandb.Histogram + scalars
-  round_hook.py                ContextRoundHook(RoundHook): store rollout, update φ, attach it, log q and q̂
+  training_curriculum.py       the training_curriculum/* metrics: intended, sampled (≈ q) and experienced (q̂) per round
+  round_hook.py                ContextRoundHook(RoundHook): store rollout, update φ, attach it, return the round's metrics
   setup.py                     '--context_distribution' / '--deployment_distribution' specs -> train(**kwargs)
 tests/test_contexts.py            8 tests: wrapper mechanics (CPU, ~35 s)
 tests/test_context_training.py    9 tests: specs, rollout, metrics, tiny PPO-Lag runs per distribution (CPU, ~2 min)
@@ -62,20 +62,23 @@ Every context run is evaluated on `deployment` (w) **and** on `uniform` (r):
 `evaluation/deployment/*`, `evaluation/uniform/*`. Run names become
 `<env>_ctx_<uniform|staged123|level1>_<alg>_seed<s>_<ts>`; W&B config gains
 `context_space`, `training_distribution`, `deployment_distribution`,
-`rounds_total`, `steps_per_round`.
+`num_rounds`, `environment_steps_per_round`. The setup also sets the trainer's
+`training_metrics_steps` to one round, so `episodic/*` (per-episode return,
+cost, length of the training rollouts) is logged once per round like
+everything else.
 
 Per round `ContextRoundHook` logs, via `progress_fn` → W&B (per context
-dimension `<d>`, 12 fixed bins over Ω):
+dimension `<d>`, 12 fixed bins over Ω; what is kept and what each key means
+is the registry in `training/dashboard/metrics.py`):
 
 | key | meaning |
 |---|---|
-| `training_curriculum/round` | round index $k$ |
 | `training_curriculum/intended/*` | `distribution.summary(φ_k)` — $q_k$ as the distribution states it (`.../context/velocity_threshold`, `.../stage`) |
 | `training_curriculum/sampled/<d>` | `wandb.Histogram`: one count per *completed episode* — the empirical $q_k$ (which contexts were selected) |
 | `training_curriculum/experienced/<d>` | `wandb.Histogram`: one count per *transition* — $\hat q_k$ (which contexts the gradient came from) |
-| `training_curriculum/{sampled,experienced}/<d>/bin_NN`, `/mean`, `/std` | the same as scalars, for cross-run panels grouped by seed |
-| `training_curriculum/episode_length/<d>/bin_NN` | mean completed-episode length per bin — the mechanism behind sampled ≠ experienced |
-| `training_curriculum/num_transitions`, `num_completed_episodes`, `completed/mean_{return,cost,length}` | bookkeeping |
+| `training_curriculum/{sampled,experienced}/<d>/mean`, `/std` | the one-line summaries that overlay across arms and seeds |
+| `training_curriculum/episode_length/<d>` | `wandb.Histogram`: mean completed-episode length per bin — the mechanism behind sampled ≠ experienced |
+| `training_curriculum/num_transitions`, `num_completed_episodes` | sample sizes behind the two histograms |
 
 W&B renders a per-step sequence of `wandb.Histogram` as a heatmap over time;
 that is the "how does the curriculum evolve" view. Note `sampled` is defined

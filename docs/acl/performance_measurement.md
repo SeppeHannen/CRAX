@@ -43,7 +43,7 @@ the run directory afterwards; the trace artifact is uploaded during sync.
 
 | Item | W&B | Local |
 |---|---|---|
-| per-epoch `epoch_wall_seconds`, `epoch_steps_per_second`, `epoch_compiles`, `epoch_compile_seconds` | run history under `performance/*`, x-axis `performance/environment_steps` | `runs/performance/<run>/performance.json` → `history` |
+| per-epoch `epoch_wall_seconds`, `epoch_steps_per_second`, `epoch_compiles`, `epoch_compile_seconds` | run history under `performance/*`, through the trainer's progress callback like every other metric (so the dashboard registry applies) | `runs/performance/<run>/performance.json` → `history` |
 | run summary (median steady SPS, IQR, compile time, `program_flops`, `program_bytes_accessed`, `program_peak_memory_bytes`, phase timings, `total_compiles`) | `run.summary["performance/…"]` → columns in the runs table | `performance.json` → `summary` |
 | metadata (git SHA/dirty, jax/mujoco versions, GPU, `XLA_FLAGS`) | run config (already) + `performance.json` in run files | `performance.json` → `metadata` |
 | profiler trace | artifact `trace-<run_name>` of type `xprof-trace` | `runs/performance/<run>/trace/` (job side), `runs/traces/` (after fetch) |
@@ -53,8 +53,8 @@ the run directory afterwards; the trace artifact is uploaded during sync.
 * **Two runs side by side**: select both in the runs table, open the *Run
   Comparer* panel → all `performance/*` summary values in one table with diffs.
 * **Throughput over time**: line plot of `performance/epoch_steps_per_second`
-  vs `performance/environment_steps`, grouped by whatever config field you are
-  varying (e.g. `num_envs`).
+  vs `environment_steps`, grouped by whatever config field you are varying
+  (e.g. `num_envs`).  It is also in the dashboard view's Trust section.
 * **Regression columns**: add `performance/steady_steps_per_second_median`,
   `performance/total_compiles`, `performance/program_flops` to the runs table.
   Read the deterministic columns first: if `program_flops` /
@@ -94,7 +94,7 @@ training/performance/
     tracker.py        PerformanceTracker (phases, epochs, compile listener, summary), NullTracker
     aot.py            ahead_of_time_compile(): lower/compile timing + cost/memory analysis
     trace.py          trace_window(): jax.profiler.start_trace/stop_trace in XProf's directory layout
-    sinks.py          WandbSink (history, summary, files, trace artifact), JsonSink
+    sinks.py          WandbSink (summary, files, trace artifact), JsonSink
     fetch_traces.py   CLI: pull xprof-trace artifacts from W&B into one XProf logdir and open it
 ```
 
@@ -104,7 +104,7 @@ training/performance/
   `WANDB_MODE=offline` and refuses `disabled`/`dryrun`. There is no flag to
   run without W&B. Entity and project are pinned in `training/config.py`
   (`WANDB_ENTITY`, `WANDB_PROJECT`) so every machine logs to the same place.
-* Entry points call `run_utils.install_performance_tracker(config, run_name)`
+* Entry points call `run_utils.install_performance_tracker(config, run_name, progress_fn)`
   **after** `wandb.init` and `.finish()` after training. `train_curriculum`
   uses one tracker across all stages (stage-boundary recompiles show up in the
   counts); `transfer.benchmark_safety_transfer` installs one per W&B run.
