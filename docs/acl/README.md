@@ -12,10 +12,13 @@ Giuseppe Hannen's graduation project. Start here.
    seed at 500 M steps: uniform solves level 3, the curriculum collapses when the
    level switches (Lagrange multiplier blow-up) and never recovers. Write-up:
    `experiments/2026-09-20_uniform_vs_staged_velocity_ant.md`.
-3. **A W&B dashboard one can read.** The run page has ~50 keys under
-   `training_curriculum` and ~80 under `evaluation`. Decide what the few panels
-   are that answer "did it work, and what did it train on", and make the rest
-   secondary. Open: how exactly.
+3. **A W&B dashboard one can read.** The run page has 174 history keys; the
+   problem is not the count but that `episode_reward` means three populations.
+   `design/dashboard.md` derives the dashboard from what reviewing a run is
+   (verdict / mechanism / trust / detail; four review situations), classifies
+   every key (16 concept, ~125 noise or duplicate), and proposes eight primary
+   panels. Status: steps 1–2 written, under discussion; step 3 (how, in W&B)
+   not started.
 4. **Let the learner know its context.** Today the policy sees only the state;
    the threshold enters only the cost, so it can learn one behaviour for all of
    Ω and nothing else. Two ways to change that, both change the benchmark's
@@ -92,5 +95,6 @@ docs/acl/
     training_round.md                why one compiled call is one training step
     per_slot_constraints.md          what may differ between parallel environments
     context_spaces_by_suite.md       Ω for each of the nine suites
+    dashboard.md                     what a reviewer needs from W&B, key inventory, the eight primary panels
   profiling_options.md               tool survey (historical)
 ```
