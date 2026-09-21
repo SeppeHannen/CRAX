@@ -1,8 +1,9 @@
+import argparse
 import inspect
 import os
 import time
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 import jax
 import mujoco
@@ -26,9 +27,7 @@ from training.agents.ppo_saute import train as ppo_saute
 from training.agents.sac.train import train as sac_train
 from training.agents.sac_lag import train as sac_lag
 from training.agents.sac_pid import train as sac_pid
-
-# Global metrics buffer instance
-metrics_buffer = []
+from training.dashboard.metrics import select_for_logging
 
 # Pixel-observation training camera
 VISION_CAMERA_OVERRIDES = {
@@ -49,80 +48,46 @@ def morphology_override(env_name, overrides):
     return None
 
 
-def custom_progress_fn(num_steps: int, metrics: Dict[str, Any], verbose: bool = True) -> None:
+ProgressFn = Callable[[int, Mapping[str, Any]], None]
+
+# Console output shows only the metrics a reader glances at during training.
+CONSOLE_KEY_TOKENS = ("lambda", "cost", "reward")
+
+
+def _scalar(value: Any) -> float:
+    """A JAX/NumPy array of any shape as one number (its mean)."""
+    return float(np.asarray(value).reshape(-1).mean())
+
+
+def wandb_progress_fn(safety_bound: float, verbose: bool) -> ProgressFn:
+    """The trainer's progress callback: the registered metrics to the active W&B run.
+
+    Every key passes through the dashboard registry
+    (:func:`training.dashboard.metrics.select_for_logging`): unregistered keys
+    raise, dropped keys never reach W&B, and each per-episode cost is logged
+    with its budget so the panel can show both. Rows are logged at
+    ``step=environment_steps`` and carry it as a key, so it is the x-axis of
+    the default workspace and of the saved view (:mod:`training.dashboard`).
     """
-    Progress function to print metrics and log them to the active Weights & Biases run.
 
-    Metrics are buffered while no run is active (e.g. transfer.py logs per phase)
-    and flushed on the first call that finds one.
+    def log_progress(environment_steps: int, metrics: Mapping[str, Any]) -> None:
+        if wandb.run is None:
+            raise RuntimeError("wandb_progress_fn called without an active W&B run; call wandb.init first")
+        payload: Dict[str, Any] = {
+            key: value if isinstance(value, wandb.Histogram) else _scalar(value)
+            for key, value in select_for_logging(metrics, safety_bound).items()
+        }
+        if not payload:
+            return
+        if verbose:
+            print(f"Step {environment_steps}:")
+            for key, value in payload.items():
+                if isinstance(value, float) and any(token in key for token in CONSOLE_KEY_TOKENS):
+                    print(f"  {key}: {value}")
+        payload["environment_steps"] = environment_steps
+        wandb.log(payload, step=environment_steps)
 
-    Args:
-        num_steps: Current training step
-        metrics: Metrics dictionary
-        verbose: Whether to print metrics to console
-    """
-    global metrics_buffer
-
-    def _mean_value(val):
-        # Convert JAX/NumPy arrays or lists/tuples to a scalar by averaging
-        arr = np.asarray(val)
-        # If it's already scalar, return item; otherwise mean
-        if arr.ndim == 0 or arr.size == 1:
-            return arr.reshape(-1)[0].item()
-        return arr.reshape(-1).mean().item()
-
-    if verbose:
-        print(f"Step {num_steps}:")
-
-    log_data = {}
-    for key, value in metrics.items():
-        if isinstance(value, wandb.Histogram):
-            log_data[key] = value  # W&B media: pass through untouched
-            continue
-        value = _mean_value(value)
-        # Print only key categories to keep console light
-        if verbose and any(tok in key for tok in ("lambda", "cost", "constraint", "reward")):
-            print(f"  {key}: {value}")
-        log_data[key] = value
-
-    # If nothing to log, exit early
-    if not log_data:
-        return
-
-    metrics_buffer.append({"step": num_steps, **log_data})
-
-    if wandb.run is not None:
-        for row in metrics_buffer:
-            payload = {k: row[k] for k in log_data.keys()}
-            payload["environment_steps"] = row["step"]
-            wandb.log(payload, step=row["step"])  # log summarized scalars only
-        # clear the logged history from the buffer
-        metrics_buffer.clear()
-
-
-# What each W&B section holds. Every metric key starts with one of these, and
-# W&B groups panels by that first path segment, so the run page reads as:
-#   episodic/            training rollouts: mean over the episodes that ended in the logging window
-#   training/            optimiser and Lagrange multiplier, throughput
-#   training_curriculum/ which contexts the training rollouts were in (sampled vs experienced), per round
-#   evaluation/<name>/   the frozen policy scored on that distribution (deployment, uniform)
-#   eval/                same, for the single default evaluator of a stock run
-#   performance/         wall-clock, compile, SPS from training/performance
-WANDB_SECTIONS = ("episodic/", "training/", "training_curriculum/", "evaluation/", "eval/", "performance/")
-
-
-def declare_wandb_sections() -> None:
-    """Tell the active run about our sections and x-axis before the first log.
-
-    `define_metric` with a wildcard makes W&B create the section immediately and
-    use the trainer's environment-step counter as the x-axis for all of it, so
-    panels appear grouped and aligned from the first data point.
-    """
-    if wandb.run is None:
-        return
-    wandb.define_metric("environment_steps")
-    for section in WANDB_SECTIONS:
-        wandb.define_metric(section + "*", step_metric="environment_steps")
+    return log_progress
 
 
 def print_progress_fn(num_steps: int, metrics: Dict[str, Any], verbose: bool = True) -> None:
@@ -209,29 +174,28 @@ def require_wandb_login() -> None:
         print("W&B running with WANDB_MODE=offline; run `wandb sync <run dir>` when back online.")
 
 
-def install_performance_tracker(config, run_name: str):
+def install_performance_tracker(config: argparse.Namespace, run_name: str, progress_fn: ProgressFn):
     """Install the process-wide performance tracker if the CLI asked for one.
 
-    Call after ``wandb.init`` so the tracker's scalars, summary and trace
-    artifact attach to that run. Returns the tracker (a ``NullTracker`` when
-    measurement is off) so the caller can ``finish()`` it after training. Safe
-    to call once per seed; a previous tracker is finished automatically.
+    Its per-round scalars go through ``progress_fn`` — the same callback the
+    trainer logs with — so every metric reaches W&B by one path. Call after
+    ``wandb.init`` so the summary and trace artifact attach to that run.
+    Returns the tracker (a ``NullTracker`` when measurement is off) so the
+    caller can ``finish()`` it after training. Safe to call once per seed; a
+    previous tracker is finished automatically.
     """
     from training import performance
 
-    profile_epochs = getattr(config, 'profile_epochs', None)
-    wants_measurement = config is not None and (
-        bool(getattr(config, 'measure_performance', False)) or profile_epochs is not None
-    )
-    if not wants_measurement:
+    if not (config.measure_performance or config.profile_epochs is not None):
         performance.uninstall()
         return performance.get_tracker()
     return performance.install(
         run_name=run_name,
-        output_dir=getattr(config, 'performance_dir', 'runs/performance'),
-        profile_epochs=profile_epochs or (),
-        log_compiles=bool(getattr(config, 'log_compiles', False)),
-        verbose=not getattr(config, 'quiet', False),
+        output_dir=config.performance_dir,
+        report_metrics=progress_fn,
+        profile_epochs=config.profile_epochs or (),
+        log_compiles=config.log_compiles,
+        verbose=not config.quiet,
     )
 
 

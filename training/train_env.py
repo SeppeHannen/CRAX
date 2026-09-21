@@ -8,18 +8,15 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
-
 import wandb
 from crax import envs
 from training import contexts
 from training.config import build_base_parser
 from training.run_utils import (
     collect_rollout_metrics, record_episode_video, setup_gpu_environment,
-    get_algorithm_train_fn, filter_kwargs_for_fn, custom_progress_fn,
+    get_algorithm_train_fn, filter_kwargs_for_fn, wandb_progress_fn,
     make_vision_network_factory, morphology_override, VISION_CAMERA_OVERRIDES,
     make_periodic_vision_video_fn, install_performance_tracker, require_wandb_login,
-    declare_wandb_sections,
 )
 from crax.envs.limb_colors import colorize_env_limbs
 
@@ -162,7 +159,6 @@ def main():
             job_type=alg_name,
             tags=config.wandb_tags,
         )
-        declare_wandb_sections()
 
         if config.store_model:
             root_dir = Path(__file__).parent.parent.resolve()  # repo root, not training/
@@ -170,8 +166,7 @@ def main():
             os.makedirs(ckpt_root, exist_ok=True)
             cfg["save_checkpoint_path"] = ckpt_root
 
-        # Setup metrics collection
-        progress_fn = functools.partial(custom_progress_fn, verbose=not config.quiet)
+        progress_fn = wandb_progress_fn(safety_bound=config.safety_bound, verbose=not config.quiet)
 
         # Get the appropriate training function
         train_fn_base = get_algorithm_train_fn(alg_name)
@@ -211,27 +206,16 @@ def main():
         train_fn = functools.partial(train_fn_base, **train_kwargs)
 
         # Optional performance measurement (--measure_performance / --profile_epochs)
-        performance_tracker = install_performance_tracker(config, run_name)
+        performance_tracker = install_performance_tracker(config, run_name, progress_fn)
 
         # Train the agent
-        make_inference_fn, params, final_metrics, eval_env = train_fn(
+        make_inference_fn, params, _, eval_env = train_fn(
             environment=env,
             eval_env=eval_env,
             progress_fn=progress_fn
         )
         print("Training finished.")
         performance_tracker.finish()
-
-        # Log final metrics to wandb
-        if final_metrics:
-            final_log_data = {}
-            for key, value in final_metrics.items():
-                if value is not None:
-                    if isinstance(value, (np.ndarray,)) and value.ndim > 0:
-                        value = value.mean()
-                    final_log_data[key] = value
-            if final_log_data:
-                wandb.log(final_log_data, step=int(config.num_timesteps))
 
         if not config.skip_rollout:
             print(f"\nPerforming rollout evaluation...")

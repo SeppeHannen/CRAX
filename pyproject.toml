@@ -47,6 +47,7 @@ train = [
     "optax",
     "orbax-checkpoint",
     "wandb",
+    "wandb-workspaces",
     "imageio[ffmpeg]",
     "matplotlib",
 ]

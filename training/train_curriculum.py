@@ -17,7 +17,7 @@ from training import curriculum
 from training.config import build_base_parser
 from training.run_utils import (
     setup_gpu_environment, get_algorithm_train_fn, filter_kwargs_for_fn,
-    custom_progress_fn, record_episode_video, make_vision_network_factory,
+    wandb_progress_fn, record_episode_video, make_vision_network_factory,
     morphology_override, VISION_CAMERA_OVERRIDES, install_performance_tracker,
     require_wandb_login,
 )
@@ -80,8 +80,7 @@ def main():
             os.makedirs(ckpt_root, exist_ok=True)
             cfg["save_checkpoint_path"] = ckpt_root
 
-        # Setup metrics collection
-        progress_fn = functools.partial(custom_progress_fn, verbose=not config.quiet)
+        progress_fn = wandb_progress_fn(safety_bound=config.safety_bound, verbose=not config.quiet)
 
         # Get the appropriate training function
         train_fn_base = get_algorithm_train_fn(alg_name)
@@ -111,7 +110,7 @@ def main():
         # Optional performance measurement (--measure_performance / --profile_epochs).
         # One tracker spans all stages, so recompiles at stage boundaries show up
         # in the compile count and per-epoch records.
-        performance_tracker = install_performance_tracker(config, run_name)
+        performance_tracker = install_performance_tracker(config, run_name, progress_fn)
 
         # Train with curriculum
         policy_fn, final_params, results, eval_env = curriculum.train_curriculum(

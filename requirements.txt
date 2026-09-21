@@ -31,6 +31,7 @@ warp-lang==1.16.0
 optax>=0.2.0
 orbax-checkpoint
 wandb>=0.19.0
+wandb-workspaces>=0.4.0  # saved W&B views (training/dashboard)
 imageio>=2.37.0
 matplotlib>=3.10.0
 
