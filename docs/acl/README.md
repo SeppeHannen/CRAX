@@ -16,9 +16,26 @@ Giuseppe Hannen's graduation project. Start here.
    `training_curriculum` and ~80 under `evaluation`. Decide what the few panels
    are that answer "did it work, and what did it train on", and make the rest
    secondary. Open: how exactly.
-4. **Make the learner contextual.** Put ω in the observation so the policy knows
-   which task it is in (a contextual CMDP). Changes the benchmark's observation
-   space — agree with Tristan first.
+4. **Let the learner know its context.** Today the policy sees only the state;
+   the threshold enters only the cost, so it can learn one behaviour for all of
+   Ω and nothing else. Two ways to change that, both change the benchmark's
+   observation space (agree with Tristan first):
+   - **told**: ω in the observation — a contextual CMDP, the oracle;
+   - **must infer**: the previous step's cost (and reward) in the observation,
+     with or without memory (frame stack; recurrent policy). Measure the gap to
+     the oracle before building memory: it is the value of inferring ω.
+
+   *Reading, before designing this:* with ω hidden, the agent's problem is a
+   **POMDP** whose hidden state is (s, ω); it is Markov again only over the
+   **belief state** b_t = p(ω | history), and a recurrent policy is a learned
+   approximation of that belief. A **sufficient statistic** is any compression
+   of the history that preserves the belief — for the velocity suite it is just
+   the tightest bracket [max v with cost, min v without cost]. Look up: belief
+   MDP / Bayes-adaptive MDP (Duff 2002; Ghavamzadeh et al. 2015 survey),
+   RL² (Duan et al. 2016) and VariBAD (Zintgraf et al. 2020) for memory-based
+   meta-RL that feeds (s, a, r) back into the policy, and the definition of a
+   sufficient statistic (Fisher–Neyman) for why "remember everything" is
+   overkill.
 5. **Repeat 2 with PPO-Saute.** It augments the state with the remaining safety
    budget and enforces the constraint per episode rather than in expectation,
    and has no dual variable that carries the old distribution across a switch.
