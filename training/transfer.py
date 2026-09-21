@@ -281,7 +281,7 @@ def benchmark_safety_transfer(
     unsafe_kwargs['progress_fn'] = unsafe_progress_fn
 
     base_name = (wandb_config or {}).get('base_name', f'{env_name}_transfer')
-    performance_tracker = install_performance_tracker(performance_config, f"{base_name}_ppo")
+    performance_tracker = install_performance_tracker(performance_config, f"{base_name}_ppo", unsafe_progress_fn)
     start_time = time.time()
     unsafe_make_policy, unsafe_params, unsafe_final_metrics, returned_eval_env = unsafe_train_fn(**unsafe_kwargs)
     unsafe_training_time = time.time() - start_time
@@ -418,7 +418,7 @@ def benchmark_safety_transfer(
 
         safe_kwargs['progress_fn'] = make_safe_progress_fn(algo_name, safe_metrics_history)
 
-        performance_tracker = install_performance_tracker(performance_config, f"{base_name}_{algo_name}")
+        performance_tracker = install_performance_tracker(performance_config, f"{base_name}_{algo_name}", safe_kwargs['progress_fn'])
         start_time = time.time()
         safe_make_policy, safe_params, safe_final_metrics, returned_eval_env_safe = safe_train_fn(**safe_kwargs)
         safe_training_time = time.time() - start_time

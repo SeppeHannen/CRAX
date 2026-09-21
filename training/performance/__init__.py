@@ -18,12 +18,14 @@ Design
   are no-ops, so the trainer carries no ``if profiling:`` branches.
 * Compilation is observed passively through JAX's monitoring hooks; no call
   site has to be wrapped to count or time recompiles.
-* Weights & Biases is the system of record: per-epoch scalars go to the run
-  history, the summary to ``run.summary``, and the profiler trace is uploaded
-  as an ``xprof-trace`` artifact so it can be fetched from a cluster run with
-  ``python -m training.performance.fetch_traces <run>``.  A JSON copy is also
-  written locally and attached to the run's files.  ``wandb`` is imported
-  lazily and the sink is inert when no run is active.
+* Weights & Biases is the system of record.  Per-epoch scalars
+  (``performance/*``) are reported through the same progress callback the
+  trainer logs with, so they take the one path every metric takes (and pass
+  the dashboard registry); the summary goes to ``run.summary`` and the
+  profiler trace is uploaded as an ``xprof-trace`` artifact so it can be
+  fetched from a cluster run with ``python -m training.performance.fetch_traces
+  <run>``.  A JSON copy is also written locally and attached to the run's
+  files.
 
 Typical use::
 
@@ -31,7 +33,7 @@ Typical use::
 
     # entry point, once per run, after wandb.init
     performance.install(run_name="...", output_dir="runs/performance",
-                        profile_epochs=[3, 4])
+                        report_metrics=progress_fn, profile_epochs=[3, 4])
 
     # library code, anywhere
     tracker = performance.get_tracker()

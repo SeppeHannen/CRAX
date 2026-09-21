@@ -20,6 +20,10 @@ from training.performance.aot import ProgramStatistics, ahead_of_time_compile
 from training.performance.sinks import JsonSink, WandbSink
 from training.performance.trace import find_trace_files, trace_window
 
+# Per-round scalars are reported through this: (environment_steps, {"performance/<name>": value}).
+ReportMetrics = Callable[[int, Dict[str, float]], None]
+METRIC_PREFIX = "performance/"
+
 # --------------------------------------------------------------------------- #
 # Null object
 # --------------------------------------------------------------------------- #
@@ -118,6 +122,7 @@ class PerformanceTracker:
         self,
         run_name: str,
         output_dir: str,
+        report_metrics: ReportMetrics,
         *,
         profile_epochs: Sequence[int] = (),
         log_compiles: bool = False,
@@ -125,6 +130,7 @@ class PerformanceTracker:
     ):
         self.run_name = run_name
         self.output_dir = os.path.join(output_dir, run_name)
+        self.report_metrics = report_metrics
         self.profile_epochs = set(int(i) for i in profile_epochs)
         self.verbose = verbose
 
@@ -142,7 +148,6 @@ class PerformanceTracker:
 
         os.makedirs(self.output_dir, exist_ok=True)
         self._json_sink = JsonSink(os.path.join(self.output_dir, "performance.json"))
-        # W&B is the system of record; the sink is inert if no run is active.
         self._wandb_sink = WandbSink()
 
         self._install_compile_listener()
@@ -244,7 +249,7 @@ class PerformanceTracker:
         }
         total_steps = self._total_environment_steps()
         self._json_sink.log_scalars(scalars, environment_steps=total_steps)
-        self._wandb_sink.log_scalars(scalars, environment_steps=total_steps)
+        self.report_metrics(total_steps, {METRIC_PREFIX + key: value for key, value in scalars.items()})
         if index > 0 and not record.is_steady:
             self._say(
                 f"epoch {global_index}: {len(compiles)} compile(s) took {compile_seconds:.1f}s "
@@ -393,7 +398,8 @@ _TRACKER: Any = NullTracker()
 
 def install(
     run_name: str,
-    output_dir: str = "runs/performance",
+    output_dir: str,
+    report_metrics: ReportMetrics,
     *,
     profile_epochs: Sequence[int] = (),
     log_compiles: bool = False,
@@ -401,8 +407,10 @@ def install(
 ) -> PerformanceTracker:
     """Create the process-wide tracker.  Call once per run, before training.
 
-    Call it *after* ``wandb.init`` so the epoch scalars, summary and trace
-    artifact land in that run.
+    ``report_metrics`` receives the per-round scalars (``performance/*``) at
+    the run's environment-step count: pass the same progress callback the
+    trainer logs with, so every metric takes one path to W&B. Call *after*
+    ``wandb.init`` so the summary and trace artifact land in that run.
     """
     global _TRACKER
     if isinstance(_TRACKER, PerformanceTracker) and not _TRACKER._finished:
@@ -410,6 +418,7 @@ def install(
     _TRACKER = PerformanceTracker(
         run_name,
         output_dir,
+        report_metrics,
         profile_epochs=profile_epochs,
         log_compiles=log_compiles,
         verbose=verbose,
