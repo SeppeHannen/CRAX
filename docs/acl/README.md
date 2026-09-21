@@ -7,11 +7,22 @@ Giuseppe Hannen's graduation project. Start here.
 1. **Profile cleanly.** XProf traces and per-round throughput go to W&B for
    every run, so we always know whether training is still fast. Done:
    `training/performance/`, guide in `performance_measurement.md`.
-2. **Manual curriculum vs uniform.** On `safe_velocity_ant`, train PPO-Lagrange
-   with the three-level curriculum (level 1 → 2 → 3) and with contexts drawn
-   uniformly from Ω, and compare their performance on level 3. Code is done and
-   tested; the run is next.
-3. **Then** actual curriculum methods, and more suites.
+2. **Manual curriculum vs uniform.** On `safe_velocity_ant`, PPO-Lagrange, level
+   1 → 2 → 3 vs contexts drawn uniformly from Ω, compared on level 3. Done, one
+   seed at 500 M steps: uniform solves level 3, the curriculum collapses when the
+   level switches (Lagrange multiplier blow-up) and never recovers. Write-up:
+   `experiments/2026-09-20_uniform_vs_staged_velocity_ant.md`.
+3. **A W&B dashboard one can read.** The run page has ~50 keys under
+   `training_curriculum` and ~80 under `evaluation`. Decide what the few panels
+   are that answer "did it work, and what did it train on", and make the rest
+   secondary. Open: how exactly.
+4. **Make the learner contextual.** Put ω in the observation so the policy knows
+   which task it is in (a contextual CMDP). Changes the benchmark's observation
+   space — agree with Tristan first.
+5. **Repeat 2 with PPO-Saute.** It augments the state with the remaining safety
+   budget and enforces the constraint per episode rather than in expectation,
+   and has no dual variable that carries the old distribution across a switch.
+6. **Then** actual curriculum methods, and more suites.
 
 ## Vocabulary
 
