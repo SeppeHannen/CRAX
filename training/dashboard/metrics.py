@@ -116,8 +116,8 @@ KEPT: Tuple[Metric, ...] = (
     # Verdict: the frozen policy on the evaluation distributions.
     Metric("{evaluation}/episode_reward", "Return per episode", "return (the suite's scaled reward)", Group.VERDICT,
            f"the reward (defined above) summed over one episode (≤ {{episode_length}} steps), mean over {EVALUATION_POPULATION}."),
-    Metric("{evaluation}/episode_cost", "Cost per episode", "steps in violation per episode", Group.VERDICT,
-           f"number of steps in violation in one episode, mean over {EVALUATION_POPULATION}."),
+    Metric("{evaluation}/episode_cost", "Cost per episode", "cost per episode", Group.VERDICT,
+           f"the cost (defined above) summed over one episode, mean over {EVALUATION_POPULATION}."),
     # Mechanism: what the student trained on and how the constraint reacted.
     Metric("training_curriculum/experienced/{dimension}", "Contexts experienced (per transition)", "share of the round's transitions per bin", Group.MECHANISM,
            "heatmap over rounds: the share of the round's *transitions* whose episode ran at each value of {dimension} (q̂, the realised curriculum).", histogram=True),
@@ -133,8 +133,9 @@ KEPT: Tuple[Metric, ...] = (
            "which stage of a staged curriculum the round sampled from (absent for other distributions)."),
     Metric("training/lambda_lagr", "Lagrange multiplier λ", "λ", Group.MECHANISM,
            "PPO-Lagrange's multiplier after the round's update; it grows while the batch's cost per step exceeds the budget per step and shrinks otherwise."),
-    Metric("episodic/cost", "Training cost per episode", "steps in violation per episode", Group.MECHANISM,
-           f"steps in violation per episode, mean over {TRAINING_EPISODES}. Not comparable to Verdict's cost."),
+    Metric("episodic/cost", "Training cost per episode", "cost per episode", Group.MECHANISM,
+           f"the cost (defined in the Verdict section) summed over one episode, mean over {TRAINING_EPISODES}. Not "
+           f"comparable to Verdict's cost."),
     Metric("episodic/sum_reward", "Training return per episode", "return (the suite's scaled reward)", Group.MECHANISM,
            f"reward summed over one episode, mean over {TRAINING_EPISODES}."),
     # Trust: is the run healthy enough to believe the above.
@@ -144,7 +145,7 @@ KEPT: Tuple[Metric, ...] = (
            f"few steps = fell almost immediately."),
     Metric("{evaluation}/episode_reward_std", "Return spread over evaluation episodes", "std of return", Group.TRUST,
            f"standard deviation of the return over the {EVALUATION_POPULATION} — how noisy the Verdict return is."),
-    Metric("{evaluation}/episode_cost_std", "Cost spread over evaluation episodes", "std of steps in violation", Group.TRUST,
+    Metric("{evaluation}/episode_cost_std", "Cost spread over evaluation episodes", "std of cost per episode", Group.TRUST,
            f"standard deviation of the cost over the {EVALUATION_POPULATION} — how noisy the Verdict cost is."),
     Metric("{evaluation}/avg_episode_length", "Evaluation episode length", "steps", Group.TRUST,
            f"steps per episode, mean over {EVALUATION_POPULATION}; below {{episode_length}} means the agent fell before "
