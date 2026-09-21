@@ -1,8 +1,8 @@
 # A W&B dashboard one can read
 
 Status: step 1 (first principles, §1–5) and step 2 (inventory, §6) written
-2026-09-21, for discussion. Nothing implemented yet; step 3 (how) waits for
-the discussion.
+2026-09-21 and discussed; §7 is the resulting design for step 3, awaiting a go
+before implementation. Nothing implemented yet.
 
 ## 1. What a run is for
 
@@ -242,3 +242,157 @@ key tell the population: 780 = once per round, 390 = every second round
 Totals: **174 history keys** (172 for uniform). Concept 16, trust 12,
 diagnostic ~20, noise or second copy ~125. The eight primary panels in §5
 need 13 of the 174 keys.
+
+## 7. The review experience (step 3, design)
+
+Written after discussing §1–6. Two things were still wrong with §5: it did
+not say *how a reviewer learns what a number is* without opening code, and it
+did not say *when* a number exists. This section fixes both and is the spec
+for the implementation. It is written to hold for every suite, not just Ant.
+
+### 7.1 Three rules
+
+1. **Every panel group starts with a text panel** that states, for the graphs
+   below it: the population (what was averaged over), the unit, the cadence
+   (at which environment steps a number exists), and what to compare against.
+   The reviewer never needs the code.
+2. **Groups follow the review questions in order** — Verdict, Mechanism,
+   Trust, Detail — not the producing module. Verdict and Mechanism are open;
+   Trust and Detail are collapsed.
+3. **A point appears only where a number was computed.** No smoothing
+   anywhere (`smoothing_type = none`). The text panel states the cadence, so
+   the straight segments W&B draws between the 21 evaluation points are not
+   mistaken for data. All training-side series share one cadence: one value
+   per round (decision 1 in §5 → `episodic/` window = one round).
+
+What W&B cannot do, stated so nobody looks for it: points-only rendering is
+per run-ID, not per panel, so lines stay; series longer than ~500 points are
+bucketed (min/avg/max per bucket; our 780 rounds → ~1.5 rounds per bucket,
+exact when zoomed); a panel has a title and axis labels but no description —
+that is what rule 1's text panel is for; there is no constant reference line —
+the budget is logged as a metric next to the cost so it is a line on the same
+panel.
+
+### 7.2 The view
+
+One saved W&B view per experiment group (`--wandb_group`), generated from the
+repo, runset filtered to that group and grouped by `context_distribution`
+(mean, min–max band across seeds). The same generator with no group makes the
+project's default view. Layout: two columns for the primary sections, three
+for the rest. `{…}` are filled from the group's `wandb.config`.
+
+**Verdict** (open, pinned) — text panel:
+
+> Frozen policy, evaluated {num_evals} times over the run, every
+> {num_timesteps / (num_evals − 1)} environment steps; {num_eval_envs}
+> episodes per evaluation, one point per evaluation, segments between points
+> are not data. **Deployment** = `{deployment_distribution}`; **Uniform Ω** =
+> contexts drawn uniformly from Ω (`{context_space}`). Return and cost are
+> **sums over one episode** (≤ {episode_length} steps), mean over the
+> {num_eval_envs} episodes. Reward is the suite's scaled reward. Cost is the
+> number of steps in violation; the dashed line is the budget
+> {safety_bound} per episode — a policy is safe when cost is under it.
+> Lines: one per training distribution, mean over seeds, band = min–max.
+
+| panel | series | y label |
+|---|---|---|
+| Return per episode on deployment | `evaluation/deployment/episode_reward` | return (scaled reward) |
+| Cost per episode on deployment | `evaluation/deployment/episode_cost`, `evaluation/deployment/episode_cost_budget` | violating steps per episode |
+| Return per episode on uniform Ω | `evaluation/uniform/episode_reward` | return |
+| Cost per episode on uniform Ω | `evaluation/uniform/episode_cost`, `…/episode_cost_budget` | violating steps per episode |
+
+**Mechanism** (open) — text panel:
+
+> What the student trained on and how the constraint reacted. One point per
+> **round** (= one PPO training step = {environment_steps_per_round} steps;
+> {num_rounds} rounds). Heatmaps: Ω cut into {NUM_BINS} bins, colour = share
+> of the round's **transitions** (experienced, q̂) or **completed episodes**
+> (sampled, q) in that bin; they differ when episode length depends on the
+> context. Mean context: the mean of those same two distributions, the version
+> that overlays across arms. λ is PPO-Lagrange's multiplier after the round.
+> Training cost per episode: mean over the training episodes that **ended in
+> the round**, under whatever contexts the distribution sampled, with
+> exploration noise — not comparable to Verdict's cost; the budget line is the
+> same {safety_bound}.
+
+| panel | series |
+|---|---|
+| Contexts experienced (per transition), heatmap over rounds | `training_curriculum/experienced/<dim>` |
+| Contexts sampled (per episode), heatmap over rounds | `training_curriculum/sampled/<dim>` |
+| Mean context, sampled vs experienced | `…/sampled/<dim>/mean`, `…/experienced/<dim>/mean`, `…/intended/context/<dim>` when present |
+| Lagrange multiplier λ | `training/lambda_lagr` |
+| Training cost per episode | `episodic/cost`, `episodic/cost_budget` |
+| Training return per episode | `episodic/sum_reward` |
+
+**Trust** (collapsed) — text panel:
+
+> Is the run healthy enough to believe the above? Episode length: mean over
+> training episodes ended in the round; {episode_length} = full length, a
+> collapse to a few steps means the policy falls or freezes. Evaluation
+> spread: std over the {num_eval_envs} evaluation episodes — how noisy each
+> Verdict point is. Throughput and compiles from the performance tracker;
+> more than one compile after the first round means a shape changed.
+
+| panel | series |
+|---|---|
+| Training episode length | `episodic/length` |
+| Evaluation spread on deployment | `evaluation/deployment/episode_reward_std`, `…/episode_cost_std` |
+| Evaluation episode length | `evaluation/deployment/avg_episode_length`, `evaluation/uniform/avg_episode_length` |
+| Completed episodes per round | `training_curriculum/num_completed_episodes` |
+| Steps per second | `performance/epoch_steps_per_second` |
+| Compiles per round | `performance/epoch_compiles` |
+
+**Detail** (collapsed) — text panel: "Everything else we keep. Same cadences
+as above." Panels: `training/cost_violation` (text: *per-transition* cost in
+the PPO batch minus budget/episode_length = {safety_bound/episode_length};
+× {episode_length} gives per-episode units), `training/mean_cost`, the five
+losses, `episodic/forward_reward`, `episodic/reward_ctrl`,
+`episodic/velocity_value`, the suite-specific `evaluation/*/episode_<x>`
+that survive the registry, `training_curriculum/*/std`,
+`training_curriculum/episode_length/<dim>` (one histogram per round),
+`training_curriculum/num_transitions`, `performance/epoch_wall_seconds`.
+
+### 7.3 One source of truth
+
+`training/dashboard.py`, ~150 lines, W&B-specific, nothing in `contexts/`:
+
+```
+Metric(key_pattern, section, title, unit, reference=None)   # a registry entry
+METRICS: tuple[Metric, ...]                                  # the ~35 we keep
+def keep(key) -> bool                                        # is this key in the registry?
+def reference_values(key, config) -> dict                    # e.g. episodic/cost -> {"episodic/cost_budget": safety_bound}
+def build_view(entity, project, group, config) -> Workspace  # sections + text panels + line plots from METRICS
+```
+
+- `run_utils.custom_progress_fn` (the one funnel) drops keys where
+  `keep(key)` is false and adds `reference_values`. The environments and the
+  trainer are untouched; the 125 noise keys simply never reach W&B.
+  `results/common.py` keeps reading `episodic/sum_reward`, `episodic/cost`,
+  `episodic/forward_reward` — all kept.
+- `train_env.py` sets `training_metrics_steps` to the round size (decision 1),
+  and `wandb.config` carries `environment_steps_per_round`, `num_rounds`,
+  `context_space` so the text panels can be filled.
+- `python -m training.dashboard --group <name>` builds and saves the view;
+  the group's config values fill the text. Idempotent: re-saving the same
+  group updates the view.
+- Tests (CPU): every key in the two 500 M runs' inventory is either kept or
+  named in a `DROPPED` tuple with a reason (no silent drops); `build_view`
+  serialises offline (`_to_model()`) for a config with and without
+  `intended/*`; `keep` rejects every `bin_NN` and `_std` duplicate.
+- Package: `wandb-workspaces` added to `requirements.txt`.
+
+### 7.4 Decisions taken here
+
+- Decision 1: `episodic/` is the one training-episode population, per round.
+  `completed_episodes/*` goes.
+- Decision 2: `bin_NN` scalars go; heatmaps are per run. Cross-seed q̂ for the
+  paper is computed offline.
+- Decision 3: no key renames now. Titles and text carry the meaning; renames
+  of upstream keys (`cost_violation`, `episode_reward`) go on the list for
+  Tristan.
+- Decision 4: budgets are logged as `<cost key>_budget` next to the cost, from
+  `safety_bound`; the only cost in evaluation units is per episode.
+- Heatmap panels: W&B auto-generates them for histogram keys; whether the
+  workspaces SDK can place them in our Mechanism section is verified first
+  in implementation. If not, they stay in an auto section named
+  `training_curriculum` directly under Mechanism, and the text panel says so.
