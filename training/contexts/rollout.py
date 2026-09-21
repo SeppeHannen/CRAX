@@ -6,7 +6,7 @@ ended an episode; ``episode_metrics`` then holds that episode's totals). On the
 host this becomes a :class:`RoundRollout`, from which two things are derived:
 
 * the realised curriculum q̂ — a histogram over *all* transitions' contexts
-  (:mod:`realised_curriculum`);
+  (:mod:`training_curriculum`);
 * the :class:`EpisodeFeedback` a distribution learns from — one row per
   *completed* episode (:func:`completed_episodes`).
 """

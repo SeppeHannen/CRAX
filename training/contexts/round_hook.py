@@ -4,9 +4,8 @@ Inside the compiled training step the wrapper samples contexts from frozen
 parameters φ_k. Between calls, :class:`ContextRoundHook` closes the loop: it
 takes the round's transitions, extracts the completed episodes, asks the
 distribution for φ_{k+1}, and writes φ_{k+1} into the environment state that
-the next call will run with. It also reports the intended curriculum q (from
-``distribution.summary(φ_k)``) and the realised one q̂ (from the transitions),
-so the two are always logged side by side.
+the next call will run with. It returns the round's ``training_curriculum/*``
+metrics (:mod:`training.contexts.training_curriculum`) for the trainer to log.
 """
 from __future__ import annotations
 
@@ -16,9 +15,9 @@ import numpy as np
 from crax.envs.base import State
 
 from training.rounds import RoundHook
-from training.contexts.distribution import ContextDistribution, EpisodeFeedback, Params
-from training.contexts.realised_curriculum import curriculum_metrics
+from training.contexts.distribution import ContextDistribution, Params
 from training.contexts.rollout import ROLLOUT_FIELDS, RoundRollout, completed_episodes
+from training.contexts.training_curriculum import training_curriculum_metrics
 from training.contexts.wrapper import attach_parameters, current_parameters
 
 
@@ -28,7 +27,6 @@ class ContextRoundHook(RoundHook):
     def __init__(self, distribution: ContextDistribution):
         self.distribution = distribution
         self.parameters: Optional[Params] = None  # φ for the next round; None until the first round ends
-        self.last_feedback: Optional[EpisodeFeedback] = None
         self._recorded_rollout: Optional[Mapping[str, np.ndarray]] = None
 
     @property
@@ -47,19 +45,7 @@ class ContextRoundHook(RoundHook):
 
         parameters = self.parameters if self.parameters is not None else current_parameters(env_state)
         self.parameters = self.distribution.update(parameters, feedback)
-        self.last_feedback = feedback
         env_state = attach_parameters(env_state, self.parameters)
 
-        # All of this describes the *training* rollouts, hence the prefix: it sits
-        # in W&B next to `episodic/*` (also training) and apart from `evaluation/*`.
-        prefix = "training_curriculum/"
-        metrics: Dict[str, Any] = {prefix + "round": float(round_index)}
-        for key, value in self.distribution.summary(parameters).items():
-            metrics[f"{prefix}intended/{key}"] = value  # q as the distribution states it
-        for key, value in curriculum_metrics(self.distribution.space, rollout).items():
-            metrics[prefix + key] = value  # q as sampled, q̂ as experienced
-        if feedback.num_completed:
-            metrics[f"{prefix}completed_episodes/mean_return"] = float(feedback.returns.mean())
-            metrics[f"{prefix}completed_episodes/mean_cost"] = float(feedback.costs.mean())
-            metrics[f"{prefix}completed_episodes/mean_length"] = float(feedback.lengths.mean())
-        return env_state, metrics
+        # `parameters` is φ_k, the distribution the round was actually sampled from.
+        return env_state, training_curriculum_metrics(self.distribution, parameters, rollout)

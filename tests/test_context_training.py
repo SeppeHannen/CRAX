@@ -23,7 +23,7 @@ import pytest
 
 from crax import envs
 from training import contexts as C
-from training.contexts.realised_curriculum import NUM_BINS
+from training.contexts.training_curriculum import NUM_BINS, SECTION as CURRICULUM
 from training.agents.ppo_lag.train import train as train_ppo_lag
 
 ENV_NAME = "safe_velocity_ant"
@@ -78,22 +78,31 @@ def test_rollout_flattens_and_extracts_completed_episodes():
     assert bool(np.all(feedback.safe(cost_threshold=5.0)))
 
 
-def test_curriculum_metrics_give_sampled_and_experienced_distributions():
+def _histogram_masses(histogram) -> np.ndarray:
+    return np.asarray(histogram.histogram, dtype=float)
+
+
+def test_training_curriculum_metrics_give_intended_sampled_and_experienced():
     import wandb
 
     suite = C.suite_contexts(ENV_NAME)
+    distribution = C.parse_distribution("staged:1,2,3", suite, total_rounds=6)
     data = _synthetic_round()
-    metrics = C.curriculum_metrics(suite.space, data)
+    metrics = C.training_curriculum_metrics(distribution, distribution.initialise(jax.random.PRNGKey(0)), data)
+    assert all(key.startswith(CURRICULUM) for key in metrics)
     for name in ("sampled", "experienced"):
-        assert isinstance(metrics[f"{name}/velocity_threshold"], wandb.Histogram)
-        mass = [metrics[f"{name}/velocity_threshold/bin_{i:02d}"] for i in BINS]
-        assert sum(mass) == pytest.approx(1.0)
-    assert metrics["num_transitions"] == 10
-    assert metrics["num_completed_episodes"] == 2
-    assert metrics["experienced/velocity_threshold/mean"] == pytest.approx(1.5)  # all 10 transitions
-    assert metrics["sampled/velocity_threshold/mean"] == pytest.approx(1.5)  # episodes at 1.22 and 1.78
-    lengths = [metrics[f"episode_length/velocity_threshold/bin_{i:02d}"] for i in BINS]
-    assert sorted(l for l in lengths if not np.isnan(l)) == [25.0, 25.0]
+        histogram = metrics[f"{CURRICULUM}{name}/velocity_threshold"]
+        assert isinstance(histogram, wandb.Histogram)
+        assert len(histogram.histogram) == NUM_BINS
+        assert _histogram_masses(histogram).sum() == pytest.approx(1.0)
+    assert metrics[CURRICULUM + "intended/stage"] == 0
+    assert metrics[CURRICULUM + "num_transitions"] == 10
+    assert metrics[CURRICULUM + "num_completed_episodes"] == 2
+    assert metrics[CURRICULUM + "experienced/velocity_threshold/mean"] == pytest.approx(1.5)  # all 10 transitions
+    assert metrics[CURRICULUM + "sampled/velocity_threshold/mean"] == pytest.approx(1.5)  # episodes at 1.22 and 1.78
+    lengths = _histogram_masses(metrics[CURRICULUM + "episode_length/velocity_threshold"])
+    assert sorted(lengths[lengths > 0]) == [25.0, 25.0]  # 0 where no episode ended
+    assert not any("bin_" in key or "completed_episodes/" in key for key in metrics)
 
 
 # --------------------------------------------------------------------------- #
@@ -111,14 +120,10 @@ TINY = dict(
     num_evals=3,  # initial + 2 -> 2 evaluation blocks
     learning_rate=1e-3,
     normalize_observations=True,
-    log_training_metrics=False,
 )
 STEPS_PER_ROUND = TINY["batch_size"] * TINY["unroll_length"] * TINY["num_minibatches"]  # 80
 TOTAL_ROUNDS = 6
 NUM_TIMESTEPS = STEPS_PER_ROUND * TOTAL_ROUNDS
-
-
-BINS = range(NUM_BINS)
 
 
 def _run(training_spec: str) -> Tuple[C.ContextTrainingSetup, List[Tuple[int, Dict[str, Any]]], List[float]]:
@@ -156,11 +161,11 @@ def _run(training_spec: str) -> Tuple[C.ContextTrainingSetup, List[Tuple[int, Di
     return setup, history, compile_seconds
 
 
-CURRICULUM = "training_curriculum/"
+EXPERIENCED = CURRICULUM + "experienced/velocity_threshold"
 
 
 def _round_entries(history):
-    return [(step, m) for step, m in history if CURRICULUM + "round" in m]
+    return [(step, m) for step, m in history if EXPERIENCED in m]
 
 
 @pytest.mark.parametrize("training_spec", ["uniform", "staged:1,2,3", "level:1"])
@@ -168,14 +173,18 @@ def test_end_to_end_one_round_per_call_with_both_evaluations(training_spec):
     setup, history, _ = _run(training_spec)
 
     round_entries = _round_entries(history)
-    assert [int(m[CURRICULUM + "round"]) for _, m in round_entries] == list(range(TOTAL_ROUNDS))
     assert [step for step, _ in round_entries] == [STEPS_PER_ROUND * (k + 1) for k in range(TOTAL_ROUNDS)]
 
     # q̂ logged every round as a distribution over fixed bins
     for _, metrics in round_entries:
-        mass = [metrics[f"{CURRICULUM}experienced/velocity_threshold/bin_{i:02d}"] for i in BINS]
-        assert sum(mass) == pytest.approx(1.0)
+        assert _histogram_masses(metrics[EXPERIENCED]).sum() == pytest.approx(1.0)
         assert metrics[CURRICULUM + "num_transitions"] == STEPS_PER_ROUND
+
+    # the training episodes' return/cost/length come once per round (from the first round in
+    # which an episode ended), the same cadence as q̂
+    episodic_steps = [step for step, m in history if "episodic/cost" in m]
+    rounds_with_completed_episodes = [step for step, m in round_entries if m[CURRICULUM + "num_completed_episodes"] > 0]
+    assert episodic_steps == rounds_with_completed_episodes and len(episodic_steps) >= TOTAL_ROUNDS - 1
 
     # evaluation on w and r, at the initial eval and after each of the 2 blocks
     evaluation_entries = [(s, m) for s, m in history if f"evaluation/{C.DEPLOYMENT_EVALUATION}/episode_reward" in m]
@@ -237,7 +246,7 @@ def test_stock_trainer_path_is_unchanged_without_a_hook():
     steps = [step for step, _ in history]
     # 2 evaluation blocks of one epoch each (3 rounds per epoch), initial eval at 0
     assert steps[0] == 0 and steps[-1] == NUM_TIMESTEPS
-    assert not any(CURRICULUM + "round" in m for _, m in history)
+    assert not any(key.startswith(CURRICULUM) for _, m in history for key in m)
     final = history[-1][1]
     assert "eval/episode_reward" in final and "eval/episode_cost" in final
     assert not any(key.startswith("evaluation/") for key in final)
@@ -246,6 +255,5 @@ def test_stock_trainer_path_is_unchanged_without_a_hook():
 def test_end_to_end_uniform_realised_is_not_a_point_mass():
     _, history, _ = _run("uniform")
     last = _round_entries(history)[-1][1]
-    assert last[CURRICULUM + "experienced/velocity_threshold/std"] > 0.05
-    occupied = sum(1 for i in BINS if last[f"{CURRICULUM}experienced/velocity_threshold/bin_{i:02d}"] > 0)
-    assert occupied >= 3
+    assert last[EXPERIENCED + "/std"] > 0.05
+    assert int((_histogram_masses(last[EXPERIENCED]) > 0).sum()) >= 3

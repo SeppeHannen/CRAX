@@ -65,7 +65,12 @@ class ContextTrainingSetup:
     total_rounds: int
 
     def train_kwargs(self) -> Dict[str, Any]:
-        """Keyword arguments for ``train(...)`` (any CRAX PPO-family trainer)."""
+        """Keyword arguments for ``train(...)`` (any CRAX PPO-family trainer).
+
+        ``training_metrics_steps`` makes the trainer report the training
+        episodes' return, cost and length (``episodic/*``) once per round, the
+        same cadence as every other training-side metric on the dashboard.
+        """
         return {
             "wrap_env_fn": make_wrap_env_fn(self.distribution),
             "round_hook": ContextRoundHook(self.distribution),
@@ -73,16 +78,18 @@ class ContextTrainingSetup:
                 DEPLOYMENT_EVALUATION: make_wrap_env_fn(self.deployment),
                 UNIFORM_EVALUATION: make_wrap_env_fn(UniformDistribution(self.suite.space)),
             },
+            "training_metrics_steps": self.steps_per_round,
         }
 
     def wandb_config(self) -> Dict[str, Any]:
+        """What the dashboard's text panels need to describe this run (see training/dashboard)."""
         space = self.suite.space
         return {
             "context_space": {name: [float(low), float(high)] for name, low, high in zip(space.names, space.low, space.high)},
             "training_distribution": self.training_spec,
             "deployment_distribution": self.deployment_spec,
-            "rounds_total": self.total_rounds,
-            "steps_per_round": self.steps_per_round,
+            "num_rounds": self.total_rounds,
+            "environment_steps_per_round": self.steps_per_round,
         }
 
     def describe(self) -> str:

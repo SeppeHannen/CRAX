@@ -23,7 +23,7 @@ See ``docs/acl/design/`` for the constraints this design follows.
 
 from training.contexts.distribution import ContextDistribution, EpisodeFeedback, Params
 from training.contexts.distributions import FixedContext, StagedContexts, UniformDistribution
-from training.contexts.realised_curriculum import curriculum_metrics
+from training.contexts.training_curriculum import training_curriculum_metrics
 from training.contexts.registry import SuiteContexts, registered_environments, suite_contexts
 from training.contexts.rollout import RoundRollout, completed_episodes
 from training.contexts.round_hook import ContextRoundHook
@@ -77,7 +77,7 @@ __all__ = [
     "current_parameters",
     "make_wrap_env_fn",
     "parse_distribution",
-    "curriculum_metrics",
+    "training_curriculum_metrics",
     "registered_environments",
     "spec_label",
     "suite_contexts",
