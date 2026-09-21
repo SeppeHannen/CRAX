@@ -4,28 +4,44 @@ Giuseppe Hannen's graduation project. Start here.
 
 ## The plan
 
-1. **Profile cleanly.** XProf traces and per-round throughput go to W&B for
-   every run, so we always know whether training is still fast. Done:
-   `training/performance/`, guide in `performance_measurement.md`.
-2. **Manual curriculum vs uniform.** On `safe_velocity_ant`, PPO-Lagrange, level
-   1 → 2 → 3 vs contexts drawn uniformly from Ω, compared on level 3. Done, one
-   seed at 500 M steps: uniform solves level 3, the curriculum collapses when the
-   level switches (Lagrange multiplier blow-up) and never recovers. Write-up:
-   `experiments/2026-09-20_uniform_vs_staged_velocity_ant.md`.
-3. **A W&B dashboard one can read.** Done and in use. `design/dashboard.md`
-   derives it from what reviewing a run is (Verdict / Mechanism / Trust /
-   Detail); `training/dashboard/` implements it: a metric registry every
-   logged key must pass (39 kept, each with a one-sentence description of
-   where its numbers come from; 47 dropped with a reason; anything else
-   raises), budgets logged next to costs, and a W&B view per experiment group
-   whose sections open with generated text — the environment (agent, reward,
-   cost, Ω) in the suite's own words, then cadence, population and one line
-   per panel. A run with `--wandb_group` creates the group's view at start-up
-   and is **refused** if its flags differ from the group's (`FactsMismatch`).
-   First experiment on it: group `velocity_ant_staged_vs_uniform_750M`
-   (uniform vs staged:1,2,3, one seed, 750 M steps) — to be read with Tristan
-   and written up under `experiments/`.
-4. **Let the learner know its context.** Today the policy sees only the state;
+Done (2026-09-19 → 21):
+
+1. **Profile cleanly.** Per-round throughput, compiles and XProf traces go to
+   W&B for every run. `training/performance/`, guide in
+   `performance_measurement.md`.
+2. **Manual curriculum vs uniform on `safe_velocity_ant`.** PPO-Lagrange,
+   staged 1 → 2 → 3 vs uniform over Ω, evaluated on level 3. One seed, 500 M
+   steps: uniform solves level 3; the staged curriculum collapses at the first
+   switch (Lagrange multiplier blow-up) and never recovers. Write-up:
+   `experiments/2026-09-20_uniform_vs_staged_velocity_ant.md`. Repeated at
+   750 M on the new dashboard (group `velocity_ant_staged_vs_uniform_750M`),
+   to be read with Tristan and written up.
+3. **A W&B dashboard one can read.** `design/dashboard.md` derives it from what
+   reviewing a run is (Verdict / Mechanism / Trust / Detail);
+   `training/dashboard/` implements it: a metric registry every logged key
+   must pass (kept with a one-sentence description of where its numbers come
+   from, or dropped with a reason; anything else raises), budgets logged next
+   to costs, and one W&B view per experiment group whose sections open with
+   generated text — the environment in the suite's own words, then cadence,
+   population and one line per panel. A run with `--wandb_group` creates the
+   group's view at start-up and is refused if its flags differ from the
+   group's.
+
+Next:
+
+4. **Is what we built stable across suites?** Everything so far ran on one
+   suite. Repeat step 2 — staged vs uniform, one seed, the dashboard — on the
+   other value-typed suites in the order `design/context_spaces_by_suite.md`
+   recommends: the five remaining velocity agents first (nothing to change but
+   the flag), then height and push (a `step`-side context read each), then
+   lift and pathway (a mask Ω; the first `reset_with_context`). What we are
+   checking, per suite: the context wrapper and round hook run without a
+   recompile; every logged key is registered or the run fails at first log
+   (new reward components will — that is the point); the generated text is
+   right for the suite's task; and the staged-vs-uniform result either
+   repeats or does not. Count-typed and structural suites (reach, circle,
+   goal, button) wait for pad-and-mask.
+5. **Let the learner know its context.** Today the policy sees only the state;
    the threshold enters only the cost, so it can learn one behaviour for all of
    Ω and nothing else. Two ways to change that, both change the benchmark's
    observation space (agree with Tristan first):
@@ -45,10 +61,11 @@ Giuseppe Hannen's graduation project. Start here.
    meta-RL that feeds (s, a, r) back into the policy, and the definition of a
    sufficient statistic (Fisher–Neyman) for why "remember everything" is
    overkill.
-5. **Repeat 2 with PPO-Saute.** It augments the state with the remaining safety
+6. **Repeat 2 with PPO-Saute.** It augments the state with the remaining safety
    budget and enforces the constraint per episode rather than in expectation,
    and has no dual variable that carries the old distribution across a switch.
-6. **Then** actual curriculum methods, and more suites.
+7. **Then** actual curriculum methods, and the count-typed and structural
+   suites.
 
 ## Vocabulary
 
