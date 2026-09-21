@@ -67,7 +67,12 @@ FACTS = dashboard.RunFacts(
     episode_length=1000,
     safety_bound=25.0,
     deployment_distribution="level:3",
-    context_space=(("velocity_threshold", (1.049, 2.622)),),
+    task=dashboard.view.TaskDescription(
+        agent="A MuJoCo ant that has to run forward along the x-axis.",
+        reward="Per step: forward velocity + 1 for being upright − a penalty on large torques.",
+        cost="Per step, 1 if the agent's speed exceeds the episode's velocity_threshold, else 0.",
+    ),
+    context_space=(dashboard.view.ContextDimension("velocity_threshold", 1.049, 2.622, "the speed above which a step counts as a violation"),),
     num_rounds=763,
     environment_steps_per_round=655_360,
 )
@@ -85,9 +90,19 @@ def test_unregistered_key_raises_with_instructions():
 
 def test_kept_metrics_have_words_for_the_reviewer():
     for metric in dashboard.KEPT:
-        assert metric.title and metric.unit, metric.pattern
+        assert metric.title and metric.unit and metric.description, metric.pattern
     for dropped in dashboard.DROPPED:
         assert dropped.reason, dropped.pattern
+
+
+def test_every_panel_is_described_with_no_placeholder_left():
+    for group in Group:
+        text = dashboard.view.section_text(group, FACTS)
+        assert "{" not in text and "}" not in text, text
+        for plot in plots_for(group, FACTS):
+            assert f"**{plot.title}**" in text, plot.title
+            for _, description in plot.described_series:
+                assert description in text
 
 
 def test_select_for_logging_drops_duplicates_and_adds_budgets():
@@ -124,24 +139,26 @@ def test_view_has_the_four_review_sections_with_text_first_and_no_smoothing():
             assert plot["config"]["xAxis"] == "environment_steps"
             assert plot["config"]["chartTitle"] and plot["config"]["yAxisTitle"]
     runset = view._spec["spec"]["section"]["runSets"][0]
-    assert runset["grouping"][0]["name"].startswith("context_distribution")
+    assert runset["grouping"][0]["name"].startswith("training_distribution")
     assert "some_group" in str(runset["filters"])
 
 
 def test_text_panels_state_population_unit_cadence_and_budget():
     verdict, mechanism = (section["panels"][0]["config"]["value"] for section in
                           dashboard.build_view("e", "p", "g", FACTS)._spec["spec"]["section"]["panelBankConfig"]["sections"][:2])
-    for fact in ("21 times", "128 episodes", "level:3", "25 per episode", "not data", "sums over one episode"):
+    for fact in ("21 evaluations", "128 episodes", "level:3", "25,000,000", "not data", "velocity_threshold",
+                 "**Environment.** A MuJoCo ant", "**Reward.** Per step: forward velocity", "**Cost.** Per step, 1 if",
+                 "budget is 25", "128 episodes of the frozen policy on the deployment task (level:3)", "training_distribution"):
         assert fact in verdict, fact
-    for fact in ("One point per round", "655,360", "763 rounds", "transitions", "completed episodes"):
+    for fact in ("One point per round", "655,360", "763 rounds", "**sampled**", "**experienced**"):
         assert fact in mechanism, fact
 
 
 def test_verdict_panels_are_return_and_cost_with_budget_on_both_evaluations():
     plots = plots_for(Group.VERDICT, FACTS)
     assert [plot.title for plot in plots] == [
-        "Return per episode on deployment", "Return per episode on uniform Ω",
-        "Cost per episode on deployment", "Cost per episode on uniform Ω",
+        "Return per episode on the deployment task (level:3)", "Return per episode on all of Ω (uniform)",
+        "Cost per episode on the deployment task (level:3)", "Cost per episode on all of Ω (uniform)",
     ]
     assert plots[2].series == ("evaluation/deployment/episode_cost", "evaluation/deployment/episode_cost_budget")
 
@@ -154,6 +171,7 @@ def test_trust_shows_throughput_and_compiles():
 def test_mechanism_merges_sampled_experienced_intended_means_into_one_panel():
     plots = plots_for(Group.MECHANISM, FACTS)
     mean_context = plots[0]
+    assert mean_context.title == "velocity_threshold: mean over the round's training data"
     assert mean_context.series == (
         "training_curriculum/experienced/velocity_threshold/mean",
         "training_curriculum/sampled/velocity_threshold/mean",
@@ -162,10 +180,17 @@ def test_mechanism_merges_sampled_experienced_intended_means_into_one_panel():
     assert not any("training_curriculum/experienced/velocity_threshold" == key for plot in plots for key in plot.series), "histograms are heatmaps, not line panels"
 
 
+def test_run_facts_round_trip_through_json():
+    """The saved view stores the facts it was built from; equality after the round-trip is the group invariant."""
+    assert dashboard.RunFacts.from_json(FACTS.to_json()) == FACTS
+    assert dashboard.RunFacts.from_json(dataclasses.replace(FACTS, safety_bound=10.0).to_json()) != FACTS
+
+
 def test_run_facts_require_dashboard_config_keys():
     with pytest.raises(KeyError, match="num_rounds"):
         dashboard.RunFacts.from_wandb_config({"num_timesteps": 1, "num_evals": 2, "num_eval_envs": 1,
                                                "episode_length": 1, "safety_bound": 1, "deployment_distribution": "level:3",
-                                               "context_space": {"a": [0, 1]}})
+                                               "task": {"agent": "a", "reward": "r", "cost": "c"},
+                                               "context_space": {"a": {"low": 0, "high": 1, "description": "a"}}})
     with pytest.raises(ValueError, match="num_evals"):
         dataclasses.replace(FACTS, num_evals=1)
