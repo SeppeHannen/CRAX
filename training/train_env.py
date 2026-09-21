@@ -10,7 +10,7 @@ from pathlib import Path
 
 import wandb
 from crax import envs
-from training import contexts
+from training import contexts, dashboard
 from training.config import build_base_parser
 from training.run_utils import (
     collect_rollout_metrics, record_episode_video, setup_gpu_environment,
@@ -148,6 +148,13 @@ def main():
         if context_setup is not None:
             cfg.update(context_setup.wandb_config())
             print(f"Contexts: {context_setup.describe()}")
+            if config.wandb_group:
+                # A named group is one experiment: its runs share the facts the dashboard
+                # states. Create the group's view from this run's facts, or refuse a run
+                # whose facts differ -- before the run exists in W&B.
+                dashboard.ensure_view(
+                    config.wandb_entity, config.wandb_project, config.wandb_group, dashboard.RunFacts.from_wandb_config(cfg)
+                )
 
         wandb.init(
             entity=config.wandb_entity,
