@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Optional
 
 from training.contexts.distribution import ContextDistribution
 from training.contexts.distributions import FixedContext, StagedContexts, UniformDistribution
@@ -83,9 +83,12 @@ class ContextTrainingSetup:
 
     def wandb_config(self) -> Dict[str, Any]:
         """What the dashboard's text panels need to describe this run (see training/dashboard)."""
-        space = self.suite.space
         return {
-            "context_space": {name: [float(low), float(high)] for name, low, high in zip(space.names, space.low, space.high)},
+            "task": dataclasses.asdict(self.suite.task),
+            "context_space": {
+                dimension.name: {"low": dimension.low, "high": dimension.high, "description": dimension.description}
+                for dimension in self.suite.space.dimensions
+            },
             "training_distribution": self.training_spec,
             "deployment_distribution": self.deployment_spec,
             "num_rounds": self.total_rounds,

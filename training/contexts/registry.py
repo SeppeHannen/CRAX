@@ -27,6 +27,19 @@ LEVELS = (1, 2, 3)
 
 
 @dataclasses.dataclass(frozen=True)
+class TaskDescription:
+    """The suite's task in words, for a reader of the dashboard who has not seen the environment.
+
+    Each field is one or two sentences; the dashboard quotes them and refers
+    to "the reward" and "the cost" defined here in every panel description.
+    """
+
+    agent: str
+    reward: str
+    cost: str
+
+
+@dataclasses.dataclass(frozen=True)
 class SuiteContexts:
     """Everything the context machinery needs to know about one environment."""
 
@@ -36,6 +49,7 @@ class SuiteContexts:
     # Which keys of the decoded context the environment reads, and under what
     # name in state.info["context_values"]; identity by default.
     parameter_names: Tuple[str, ...]
+    task: TaskDescription
 
     def level(self, level: int) -> Context:
         if level not in self.level_contexts:
@@ -84,6 +98,32 @@ def registered_environments() -> Tuple[str, ...]:
 _VELOCITY_LOW_FRACTION = 0.4
 _VELOCITY_HIGH_FRACTION = 1.0
 
+# How each agent's speed is measured for the constraint (SafeVelocity*.velocity_mode).
+_VELOCITY_MEASURE = {
+    "ant": "the torso's speed in the horizontal plane, √(vₓ² + vᵧ²)",
+    "halfcheetah": "the forward velocity vₓ",
+    "hopper": "the forward velocity vₓ",
+    "humanoid": "the centre of mass's speed in the horizontal plane",
+    "swimmer": "the forward velocity vₓ",
+    "walker2d": "the forward velocity vₓ",
+}
+
+
+def _velocity_task(agent: str) -> TaskDescription:
+    # The reward is the agent's stock MuJoCo/Brax locomotion reward; its weights differ per
+    # agent (see crax/envs/<agent>.py), so it is described by structure, not by constants.
+    return TaskDescription(
+        agent=f"A MuJoCo {agent} that has to run forward along the x-axis. Actions are joint torques in [−1, 1]. "
+        f"An episode ends either at the step limit or earlier when the agent falls (its torso leaves the healthy "
+        f"height range); violating the constraint does not end the episode.",
+        reward=f"The {agent}'s stock locomotion reward per step: forward velocity vₓ, plus a constant for staying "
+        f"upright, minus a penalty proportional to ‖action‖² (large torques), with the agent's own weights, "
+        f"multiplied by the suite's reward scale of 0.01. The return is the sum over the episode; higher means it "
+        f"travelled further with less effort.",
+        cost=f"Per step, 1 if the agent's speed — {_VELOCITY_MEASURE[agent]} — exceeds the episode's velocity_threshold, "
+        f"else 0. The episode's cost is the number of steps over the limit; the budget bounds its mean.",
+    )
+
 
 def _velocity_suite(agent: str) -> Callable[[], SuiteContexts]:
     def factory() -> SuiteContexts:
@@ -95,7 +135,7 @@ def _velocity_suite(agent: str) -> Callable[[], SuiteContexts]:
                 "velocity_threshold",
                 low=_VELOCITY_LOW_FRACTION * baseline,
                 high=_VELOCITY_HIGH_FRACTION * baseline,
-                description=f"max allowed speed for {agent}; cost is incurred above it",
+                description=f"the speed above which a step counts as a violation (the {agent}'s speed limit)",
             ),
         ))
         level_contexts = {
@@ -106,6 +146,7 @@ def _velocity_suite(agent: str) -> Callable[[], SuiteContexts]:
             space=space,
             level_contexts=level_contexts,
             parameter_names=("velocity_threshold",),
+            task=_velocity_task(agent),
         )
 
     return factory
