@@ -1,9 +1,12 @@
 # A W&B dashboard one can read
 
 Status: steps 1–2 (§1–6) written and discussed 2026-09-21; §7 is the
-design for step 3 and is **implemented** (`training/dashboard/`, tests in
-`tests/test_dashboard.py`). §7.3 describes the code as built. Not yet done: a
-GPU run with the new logging, and saving the view for a fresh group.
+design for step 3 and is **implemented and in use** (`training/dashboard/`,
+tests in `tests/test_dashboard.py`). §7.3 describes the code as built, after
+reviewing the first rendered dashboards with Giuseppe (2026-09-21): text
+panels restructured, every panel described from the registry, the
+environment defined on the page, the group invariant enforced at run start.
+First real experiment on it: group `velocity_ant_staged_vs_uniform_750M`.
 
 ## 1. What a run is for
 
@@ -360,9 +363,10 @@ that survive the registry, `training_curriculum/*/std`,
 
 | file | holds |
 |---|---|
-| `metrics.py` | the registry. `Metric(pattern, title, unit, group, panel, histogram)` for the 35 keys we keep, `Dropped(pattern, reason)` for the 47 we do not; `registered(key)` returns the metric or `None`, and **raises `UnregisteredMetric`** for anything else. `select_for_logging(metrics, safety_bound)` is what the funnel calls; it also adds `<cost>_budget` next to each per-episode cost. |
-| `view.py` | `RunFacts` (the numbers the text panels state, read from `wandb.config`, missing key → `KeyError`), the four section texts, `plots_for(group, facts)` (metrics sharing a `panel` become one panel; `{evaluation}` expands to deployment and uniform, `{dimension}` to Ω's dimensions), `build_view(...)` → a `wandb_workspaces.Workspace`. |
-| `__main__.py` | `python -m training.dashboard --group <name>`: facts from the group's first run, build, save; re-saving updates the existing view. |
+| `metrics.py` | the registry. `Metric(pattern, title, unit, group, description, panel, histogram)` for the 39 keys we keep — `description` is the one sentence that says where the numbers come from (population, what was done to it; may use `{evaluation}`, `{dimension}` and the `FACT_PLACEHOLDERS`) — and `Dropped(pattern, reason)` for the 47 we do not; `registered(key)` returns the metric or `None`, and **raises `UnregisteredMetric`** for anything else. `select_for_logging(metrics, safety_bound)` is what the funnel calls; it also adds `<cost>_budget` next to each per-episode cost. |
+| `view.py` | `RunFacts` (what the text states: budget, evaluations, episode length, `TaskDescription` — agent, reward, cost in words — and Ω with each dimension's description; read from `wandb.config`, missing key → `KeyError`; JSON round-trip). The section text is **generated**: a preamble (Verdict carries the environment block: agent, reward, cost, Ω, budget; then measurement, evaluation distributions, legend) followed by one bullet per panel built from the registry's descriptions. `plots_for(group, facts)`: metrics sharing a `panel` become one panel; `{evaluation}` expands to *the deployment task (level:3)* and *all of Ω (uniform)*, `{dimension}` to Ω's dimensions. Runs grouped by `training_distribution` so the legend names what a line trained on. |
+| `save.py` | **the group invariant.** A named W&B group is one experiment: its runs share the facts. The view is the group's record of them (the `RunFacts` JSON is stored in the view's description). `ensure_view(...)` — called by `train_env.py` for every context run with `--wandb_group`, *before* `wandb.init` — creates the view for a new group and **raises `FactsMismatch`** (listing the differing fields) for a run whose flags differ; `rebuild_view(...)` overwrites deliberately after dashboard code changed. Owns the two GraphQL calls (find by name, upsert) and prints the view URL. |
+| `__main__.py` | `python -m training.dashboard --group <name>`: the rebuild path — facts from the group's runs (raises if they disagree), `rebuild_view`. |
 
 Around it:
 
@@ -375,8 +379,11 @@ Around it:
   `episodic/forward_reward` — all kept.
 - `contexts/setup.py` passes `training_metrics_steps = steps_per_round` to
   the trainer (decision 1) and puts `num_rounds`,
-  `environment_steps_per_round`, `context_space`, `deployment_distribution`
-  in `wandb.config` for the text panels.
+  `environment_steps_per_round`, `context_space` (bounds and description per
+  dimension), `task` and `deployment_distribution` in `wandb.config` for the
+  text panels. The words come from the suite: `contexts/registry.py` gives
+  each `SuiteContexts` a `TaskDescription` (agent, reward, cost) so the
+  dashboard never restates an environment's definition.
 - `contexts/training_curriculum.py` (was `realised_curriculum.py`; it is the one
   producer of `training_curriculum/*`, so it is named after the section) logs
   three histograms per dimension
@@ -390,7 +397,9 @@ Around it:
   a stock `eval/` run is registered; an unknown key raises with instructions;
   the funnel drops the duplicates and adds the budgets; the view has the four
   sections in order, text first, smoothing off, grouped by
-  `context_distribution`; the text states cadence, population and budget.
+  `training_distribution`; every panel and every series is described in its
+  section's text with no placeholder left; `RunFacts` round-trips through JSON
+  (the invariant's equality).
 - Package: `wandb-workspaces` in `requirements.txt` / `pyproject.toml`.
 
 ### 7.4 Decisions taken here

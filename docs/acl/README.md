@@ -12,15 +12,19 @@ Giuseppe Hannen's graduation project. Start here.
    seed at 500 M steps: uniform solves level 3, the curriculum collapses when the
    level switches (Lagrange multiplier blow-up) and never recovers. Write-up:
    `experiments/2026-09-20_uniform_vs_staged_velocity_ant.md`.
-3. **A W&B dashboard one can read.** Done in code, not yet seen on a real
-   run. `design/dashboard.md` derives it from what reviewing a run is
-   (Verdict / Mechanism / Trust / Detail) and `training/dashboard/` implements
-   it: a metric registry every logged key must pass (35 kept with title and
-   unit, 47 dropped with a reason, anything else raises), budgets logged next
-   to costs, and `python -m training.dashboard --group <name>` saves a W&B
-   view whose four sections each open with a text panel stating population,
-   unit and cadence. Next: the first GPU run with it, then save the view for
-   that group and read it.
+3. **A W&B dashboard one can read.** Done and in use. `design/dashboard.md`
+   derives it from what reviewing a run is (Verdict / Mechanism / Trust /
+   Detail); `training/dashboard/` implements it: a metric registry every
+   logged key must pass (39 kept, each with a one-sentence description of
+   where its numbers come from; 47 dropped with a reason; anything else
+   raises), budgets logged next to costs, and a W&B view per experiment group
+   whose sections open with generated text — the environment (agent, reward,
+   cost, Ω) in the suite's own words, then cadence, population and one line
+   per panel. A run with `--wandb_group` creates the group's view at start-up
+   and is **refused** if its flags differ from the group's (`FactsMismatch`).
+   First experiment on it: group `velocity_ant_staged_vs_uniform_750M`
+   (uniform vs staged:1,2,3, one seed, 750 M steps) — to be read with Tristan
+   and written up under `experiments/`.
 4. **Let the learner know its context.** Today the policy sees only the state;
    the threshold enters only the cost, so it can learn one behaviour for all of
    Ω and nothing else. Two ways to change that, both change the benchmark's
