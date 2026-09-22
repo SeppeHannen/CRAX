@@ -1,8 +1,13 @@
+import dataclasses
 import inspect
 from abc import ABC, abstractmethod
-from typing import List, Dict, Type, Tuple
+from typing import List, Dict, Optional, Sequence, Type, Tuple
 
 import jax.numpy as jp
+
+# Where an inactive hazard sits (docs/acl/design/hazard_activation.md): outside every
+# lidar range, proximity radius and contact, inside float32 precision.
+PARKING_XY = (1000.0, 1000.0)
 
 
 class BaseHazard(ABC):
@@ -259,6 +264,11 @@ class CylinderHazard(BaseHazard):
         return "circle", jp.array([float(self.size)])
 
 
+def gremlin_keepout_radius(size: jp.ndarray | float, travel: jp.ndarray | float) -> jp.ndarray:
+    """Keepout of a gremlin box of half-extent ``size`` orbiting at radius ``travel``: the corner radius plus the whole orbit."""
+    return jp.sqrt(2.0) * size + travel
+
+
 class GremlinHazard(BaseHazard):
     """Moving gremlin hazard that orbits around its center position.
     
@@ -317,12 +327,36 @@ class GremlinHazard(BaseHazard):
         return rho * volume
 
     def get_keepout_radius(self) -> float:
-        # Include the box corners throughout the full orbit.
-        return float(jp.sqrt(2.0) * self.size + self.travel)
+        return float(gremlin_keepout_radius(self.size, self.travel))
 
     def get_keepout_shape(self):
         # Circular keepout encompassing the orbit
         return "circle", jp.array([self.get_keepout_radius()])
+
+
+@dataclasses.dataclass(frozen=True)
+class HazardGroup:
+    """One ``add_hazards`` call: hazards of one kind, contiguous in ``HazardManager.hazards``.
+
+    A group is the unit whose *count* a context can vary: activating ``n`` of a
+    group means its first ``n`` hazards (``docs/acl/design/hazard_activation.md``).
+    Fixed groups (walls) are always fully active.
+    """
+
+    hazard_type: str
+    collidable: bool
+    fixed: bool
+    first_index: int  # index into HazardManager.hazards
+    count: int
+
+    @property
+    def indices(self) -> range:
+        return range(self.first_index, self.first_index + self.count)
+
+    @property
+    def context_name(self) -> str:
+        """The context dimension holding how many of this group are active, e.g. ``active_collidable_cylinders``."""
+        return f"active_{'collidable_' if self.collidable else ''}{self.hazard_type}s"
 
 
 class HazardManager:
@@ -330,10 +364,49 @@ class HazardManager:
 
     def __init__(self):
         self.hazards: List[BaseHazard] = []
+        self.groups: List[HazardGroup] = []
 
     def add_hazard(self, hazard: BaseHazard):
-        """Add a hazard to the manager."""
+        """Add a hazard to the manager (as a group of one)."""
+        self.groups.append(HazardGroup(hazard.hazard_type, hazard.collidable, hazard.fixed, len(self.hazards), 1))
         self.hazards.append(hazard)
+
+    @property
+    def variable_groups(self) -> List[HazardGroup]:
+        """The groups whose count a context may set: every non-fixed group, in order."""
+        return [group for group in self.groups if not group.fixed]
+
+    def validate_active_counts(self, environment_name: str, active_counts: Optional[Sequence[int]]) -> Tuple[int, ...]:
+        """The per-group active counts an environment was constructed with, checked against its groups.
+
+        ``None`` means every hazard active. Each variable group must have a distinct
+        context name, and each count must fit its group.
+        """
+        groups = self.variable_groups
+        names = [group.context_name for group in groups]
+        if len(set(names)) != len(names):
+            raise ValueError(f"{environment_name}: two hazard groups share a (type, collidable) kind: {names}; merge them into one spec")
+        if active_counts is None:
+            active_counts = [group.count for group in groups]
+        if len(active_counts) != len(groups):
+            raise ValueError(f"{environment_name}: active_hazard_counts has {len(active_counts)} entries for {len(groups)} hazard groups {names}")
+        for count, group in zip(active_counts, groups):
+            if not 0 <= count <= group.count:
+                raise ValueError(f"{environment_name}: {count} active {group.context_name} but the model has {group.count}")
+        return tuple(int(count) for count in active_counts)
+
+    def activation_from_counts(self, counts: jp.ndarray) -> jp.ndarray:
+        """Per-hazard activation ``[num_hazards]`` of 0/1 from per-group counts ``[len(variable_groups)]``.
+
+        Group ``g`` with count ``n`` activates its first ``n`` hazards; fixed groups
+        are always active. ``counts`` may be traced (it comes from the context).
+        """
+        activation = jp.ones((len(self.hazards),), jp.float32)
+        for group_index, group in enumerate(self.variable_groups):
+            position_in_group = jp.arange(group.count, dtype=jp.float32)
+            active = (position_in_group < counts[group_index]).astype(jp.float32)
+            activation = activation.at[group.first_index:group.first_index + group.count].set(active)
+        return activation
 
     def add_hazards(self, hazard_type: str, count: int, positions: List[tuple] = None, size: float = None,
                     height: float = None, collidable: bool = None, fixed: bool = False, density: float = None,
@@ -360,6 +433,7 @@ class HazardManager:
         if positions is None:
             positions = [(0.0, 0.0, 0.0)] * count
 
+        first_index = len(self.hazards)
         for i in range(count):
             hazard_id = len(self.hazards) + 1
             if hazard_type == "gremlin":
@@ -369,7 +443,9 @@ class HazardManager:
                     hazard = cls(hazard_id, positions[i], size, height, collidable, fixed, density, alpha_transparent, travel)
             else:
                 hazard = cls(hazard_id, positions[i], size, height, collidable, fixed, density, alpha_transparent)
-            self.add_hazard(hazard)
+            self.hazards.append(hazard)
+        if count > 0:
+            self.groups.append(HazardGroup(hazard_type, bool(self.hazards[first_index].collidable), fixed, first_index, count))
 
     def get_xml_assets(self) -> str:
         """Generate XML asset definitions for hazards.
@@ -430,6 +506,7 @@ def compute_hazard_costs(
     contact_geom2=None,
     contact_dist=None,
     ncon=None,
+    activation: Optional["jp.ndarray"] = None,
 ) -> "jp.ndarray":
     """Compute total safety cost for all hazards efficiently.
 
@@ -438,10 +515,15 @@ def compute_hazard_costs(
     the cheap per-hazard geom-ID comparison inside the loop.  The naïve
     approach recomputes these O(N_agent_geoms × max_contacts) tensors for
     each hazard separately, which is the primary collision-detection bottleneck.
+
+    ``activation`` (``[num_hazards]`` of 0/1, see ``HazardManager.activation_from_counts``)
+    multiplies each hazard's term; an inactive hazard costs nothing. ``None`` = all active.
     """
     total = jp.array(0.0)
     if not hazards:
         return total
+    if activation is None:
+        activation = jp.ones((len(hazards),), jp.float32)
 
     if contact_geom1 is not None and ncon is not None:
         max_slots = contact_geom1.shape[0]
@@ -460,9 +542,10 @@ def compute_hazard_costs(
             is_haz1 = contact_geom1 == h.geom_id
             is_haz2 = contact_geom2 == h.geom_id
             pair = (is_agent1 & is_haz2) | (is_haz1 & is_agent2)
-            total = total + jp.where(jp.any(valid_touch & pair), collision_cost, 0.0)
+            term = jp.where(jp.any(valid_touch & pair), collision_cost, 0.0)
         else:
-            total = total + proximity_cost_scaler * h.proximity_cost(agent_xy, hz_xy)
+            term = proximity_cost_scaler * h.proximity_cost(agent_xy, hz_xy)
+        total = total + activation[i] * term
 
     return total
 

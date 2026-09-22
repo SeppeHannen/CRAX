@@ -1,5 +1,6 @@
 import os
 import tempfile
+from typing import Optional
 
 import jax
 from jax import numpy as jp
@@ -7,7 +8,7 @@ from ml_collections.config_dict import ConfigDict
 
 from crax.envs.builder import XMLBuilder
 from crax.envs.goals import GoalManager
-from crax.envs.hazards import HazardManager
+from crax.envs.hazards import PARKING_XY, HazardManager
 
 
 # -------------------------------- World building --------------------------------
@@ -584,6 +585,7 @@ def place_objects(
         num_candidates: int,
         placement_extents,
         placement_margin: float,
+        activation: Optional[jp.ndarray] = None,
 ):
     """
     Place `num_items` objects using per-item keepout radii, updating
@@ -599,25 +601,34 @@ def place_objects(
         num_candidates: number of candidate samples per placement
         placement_extents: (min_x, min_y, max_x, max_y)
         placement_margin: extra spacing added in placement checks
+        activation: (num_items,) of 0/1; an inactive object is *parked* at
+            ``hazards.PARKING_XY`` with a zero keepout, so it occupies no room in
+            the arena and constrains nothing placed after it. ``None`` = all active.
+            (docs/acl/design/hazard_activation.md)
 
     Returns:
         rng_key, positions_xy, keepouts_array, placed_count, placed_positions (num_items, 3)
     """
+    if activation is None:
+        activation = jp.ones((num_items,), jp.float32)
+    parking_xy = jp.asarray(PARKING_XY, jp.float32)
 
     def place_one(carry, i):
         rng_key_i, positions_xy_i, keepouts_array_i, placed_count_i = carry
-        keepout_radius_i = per_item_keepouts[i]
+        active_i = activation[i] > 0.5
+        keepout_radius_i = jp.where(active_i, per_item_keepouts[i], 0.0)
 
-        position_i, rng_key_i = choose_valid_position(
+        sampled_i, rng_key_i = choose_valid_position(
             rng_key_i,
             positions_xy_i,
             keepouts_array_i,
             placed_count_i,
-            keepout_radius_i,
+            per_item_keepouts[i],
             num_candidates,
             placement_extents,
             placement_margin,
         )
+        position_i = jp.where(active_i, sampled_i, sampled_i.at[:2].set(parking_xy))
 
         positions_xy_i = positions_xy_i.at[placed_count_i].set(position_i[:2])
         keepouts_array_i = keepouts_array_i.at[placed_count_i].set(keepout_radius_i)
