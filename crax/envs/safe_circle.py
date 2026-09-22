@@ -13,7 +13,7 @@ Usage:
 import os
 import re
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import jax
 import mujoco
@@ -30,7 +30,8 @@ from crax.envs.env_utils import (
     add_walls_to_specs,
 )
 from crax.envs.goals import GoalManager
-from crax.envs.hazards import _type_defaults_from_registry, compute_hazard_costs
+from crax.envs import context
+from crax.envs.hazards import HazardGroup, _type_defaults_from_registry, compute_hazard_costs
 from crax.io import mjcf
 
 
@@ -123,6 +124,7 @@ class SafeCircle(PipelineEnv, ABC):
             max_layout_attempts: int = 1000,
             # Hazard settings
             hazard_specs: Optional[List[Dict]] = None,
+            active_hazard_counts: Optional[Sequence[int]] = None,
             # Debug
             debug: bool = False,
             **kwargs,
@@ -163,22 +165,18 @@ class SafeCircle(PipelineEnv, ABC):
         self._circle_visual = bool(circle_visual)
         self._circle_visual_height = float(circle_visual_height)
 
-        self._boundary_x = None if boundary_x is None else float(boundary_x)
-        self._boundary_y = None if boundary_y is None else float(boundary_y)
+        # The boundaries are the episode's context (crax/envs/context.py), so "no boundary"
+        # needs a number: the placement extent, which is what the hazard placement already
+        # used in its place. The one difference from the stock benchmark is that a robot
+        # more than 3 m off a 1.5 m-radius circle now also pays the boundary cost.
+        self._boundary_x = float(placement_extents[2]) if boundary_x is None else float(boundary_x)
+        self._boundary_y = float(placement_extents[3]) if boundary_y is None else float(boundary_y)
         self._boundary_cost = float(boundary_cost)
         self._boundary_visual = bool(boundary_visual)
         self._boundary_visual_x = boundary_visual_x
         self._boundary_visual_y = boundary_visual_y
         self._boundary_visual_thickness = float(boundary_visual_thickness)
         self._boundary_visual_height = float(boundary_visual_height)
-
-        # Compute hazard placement extents based on boundaries (if set)
-        if self._boundary_x is not None or self._boundary_y is not None:
-            haz_x = self._boundary_x if self._boundary_x is not None else placement_extents[2]
-            haz_y = self._boundary_y if self._boundary_y is not None else placement_extents[3]
-            self._hazard_placement_extents = (-haz_x, -haz_y, haz_x, haz_y)
-        else:
-            self._hazard_placement_extents = placement_extents
 
         # Build managers
         self._hazard_manager = create_hazard_manager_from_specs(hazard_specs)
@@ -199,10 +197,13 @@ class SafeCircle(PipelineEnv, ABC):
                 height=self._circle_visual_height,
             )
 
-        # Visual boundary walls (non-colliding) for browser viewer
+        # Visual boundary walls (non-colliding) for browser viewer. They are part of the
+        # model, so they show the constructor's boundaries, not the episode's.
         if self._boundary_visual:
-            visual_x = self._boundary_visual_x if self._boundary_visual_x is not None else self._boundary_x
-            visual_y = self._boundary_visual_y if self._boundary_visual_y is not None else self._boundary_y
+            visual_x = self._boundary_visual_x if self._boundary_visual_x is not None else (
+                None if boundary_x is None else self._boundary_x)
+            visual_y = self._boundary_visual_y if self._boundary_visual_y is not None else (
+                None if boundary_y is None else self._boundary_y)
             if visual_x is not None or visual_y is not None:
                 zc = self._boundary_visual_height * 0.5
                 thickness = self._boundary_visual_thickness
@@ -341,25 +342,57 @@ class SafeCircle(PipelineEnv, ABC):
         self._init_xy_range = float(init_xy_range)
         self._init_angle_range = float(init_angle_range)
 
-        # Lidar
+        # Lidar. The hazard blocks are part of the observation whenever the model has
+        # hazards, whether or not this episode activates any: the observation has one
+        # shape for every context.
         self._lidar_num_bins = lidar_bins
         self._lidar_max_dist = lidar_max_dist
         self._hazard_compass_k = hazard_compass_k
         self._include_hazard_lidar = bool(include_hazard_lidar) and self._num_hazards > 0
         self._include_hazard_compass = self._num_hazards > 0 and self._hazard_compass_k > 0
 
-        # Placement
-        self._placement_extents = placement_extents
+        # Placement (the extents themselves are the episode's boundaries, from the context)
         self._agent_keepout = agent_keepout
         self._placement_margin = placement_margin
         self._max_placement_attempts = max_placement_attempts
         self._max_layout_attempts = max_layout_attempts
 
+        # The context (crax/envs/context.py, docs/acl/design/hazard_activation.md): how many
+        # hazards of each variable group are active this episode, and the boundaries.
+        self._active_hazard_counts = self._hazard_manager.validate_active_counts(type(self).__name__, active_hazard_counts)
+
         if self._debug:
             print(f"SafeCircle initialized with {self._num_hazards} hazards")
 
+    @property
+    def hazard_groups(self) -> List[HazardGroup]:
+        """The hazard groups whose active count the context sets, in context order."""
+        return self._hazard_manager.variable_groups
+
+    @property
+    def CONTEXT_PARAMETERS(self) -> Tuple[str, ...]:  # noqa: N802 — the name is the protocol's (crax/envs/context.py)
+        """One active-count dimension per variable hazard group, then the boundary half-widths."""
+        return tuple(group.context_name for group in self.hazard_groups) + ("boundary_x", "boundary_y")
+
+    def default_context(self) -> jax.Array:
+        counts = {
+            group.context_name: float(count)
+            for group, count in zip(self.hazard_groups, self._active_hazard_counts)
+        }
+        return context.encode(self, **counts, boundary_x=self._boundary_x, boundary_y=self._boundary_y)
+
+    def _hazard_activation(self, episode_context: jax.Array) -> jax.Array:
+        """``[num_hazards]`` of 0/1 for this episode, from the context's per-group counts (its leading entries)."""
+        return self._hazard_manager.activation_from_counts(episode_context[: len(self.hazard_groups)])
+
     def reset(self, rng: jp.ndarray) -> State:
-        """Reset the environment with constrained hazard placement."""
+        return self.reset_with_context(rng, self.default_context())
+
+    def reset_with_context(self, rng: jp.ndarray, episode_context: jax.Array) -> State:
+        """Reset the environment with constrained hazard placement inside the episode's boundaries."""
+        boundary_x = episode_context[self.CONTEXT_PARAMETERS.index("boundary_x")]
+        boundary_y = episode_context[self.CONTEXT_PARAMETERS.index("boundary_y")]
+        activation = self._hazard_activation(episode_context)
         rng, rng1, rng2, rng_layout, rng_pos, rng_angle = jax.random.split(rng, 6)
 
         low, hi = -self._reset_noise_scale, self._reset_noise_scale
@@ -414,7 +447,8 @@ class SafeCircle(PipelineEnv, ABC):
             mpos = mpos.at[goal_ids].set(self._goal_positions)
 
         if self._num_movable_hazards > 0:
-            # Use keepout-based placement to prevent overlapping hazards
+            # Use keepout-based placement to prevent overlapping hazards, inside this
+            # episode's boundaries; inactive hazards are parked
             (rng_layout, positions_xy, keepouts, count, hazard_positions) = place_objects(
                 rng_key=rng_layout,
                 positions_xy=positions_xy,
@@ -423,8 +457,9 @@ class SafeCircle(PipelineEnv, ABC):
                 per_item_keepouts=self._hazard_keepouts[:self._num_movable_hazards],
                 num_items=self._num_movable_hazards,
                 num_candidates=num_candidates,
-                placement_extents=self._hazard_placement_extents,
+                placement_extents=(-boundary_x, -boundary_y, boundary_x, boundary_y),
                 placement_margin=self._placement_margin,
+                activation=activation[:self._num_movable_hazards],
             )
 
             hazard_ids = jp.array(self._hazard_mocap_ids[:self._num_movable_hazards], dtype=jp.int32)
@@ -434,13 +469,14 @@ class SafeCircle(PipelineEnv, ABC):
         hazard_positions = data.mocap_pos[jp.array(self._hazard_mocap_ids, dtype=jp.int32)]
 
         info = {
+            context.CONTEXT_KEY: episode_context,
             "hazard_positions": hazard_positions,
             "step_count": 0,
             "cost": 0.0,
             "out_of_boundary": 0.0,
         }
 
-        obs = self._get_obs(data)
+        obs = self._get_obs(data, activation)
         reward, cost, ctrl_cost, done = jp.zeros(4)
         _, radial_error, tangent_vel, _ = self._calculate_orbit_components(data)
         metrics = self._get_metrics(
@@ -463,12 +499,18 @@ class SafeCircle(PipelineEnv, ABC):
 
         agent_pos = data.xpos[self._agent_body]
         hazard_positions = state.info["hazard_positions"]
+        episode_context = state.info[context.CONTEXT_KEY]
+        activation = self._hazard_activation(episode_context)
 
         orbit_reward, radial_error, tangent_vel, _ = self._calculate_orbit_components(data)
 
         ctrl_cost = jp.sum(jp.square(action)) * self._ctrl_cost_weight
-        hazard_cost = self._calculate_safety_cost(data, hazard_positions)
-        boundary_cost, out_of_boundary = self._calculate_boundary_cost(agent_pos)
+        hazard_cost = self._calculate_safety_cost(data, hazard_positions, activation)
+        boundary_cost, out_of_boundary = self._calculate_boundary_cost(
+            agent_pos,
+            episode_context[self.CONTEXT_PARAMETERS.index("boundary_x")],
+            episode_context[self.CONTEXT_PARAMETERS.index("boundary_y")],
+        )
         cost = hazard_cost + boundary_cost
         reward = orbit_reward
 
@@ -483,7 +525,7 @@ class SafeCircle(PipelineEnv, ABC):
             jp.any(jp.isnan(agent_pos)),
         )
 
-        obs = self._get_obs(data)
+        obs = self._get_obs(data, activation)
         metrics = self._get_metrics(
             data,
             reward,
@@ -524,8 +566,8 @@ class SafeCircle(PipelineEnv, ABC):
 
         return reward, radial_error, tangent_vel, radius
 
-    def _calculate_safety_cost(self, data: mjx.Data, hazard_positions: jp.ndarray) -> jp.ndarray:
-        """Sum of per-hazard costs. Binary collision for collidables, proximity for others."""
+    def _calculate_safety_cost(self, data: mjx.Data, hazard_positions: jp.ndarray, activation: jp.ndarray) -> jp.ndarray:
+        """Sum of per-hazard costs over the active hazards. Binary collision for collidables, proximity for others."""
         return compute_hazard_costs(
             hazards=self._hazard_manager.hazards,
             hazard_positions=hazard_positions,
@@ -537,28 +579,19 @@ class SafeCircle(PipelineEnv, ABC):
             contact_geom2=getattr(data.contact, "geom2", None),
             contact_dist=getattr(data.contact, "dist", None),
             ncon=getattr(data, "ncon", None),
+            activation=activation,
         )
 
-    def _calculate_boundary_cost(self, agent_pos: jp.ndarray) -> Tuple[jp.ndarray, jp.ndarray]:
-        """Cost for crossing boundary limits (sigwalls behavior)."""
-        if self._boundary_x is None and self._boundary_y is None:
-            return jp.array(0.0), jp.array(0.0)
-
+    def _calculate_boundary_cost(self, agent_pos: jp.ndarray, boundary_x: jp.ndarray, boundary_y: jp.ndarray) -> Tuple[jp.ndarray, jp.ndarray]:
+        """Cost for crossing the episode's boundary limits (sigwalls behavior)."""
         rel_x = agent_pos[0] - self._circle_center[0]
         rel_y = agent_pos[1] - self._circle_center[1]
-
-        violation = jp.array(False)
-        if self._boundary_x is not None:
-            violation = jp.logical_or(violation, jp.abs(rel_x) > self._boundary_x)
-        if self._boundary_y is not None:
-            violation = jp.logical_or(violation, jp.abs(rel_y) > self._boundary_y)
-
-        violation = violation.astype(jp.float32)
+        violation = jp.logical_or(jp.abs(rel_x) > boundary_x, jp.abs(rel_y) > boundary_y).astype(jp.float32)
         cost = violation * self._boundary_cost
         return cost, violation
 
-    def _get_obs(self, data: mjx.Data) -> jp.ndarray:
-        """Creates an observation with hazard lidar and circle-orbit cues."""
+    def _get_obs(self, data: mjx.Data, activation: jp.ndarray) -> jp.ndarray:
+        """Creates an observation with hazard lidar (over the active hazards) and circle-orbit cues."""
         agent_pos = data.xpos[self._agent_body]
 
         # 1. Agent sensor observations
@@ -629,7 +662,8 @@ class SafeCircle(PipelineEnv, ABC):
         if self._include_hazard_lidar:
             _lidar_alias = True
 
-            def process_hazard_lidar(carry, hazard_mocap_id):
+            def process_hazard_lidar(carry, hazard):
+                hazard_mocap_id, hazard_active = hazard
                 hazard_lidar, agent_pos, cos_a, sin_a = carry
 
                 hazard_pos_3d = jp.where(
@@ -656,7 +690,7 @@ class SafeCircle(PipelineEnv, ABC):
 
                 sensor_val_hazard = jp.maximum(0.0, _lidar_max_dist - dist_hazard) / _lidar_max_dist
                 sensor_val_hazard = jp.where(dist_hazard > _lidar_max_dist, 0.0, sensor_val_hazard)
-                sensor_val_hazard = jp.where(hazard_mocap_id >= 0, sensor_val_hazard, 0.0)
+                sensor_val_hazard = jp.where(hazard_mocap_id >= 0, sensor_val_hazard, 0.0) * hazard_active
 
                 hazard_lidar = hazard_lidar.at[bin_idx_hazard].set(
                     jp.maximum(hazard_lidar[bin_idx_hazard], sensor_val_hazard)
@@ -680,7 +714,7 @@ class SafeCircle(PipelineEnv, ABC):
             hazard_mocap_ids_array = jp.array(self._hazard_mocap_ids, dtype=jp.int32)
             init_carry = (hazard_lidar_obs, agent_pos, cos_a, sin_a)
             (hazard_lidar_obs, _, _, _), _ = jax.lax.scan(
-                process_hazard_lidar, init_carry, hazard_mocap_ids_array
+                process_hazard_lidar, init_carry, (hazard_mocap_ids_array, activation)
             )
 
         # 5. Hazard compasses (closest-k)
@@ -714,9 +748,11 @@ class SafeCircle(PipelineEnv, ABC):
                 all_hz_pos = data.mocap_pos[all_hz_ids]
                 rel_xy = all_hz_pos[:, :2] - agent_pos[:2]
                 d2 = jp.sum(rel_xy * rel_xy, axis=1)
+                d2 = jp.where(activation > 0.5, d2, jp.inf)  # inactive hazards are never among the closest
                 order = jp.argsort(d2)
 
-                closest = all_hz_ids[order[:k_eff]]
+                # An inactive hazard picked to fill k slots gets the -1 sentinel (zero compass)
+                closest = jp.where(activation[order[:k_eff]] > 0.5, all_hz_ids[order[:k_eff]], -1)
 
                 if k_eff < k:
                     pad = -jp.ones((k - k_eff,), dtype=jp.int32)

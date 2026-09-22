@@ -12,13 +12,14 @@ Usage:
 
 import os
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import jax
 import mujoco
 from jax import numpy as jp
 from mujoco import mjx
 
+from crax.envs import context
 from crax.envs.base import PipelineEnv, State
 from crax.envs.env_utils import (
     create_hazard_manager_from_specs,
@@ -33,7 +34,7 @@ from crax.envs.env_utils import (
     add_walls_to_specs,
     choose_valid_position_shape_aware,
 )
-from crax.envs.hazards import _type_defaults_from_registry, compute_hazard_costs
+from crax.envs.hazards import HazardGroup, _type_defaults_from_registry, compute_hazard_costs
 from crax.io import mjcf
 
 
@@ -118,7 +119,7 @@ class SafeGoal(PipelineEnv, ABC):
             max_placement_attempts: int = 100,
             max_layout_attempts: int = 1000,
             # Goal settings
-            goal_type: str = 'cube',
+            goal_type: str = 'cylinder',
             goal_count: int = 1,
             goal_size: float = 0.2,
             goal_height: float = 0.2,
@@ -126,6 +127,9 @@ class SafeGoal(PipelineEnv, ABC):
             goal_collidable: bool = False,
             # Hazard settings - list of specs: {type, count, size, height, collidable, fixed, density}
             hazard_specs: Optional[List[Dict]] = None,
+            # How many hazards of each non-fixed spec are active by default, in spec order;
+            # None = all of them. The rest are parked (docs/acl/design/hazard_activation.md).
+            active_hazard_counts: Optional[Sequence[int]] = None,
             # Debug
             debug: bool = False,
             **kwargs,
@@ -191,10 +195,8 @@ class SafeGoal(PipelineEnv, ABC):
         goals = self._goal_manager.goals
         hazards = self._hazard_manager.hazards
 
-        # Per-object keepouts (no margin; margin is handled in placement math)
-        self._goal_keepouts = jp.array(
-            [g.get_keepout_radius() for g in goals], dtype=jp.float32
-        )
+        # Per-object keepouts (no margin; margin is handled in placement math).
+        # The goal's keepout is its radius, which is the context's goal_size (see reset).
         self._hazard_keepouts = jp.array(
             [h.get_keepout_radius() for h in hazards], dtype=jp.float32
         )
@@ -218,10 +220,9 @@ class SafeGoal(PipelineEnv, ABC):
         self._hazard_half_extents = jp.stack(half_ext) if len(hazards) > 0 else jp.zeros((0, 2))
         self._hazard_radii = jp.array(radii) if len(hazards) > 0 else jp.zeros((0,))
 
-        # For goal reachability checks
+        # For goal reachability checks (the cylinder radius is the context's goal_size)
         packed = [g.encode_static_params() for g in goals]
         self._goal_type_ids = jp.array([p.type_id for p in packed], dtype=jp.int32)
-        self._goal_radii = jp.array([p.radius for p in packed], dtype=jp.float32)
         self._goal_box_he = jp.array([p.half_extents_xy for p in packed], dtype=jp.float32)
         self._goal_yaws = jp.array([p.yaw for p in packed], dtype=jp.float32)
 
@@ -288,6 +289,10 @@ class SafeGoal(PipelineEnv, ABC):
         self._num_fixed_hazards = self._hazard_manager.get_fixed_hazard_count()
         self._num_movable_hazards = self._num_hazards - self._num_fixed_hazards
         self._num_goals = self._goal_manager.get_goal_count()
+        # reset places `hazards[:num_movable]` and leaves the rest where the XML put them;
+        # the activation vector is sliced the same way. Both need the movable ones first.
+        if any(h.fixed for h in hazards[:self._num_movable_hazards]):
+            raise ValueError(f"{type(self).__name__}: fixed hazards (walls) must come after the movable ones in hazard_specs")
 
         # --- Find Sensor Indices, Addresses, and Dimensions ---
         self._sensor_info = {}
@@ -340,6 +345,17 @@ class SafeGoal(PipelineEnv, ABC):
         self._max_placement_attempts = max_placement_attempts
         self._max_layout_attempts = max_layout_attempts
 
+        # The context (crax/envs/context.py, docs/acl/design/hazard_activation.md): how many
+        # hazards of each variable group are active this episode, and the goal's radius.
+        # The constructor's specs are the default context: every hazard active, this goal_size.
+        if goal_type != 'cylinder':
+            raise ValueError(
+                f"{type(self).__name__}: the context's goal_size is the radius of the cylinder goals; "
+                f"got goal_type={goal_type!r} (crax/envs/difficulty.py uses cylinders at every level)"
+            )
+        self._goal_size = float(goal_size)
+        self._active_hazard_counts = self._hazard_manager.validate_active_counts(type(self).__name__, active_hazard_counts)
+
         if self._debug:
             print(
                 f"SafeGoal initialized with {self._num_hazards} hazards and {self._num_goals} goals")
@@ -351,7 +367,35 @@ class SafeGoal(PipelineEnv, ABC):
             print(f"Goal composition: {len(cube_goals)} cubes, {len(cylinder_goals)} cylinders")
             print(f"Using modular goal and hazard system with dynamic XML generation")
 
+    @property
+    def hazard_groups(self) -> List[HazardGroup]:
+        """The hazard groups whose active count the context sets, in context order."""
+        return self._hazard_manager.variable_groups
+
+    @property
+    def CONTEXT_PARAMETERS(self) -> Tuple[str, ...]:  # noqa: N802 — the name is the protocol's (crax/envs/context.py)
+        """One active-count dimension per variable hazard group, then the goal's radius."""
+        return tuple(group.context_name for group in self.hazard_groups) + ("goal_size",)
+
+    def default_context(self) -> jax.Array:
+        counts = {
+            group.context_name: float(count)
+            for group, count in zip(self.hazard_groups, self._active_hazard_counts)
+        }
+        return context.encode(self, **counts, goal_size=self._goal_size)
+
+    def _hazard_activation(self, episode_context: jax.Array) -> jax.Array:
+        """``[num_hazards]`` of 0/1 for this episode, from the context's per-group counts (its leading entries)."""
+        return self._hazard_manager.activation_from_counts(episode_context[: len(self.hazard_groups)])
+
+    def _goal_radius(self, episode_context: jax.Array) -> jax.Array:
+        """This episode's goal radius, ``[num_goals]``: every goal is a cylinder of the context's goal_size."""
+        return jp.broadcast_to(episode_context[self.CONTEXT_PARAMETERS.index("goal_size")], (self._num_goals,))
+
     def reset(self, rng: jp.ndarray) -> State:
+        return self.reset_with_context(rng, self.default_context())
+
+    def reset_with_context(self, rng: jp.ndarray, episode_context: jax.Array) -> State:
         """Reset the environment with constrained placement using JAX control flow."""
         rng, rng1, rng2, rng_layout = jax.random.split(rng, 4)
 
@@ -375,6 +419,9 @@ class SafeGoal(PipelineEnv, ABC):
         data = self.pipeline_init(qpos, qvel)
         agent_pos = data.xpos[self._agent_body]
 
+        activation = self._hazard_activation(episode_context)
+        goal_radius = self._goal_radius(episode_context)
+
         # Build layout: goals then hazards using lax.scan
         num_candidates = self._max_placement_attempts
 
@@ -394,14 +441,14 @@ class SafeGoal(PipelineEnv, ABC):
             positions_xy=positions_xy,
             keepouts_array=keepouts,
             placed_count=count,
-            per_item_keepouts=self._goal_keepouts,
+            per_item_keepouts=goal_radius,
             num_items=self._num_goals,
             num_candidates=num_candidates,
             placement_extents=self._placement_extents,
             placement_margin=self._placement_margin,
         )
 
-        # Place hazards
+        # Place hazards; inactive ones are parked
         (rng_layout, positions_xy, keepouts, count, hazard_positions) = place_objects(
             rng_key=rng_layout,
             positions_xy=positions_xy,
@@ -412,6 +459,7 @@ class SafeGoal(PipelineEnv, ABC):
             num_candidates=num_candidates,
             placement_extents=self._placement_extents,
             placement_margin=self._placement_margin,
+            activation=activation[:self._num_movable_hazards],
         )
 
         # Set goal and hazard positions in mocap
@@ -443,6 +491,7 @@ class SafeGoal(PipelineEnv, ABC):
         initial_dist_goal = jp.min(jp.sqrt(jp.sum(jp.square(goals_xy - agent_xy[None, :]), axis=1) + 1e-8))
 
         info = {
+            context.CONTEXT_KEY: episode_context,
             "goal_positions": goal_positions,
             "hazard_positions": hazard_positions,
             "step_count": 0,
@@ -451,7 +500,7 @@ class SafeGoal(PipelineEnv, ABC):
             "respawn_rng": rng_layout,
         }
 
-        obs = self._get_obs(data)
+        obs = self._get_obs(data, activation)
         reward, cost, ctrl_cost, done = jp.zeros(4)
         metrics = self._get_metrics(data, reward, cost, initial_dist_goal, initial_dist_goal, ctrl_cost)
 
@@ -468,6 +517,8 @@ class SafeGoal(PipelineEnv, ABC):
         hazard_positions = state.info['hazard_positions']
         goal_positions = state.info['goal_positions']
         last_dist_goal = state.info['last_dist_goal']
+        activation = self._hazard_activation(state.info[context.CONTEXT_KEY])
+        goal_radius = self._goal_radius(state.info[context.CONTEXT_KEY])
 
         # ============================== GOAL REWARDS ==============================
 
@@ -482,7 +533,7 @@ class SafeGoal(PipelineEnv, ABC):
             goals_xy, self._goal_box_he, self._goal_yaws
         )
         sdf_cylinder_2d = jax.vmap(lambda c, r: sdf_cylinder(agent_xy, c, r))(
-            goals_xy, self._goal_radii
+            goals_xy, goal_radius
         )
 
         # pick per-type
@@ -520,21 +571,22 @@ class SafeGoal(PipelineEnv, ABC):
         object_is_rect = object_is_rect.at[0].set(False)
         object_radii = object_radii.at[0].set(self._agent_keepout)
 
-        # Hazards as objects [1 : 1+H)
+        # Hazards as objects [1 : 1+H); an inactive hazard is parked and keeps nothing out
         hazard_span_start = 1
         hazard_span_end = hazard_span_start + self._num_hazards
         object_positions_xy = object_positions_xy.at[hazard_span_start:hazard_span_end].set(hazard_positions_xy)
 
         object_is_rect = object_is_rect.at[hazard_span_start:hazard_span_end].set(self._hazard_is_rect)
-        object_half_extents = object_half_extents.at[hazard_span_start:hazard_span_end].set(self._hazard_half_extents)
-        object_radii = object_radii.at[hazard_span_start:hazard_span_end].set(self._hazard_radii)
+        object_half_extents = object_half_extents.at[hazard_span_start:hazard_span_end].set(
+            self._hazard_half_extents * activation[:, None])
+        object_radii = object_radii.at[hazard_span_start:hazard_span_end].set(self._hazard_radii * activation)
 
         # Goals as objects [hazard_span_end : hazard_span_end + G)
         goal_span_start = hazard_span_end
         goal_span_end = goal_span_start + self._num_goals
         object_positions_xy = object_positions_xy.at[goal_span_start:goal_span_end].set(goal_positions_xy)
         object_is_rect = object_is_rect.at[goal_span_start:goal_span_end].set(False)
-        object_radii = object_radii.at[goal_span_start:goal_span_end].set(self._goal_keepouts)
+        object_radii = object_radii.at[goal_span_start:goal_span_end].set(goal_radius)
 
         active_object_count = jp.array(total_objects, dtype=jp.int32)
 
@@ -556,7 +608,7 @@ class SafeGoal(PipelineEnv, ABC):
                 keep_half_extents_wo_self = object_half_extents
                 keep_radii_wo_self = object_radii.at[object_slot].set(0.0)
 
-                goal_keepout_radius = self._goal_keepouts[goal_index]
+                goal_keepout_radius = goal_radius[goal_index]
 
                 # convert [minx, miny, maxx, maxy] -> half-extents [ex, ey]
                 minx, miny, maxx, maxy = self._placement_extents
@@ -632,14 +684,14 @@ class SafeGoal(PipelineEnv, ABC):
 
         # Safety cost (distance-based penalty near hazards)
         with jax.named_scope('safety_cost'):
-            cost = self._calculate_safety_cost(data, hazard_positions)
+            cost = self._calculate_safety_cost(data, hazard_positions, activation)
 
         # Total reward
         reward = dist_reward + goal_reward
 
         # Get observation and metrics
         with jax.named_scope('observation'):
-            obs = self._get_obs(data)
+            obs = self._get_obs(data, activation)
         metrics = self._get_metrics(data, reward, cost, dist_goal, last_dist_goal, ctrl_cost)
 
         # Update info
@@ -690,8 +742,8 @@ class SafeGoal(PipelineEnv, ABC):
             print(f"Warning: Could not find valid position after {self._max_placement_attempts} attempts")
         return sample_position_in_extents(rng_key, self._placement_extents, keepout)  # Return anyway
 
-    def _calculate_safety_cost(self, data: mjx.Data, hazard_positions: jp.ndarray) -> jp.ndarray:
-        """Sum of per-hazard costs. Binary collision for collidables, proximity for others."""
+    def _calculate_safety_cost(self, data: mjx.Data, hazard_positions: jp.ndarray, activation: jp.ndarray) -> jp.ndarray:
+        """Sum of per-hazard costs over the active hazards. Binary collision for collidables, proximity for others."""
         return compute_hazard_costs(
             hazards=self._hazard_manager.hazards,
             hazard_positions=hazard_positions,
@@ -703,9 +755,10 @@ class SafeGoal(PipelineEnv, ABC):
             contact_geom2=getattr(data.contact, "geom2", None),
             contact_dist=getattr(data.contact, "dist", None),
             ncon=getattr(data, "ncon", None),
+            activation=activation,
         )
 
-    def _get_obs(self, data: mjx.Data) -> jp.ndarray:
+    def _get_obs(self, data: mjx.Data, activation: jp.ndarray) -> jp.ndarray:
         """Creates an observation with separate lidars for goals and hazards.
 
         Observation structure:
@@ -847,9 +900,10 @@ class SafeGoal(PipelineEnv, ABC):
         )
 
         # === HAZARD LIDAR ===
-        # Process hazards for the hazard lidar
-        def process_hazard_lidar(carry, hazard_mocap_id):
+        # Process hazards for the hazard lidar; an inactive hazard reads as nothing
+        def process_hazard_lidar(carry, hazard):
             """Process a single hazard for the hazard lidar."""
+            hazard_mocap_id, hazard_active = hazard
             hazard_lidar, agent_pos, agent_z_angle, cos_a, sin_a = carry
 
             # Get hazard position from mocap if valid ID
@@ -883,8 +937,8 @@ class SafeGoal(PipelineEnv, ABC):
             sensor_val_hazard = jp.maximum(0.0, _lidar_max_dist - dist_hazard) / _lidar_max_dist
             sensor_val_hazard = jp.where(dist_hazard > _lidar_max_dist, 0.0, sensor_val_hazard)
 
-            # Only process if hazard ID is valid (>= 0)
-            sensor_val_hazard = jp.where(hazard_mocap_id >= 0, sensor_val_hazard, 0.0)
+            # Only process if hazard ID is valid (>= 0) and the hazard is active this episode
+            sensor_val_hazard = jp.where(hazard_mocap_id >= 0, sensor_val_hazard, 0.0) * hazard_active
 
             # Update the hazard Lidar observation for the primary bin
             hazard_lidar = hazard_lidar.at[bin_idx_hazard].set(
@@ -913,7 +967,7 @@ class SafeGoal(PipelineEnv, ABC):
         hazard_mocap_ids_array = jp.array(self._hazard_mocap_ids, dtype=jp.int32)
         init_carry = (hazard_lidar_obs, agent_pos, agent_z_angle, cos_a, sin_a)
         (hazard_lidar_obs, _, _, _, _), _ = jax.lax.scan(
-            process_hazard_lidar, init_carry, hazard_mocap_ids_array
+            process_hazard_lidar, init_carry, (hazard_mocap_ids_array, activation)
         )
 
         # === HAZARD COMPASSES ===
@@ -955,9 +1009,11 @@ class SafeGoal(PipelineEnv, ABC):
             all_hz_pos = data.mocap_pos[all_hz_ids]  # (H,3)
             rel_xy = all_hz_pos[:, :2] - agent_pos[:2]  # (H,2)
             d2 = jp.sum(rel_xy * rel_xy, axis=1)  # (H,)
+            d2 = jp.where(activation > 0.5, d2, jp.inf)  # inactive hazards are never among the closest
             order = jp.argsort(d2)  # (H,)
 
-            closest = all_hz_ids[order[:k_eff]]  # (k_eff,) static slice ✅
+            # An inactive hazard picked to fill k slots gets the -1 sentinel (zero compass)
+            closest = jp.where(activation[order[:k_eff]] > 0.5, all_hz_ids[order[:k_eff]], -1)  # (k_eff,) static slice
 
             if k_eff < k:
                 pad = -jp.ones((k - k_eff,), dtype=jp.int32)

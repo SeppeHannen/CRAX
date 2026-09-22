@@ -1,14 +1,15 @@
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import jax
 import mujoco
 from jax import numpy as jp
 
 from crax import base
+from crax.envs import context
 from crax.envs.base import PipelineEnv, State
 from crax.envs.env_utils import generate_goal_xml_from_base
 from crax.envs.goals import GoalManager
-from crax.envs.hazards import HazardManager
+from crax.envs.hazards import PARKING_XY, HazardManager
 from crax.io import mjcf
 
 
@@ -27,10 +28,15 @@ class SafeReacher(PipelineEnv):
     _LINK1_LENGTH = 0.1
     _LINK2_LENGTH = 0.11  # includes fingertip
 
+    # The one knob of this suite (crax/envs/context.py, docs/acl/design/hazard_activation.md):
+    # how many of the model's hazards are in the arena this episode; the rest are parked.
+    CONTEXT_PARAMETERS: Tuple[str, ...] = ("active_hazards",)
+
     def __init__(
             self,
             episode_length: int = 200,
             num_hazards: int = 10,
+            active_hazards: Optional[int] = None,
             hazard_types: Optional[List[str]] = None,
             hazard_radius: float = 0.035,
             rect_half_extent: float = 0.03,
@@ -44,6 +50,11 @@ class SafeReacher(PipelineEnv):
     ):
         # Config for hazards and env geometry
         self._num_hazards = num_hazards
+        if active_hazards is None:
+            active_hazards = num_hazards
+        if not 0 <= active_hazards <= num_hazards:
+            raise ValueError(f"{type(self).__name__}: active_hazards={active_hazards} but the model has {num_hazards}")
+        self._active_hazards = int(active_hazards)
         self._hazard_types = hazard_types or ['cylinder', 'rect']
         self._hazard_radius = hazard_radius
         self._rect_half_extent = rect_half_extent
@@ -166,7 +177,19 @@ class SafeReacher(PipelineEnv):
 
     # --------------------------- Core RL API ---------------------------
 
+    def default_context(self) -> jax.Array:
+        return context.encode(self, active_hazards=self._active_hazards)
+
+    def _hazard_activation(self, episode_context: jax.Array) -> jax.Array:
+        """``[num_hazards]`` of 0/1: the first ``active_hazards`` of the model's hazards are in the arena."""
+        active_count = episode_context[self.CONTEXT_PARAMETERS.index("active_hazards")]
+        return (jp.arange(self._num_hazards, dtype=jp.float32) < active_count).astype(jp.float32)
+
     def reset(self, rng: jax.Array) -> State:
+        return self.reset_with_context(rng, self.default_context())
+
+    def reset_with_context(self, rng: jax.Array, episode_context: jax.Array) -> State:
+        activation = self._hazard_activation(episode_context)
         # Split RNG for q/qd init and hazard/target sampling
         rng, rng1, rng2, rng_haz, rng_t = jax.random.split(rng, 5)
 
@@ -290,6 +313,8 @@ class SafeReacher(PipelineEnv):
                 return (rng_t, ok, cur)
 
             rng_k, ok, chosen = jax.lax.fori_loop(0, max_attempts, attempt, (rng_k, ok0, cand0))
+            # An inactive hazard is parked; far away, it passes every later overlap check by distance.
+            chosen = jp.where(activation[i] > 0.5, chosen, jp.asarray(PARKING_XY, jp.float32))
             placed = placed.at[i].set(chosen)
             return (rng_k, placed)
 
@@ -314,7 +339,7 @@ class SafeReacher(PipelineEnv):
         tip_pos, _, target_pos = self._tip_target(pipeline_state)
         dist = jp.sum(jp.abs(tip_pos[:2] - target_pos[:2]))
 
-        obs = self._get_obs(pipeline_state, hazards_pos)
+        obs = self._get_obs(pipeline_state, hazards_pos, activation)
         reward, done, zero = jp.zeros(3)
 
         # Initial per-step cost (zero at reset)
@@ -326,6 +351,7 @@ class SafeReacher(PipelineEnv):
             'dist': dist,
         }
         info = {
+            context.CONTEXT_KEY: episode_context,
             'hazard_positions': hazards_pos,
             'min_dist': dist,
             'cost': zero,
@@ -336,7 +362,8 @@ class SafeReacher(PipelineEnv):
     def step(self, state: State, action: jax.Array) -> State:
         pipeline_state = self.pipeline_step(state.pipeline_state, action)
         hazard_positions = state.info['hazard_positions']
-        obs = self._get_obs(pipeline_state, hazard_positions)
+        activation = self._hazard_activation(state.info[context.CONTEXT_KEY])
+        obs = self._get_obs(pipeline_state, hazard_positions, activation)
 
         # --- distance to goal ---
         tip_pos, _, target_pos = self._tip_target(pipeline_state)
@@ -359,7 +386,7 @@ class SafeReacher(PipelineEnv):
         reward = reward_dist + reward_bonus
 
         # --- safety cost ---
-        cost = self._calculate_safety_cost(pipeline_state, hazard_positions)
+        cost = self._calculate_safety_cost(pipeline_state, hazard_positions, activation)
 
         # metrics/info
         state.metrics.update(
@@ -380,8 +407,8 @@ class SafeReacher(PipelineEnv):
 
     # --------------------------- Observations ---------------------------
 
-    def _get_obs(self, pipeline_state: base.State, hazard_positions: jax.Array) -> jax.Array:
-        """Observation: original reacher obs + hazard lidar bins.
+    def _get_obs(self, pipeline_state: base.State, hazard_positions: jax.Array, activation: jax.Array) -> jax.Array:
+        """Observation: original reacher obs + hazard lidar bins over the active hazards.
 
         Lidar is agent-centric using theta1 (first joint angle) as the 'heading'.
         """
@@ -422,7 +449,7 @@ class SafeReacher(PipelineEnv):
             b0 = jp.minimum(jp.floor(bfloat), bins - 1).astype(jp.int32)
 
             val = jp.maximum(0.0, max_d - dist) / max_d
-            val = jp.where(dist > max_d, 0.0, val)
+            val = jp.where(dist > max_d, 0.0, val) * activation[i]
 
             # primary bin: max pooling
             lidar_acc = lidar_acc.at[b0].set(jp.maximum(lidar_acc[b0], val))
@@ -462,10 +489,10 @@ class SafeReacher(PipelineEnv):
 
     # --------------------------- Hazard logic ---------------------------
 
-    def _calculate_safety_cost(self, pipeline_state: base.State, hazard_positions: jax.Array) -> jax.Array:
+    def _calculate_safety_cost(self, pipeline_state: base.State, hazard_positions: jax.Array, activation: jax.Array) -> jax.Array:
         """Binary per-hazard cost: 1 if any sampled arm point is inside the hazard.
 
-        Sum of per-hazard costs each step.
+        Sum of per-hazard costs over the active hazards each step.
         Use stored static hazard shapes and current hazard positions.
         """
         n_h = hazard_positions.shape[0]
@@ -515,7 +542,7 @@ class SafeReacher(PipelineEnv):
         is_rect = self._hazard_is_rect.astype(jp.float32)
         is_cyl = (1.0 - is_rect)
 
-        per_hazard_cost = cyl_inside_any * is_cyl + rect_inside_any * is_rect
+        per_hazard_cost = (cyl_inside_any * is_cyl + rect_inside_any * is_rect) * activation
         total_cost = jp.sum(per_hazard_cost)
 
         return jp.asarray(self._cost_scale, dtype=jp.float32) * total_cost
