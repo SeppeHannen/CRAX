@@ -29,6 +29,7 @@ from etils import epath
 
 from crax import base
 from crax import math
+from crax.envs import context
 from crax.envs.base import PipelineEnv, State
 from crax.io import mjcf
 
@@ -146,51 +147,53 @@ class SafeLift(PipelineEnv, ABC):
         self._reset_noise_scale = reset_noise_scale
         self._exclude_current_positions_from_observation = exclude_current_positions_from_observation
 
-        # Get foot geom info from subclass
-        foot_geoms = self.foot_geoms
-
-        # Get body indices and local offsets for foot geoms
-        self._foot_body_ids = {}
-        self._foot_local_offsets = {}
-        self._foot_geom_ids = {}
-
-        for foot_key, (geom_name, local_offset) in foot_geoms.items():
+        # Every foot of the agent, in a fixed order. Contact is computed for all of
+        # them; which ones count towards the cost is the episode's context (a 0/1
+        # mask, one dimension per foot), so the set of restricted feet is a value.
+        geom_ids, body_ids, local_offsets = [], [], []
+        for foot_name in self.foot_names:
+            geom_name, local_offset = self.foot_geoms[foot_name]
             geom_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom_name)
-            if geom_id >= 0:
-                body_id = mj_model.geom_bodyid[geom_id]
-                self._foot_body_ids[foot_key] = body_id
-                self._foot_local_offsets[foot_key] = jp.array(local_offset)
-                self._foot_geom_ids[foot_key] = geom_id
-
-        # Get floor geom ID for contact detection
+            if geom_id < 0:
+                raise ValueError(f"{type(self).__name__}: foot geom {geom_name!r} for {foot_name!r} is not in {path}")
+            geom_ids.append(geom_id)
+            body_ids.append(mj_model.geom_bodyid[geom_id])
+            local_offsets.append(local_offset)
+        self._foot_geom_ids = jp.asarray(geom_ids, jp.int32)  # [num_feet]
+        self._foot_body_ids = jp.asarray(body_ids, jp.int32)  # [num_feet]
+        self._foot_local_offsets = jp.asarray(local_offsets, jp.float32)  # [num_feet, 3]
         self._floor_geom_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_GEOM, 'floor')
 
-        # Determine which feet are restricted
-        if restricted_feet is not None:
-            self._restricted_feet = restricted_feet
-        else:
-            self._restricted_feet = self.get_restricted_feet(difficulty)
-
-        # Store restricted geom IDs for contact checking
-        if self._restricted_feet:
-            self._restricted_geom_ids = jp.array(
-                [self._foot_geom_ids[k] for k in self._restricted_feet if k in self._foot_geom_ids],
-                dtype=jp.int32
-            )
-        else:
-            self._restricted_geom_ids = jp.array([], dtype=jp.int32)
-
-        # Store body IDs and local offsets as arrays for vectorized computation
-        self._restricted_body_ids = jp.array(
-            [self._foot_body_ids[k] for k in self._restricted_feet if k in self._foot_body_ids],
-            dtype=jp.int32
+        # The constructor's restricted set: the default context (crax/envs/context.py).
+        self._restricted_feet: List[str] = (
+            list(restricted_feet) if restricted_feet is not None else self.get_restricted_feet(difficulty)
         )
-        self._restricted_local_offsets = jp.stack(
-            [self._foot_local_offsets[k] for k in self._restricted_feet if k in self._foot_local_offsets]
-        ) if self._restricted_feet else jp.zeros((0, 3))
+        unknown = set(self._restricted_feet) - set(self.foot_names)
+        if unknown:
+            raise ValueError(f"{type(self).__name__}: unknown feet {sorted(unknown)}; feet are {self.foot_names}")
+
+    @property
+    def foot_names(self) -> Tuple[str, ...]:
+        """The agent's feet, in the order of every per-foot array and of the context."""
+        return tuple(self.foot_geoms)
+
+    @property
+    def CONTEXT_PARAMETERS(self) -> Tuple[str, ...]:  # noqa: N802 — the name is the protocol's (crax/envs/context.py)
+        """One 0/1 dimension per foot: ``restrict_<foot>``."""
+        return tuple(f"restrict_{foot}" for foot in self.foot_names)
+
+    def default_context(self) -> jax.Array:
+        return context.encode(self, **{f"restrict_{foot}": float(foot in self._restricted_feet) for foot in self.foot_names})
+
+    def _restricted_mask(self, state: State) -> jax.Array:
+        """``[num_feet]`` of 0/1: which feet must stay off the ground this episode (the whole context, in foot order)."""
+        return state.info[context.CONTEXT_KEY]
 
     def reset(self, rng: jax.Array) -> State:
-        """Resets the environment to an initial state."""
+        return self.reset_with_context(rng, self.default_context())
+
+    def reset_with_context(self, rng: jax.Array, episode_context: jax.Array) -> State:
+        """Resets the environment to an initial state in the given context."""
         rng, rng1, rng2 = jax.random.split(rng, 3)
 
         low, hi = -self._reset_noise_scale, self._reset_noise_scale
@@ -215,7 +218,7 @@ class SafeLift(PipelineEnv, ABC):
             'y_velocity': zero,
             'feet_on_ground': zero,
         }
-        info = {'cost': zero}
+        info = {context.CONTEXT_KEY: episode_context, 'cost': zero}
 
         return State(pipeline_state, obs, reward, done, metrics, info)
 
@@ -240,15 +243,13 @@ class SafeLift(PipelineEnv, ABC):
 
         ctrl_cost = self._ctrl_cost_weight * jp.sum(jp.square(action))
 
-        # Calculate safety cost: check if restricted feet are on the ground
-        cost = self._calculate_foot_contact_cost(pipeline_state)
+        # Safety cost: the number of this episode's restricted feet on the ground
+        feet_on_ground = jp.sum(self._feet_touching(pipeline_state) * self._restricted_mask(state))
+        cost = self._cost_scale * feet_on_ground
 
         obs = self._get_obs(pipeline_state)
         reward = (forward_reward + healthy_reward - ctrl_cost) * self._reward_scale
         done = 1.0 - is_healthy if self._terminate_when_unhealthy else 0.0
-
-        # Count how many restricted feet are on ground
-        feet_on_ground = self._count_feet_on_ground(pipeline_state)
 
         state.metrics.update(
             reward_forward=forward_reward * self._reward_scale,
@@ -274,72 +275,32 @@ class SafeLift(PipelineEnv, ABC):
             info=info,
         )
 
-    def _get_foot_world_positions(self, pipeline_state: base.State) -> jax.Array:
-        """Compute world z-positions of restricted foot geoms."""
-        foot_z_positions = []
-        for foot_key in self._restricted_feet:
-            if foot_key not in self._foot_body_ids:
-                continue
-            body_id = self._foot_body_ids[foot_key]
-            body_pos = pipeline_state.x.pos[body_id]
-            body_rot = pipeline_state.x.rot[body_id]
-            local_offset = self._foot_local_offsets[foot_key]
-
-            # Transform local offset to world coordinates
-            world_offset = math.rotate(local_offset, body_rot)
-            foot_world_z = body_pos[2] + world_offset[2]
-            foot_z_positions.append(foot_world_z)
-
-        return jp.stack(foot_z_positions) if foot_z_positions else jp.array([])
-
-    def _check_foot_floor_contacts(self, pipeline_state: base.State) -> jax.Array:
-        """Check which restricted feet are in contact with the floor using MuJoCo contacts."""
-        contact_geom = pipeline_state.contact.geom
-        contact_dist = pipeline_state.contact.dist
-        active_contacts = contact_dist <= 0
-
-        contacts = []
-        for foot_key in self._restricted_feet:
-            if foot_key not in self._foot_geom_ids:
-                contacts.append(False)
-                continue
-            foot_geom_id = self._foot_geom_ids[foot_key]
-
-            is_foot_floor_contact = (
-                ((contact_geom[:, 0] == foot_geom_id) & (contact_geom[:, 1] == self._floor_geom_id)) |
-                ((contact_geom[:, 1] == foot_geom_id) & (contact_geom[:, 0] == self._floor_geom_id))
-            )
-            in_contact = jp.any(is_foot_floor_contact & active_contacts)
-            contacts.append(in_contact)
-
-        return jp.stack(contacts) if contacts else jp.array([], dtype=bool)
-
-    def _calculate_foot_contact_cost(self, pipeline_state: base.State) -> jax.Array:
-        """Calculate cost based on restricted feet touching the ground."""
-        if len(self._restricted_feet) == 0:
-            return jp.float32(0.0)
-
+    def _feet_touching(self, pipeline_state: base.State) -> jax.Array:
+        """``[num_feet]`` of 0/1: which feet are on the ground, for every foot in ``foot_names`` order."""
         if self.uses_contact_detection:
-            feet_touching = self._check_foot_floor_contacts(pipeline_state)
+            touching = self._feet_in_floor_contact(pipeline_state)
         else:
-            foot_z_positions = self._get_foot_world_positions(pipeline_state)
-            feet_touching = foot_z_positions < self._ground_threshold
+            touching = self._feet_world_z(pipeline_state) < self._ground_threshold
+        return touching.astype(jp.float32)
 
-        cost = jp.sum(feet_touching.astype(jp.float32))
-        return self._cost_scale * cost
+    def _feet_world_z(self, pipeline_state: base.State) -> jax.Array:
+        """World z of every foot's contact point, ``[num_feet]``."""
+        body_pos = pipeline_state.x.pos[self._foot_body_ids]  # [num_feet, 3]
+        body_rot = pipeline_state.x.rot[self._foot_body_ids]  # [num_feet, 4]
+        world_offsets = jax.vmap(math.rotate)(self._foot_local_offsets, body_rot)
+        return body_pos[:, 2] + world_offsets[:, 2]
 
-    def _count_feet_on_ground(self, pipeline_state: base.State) -> jax.Array:
-        """Count how many restricted feet are on the ground."""
-        if len(self._restricted_feet) == 0:
-            return jp.float32(0.0)
-
-        if self.uses_contact_detection:
-            feet_touching = self._check_foot_floor_contacts(pipeline_state)
-        else:
-            foot_z_positions = self._get_foot_world_positions(pipeline_state)
-            feet_touching = foot_z_positions < self._ground_threshold
-
-        return jp.sum(feet_touching.astype(jp.float32))
+    def _feet_in_floor_contact(self, pipeline_state: base.State) -> jax.Array:
+        """Which feet MuJoCo reports in contact with the floor, ``[num_feet]`` bool."""
+        contact_geom = pipeline_state.contact.geom  # [num_contacts, 2]
+        active = pipeline_state.contact.dist <= 0  # [num_contacts]
+        foot = self._foot_geom_ids[:, None]  # [num_feet, 1]
+        floor = self._floor_geom_id
+        foot_floor_pair = (
+            ((contact_geom[None, :, 0] == foot) & (contact_geom[None, :, 1] == floor))
+            | ((contact_geom[None, :, 1] == foot) & (contact_geom[None, :, 0] == floor))
+        )  # [num_feet, num_contacts]
+        return jp.any(foot_floor_pair & active[None, :], axis=1)
 
     def _get_obs(self, pipeline_state: base.State) -> jax.Array:
         """Observe body position and velocities."""

@@ -14,6 +14,7 @@ import mujoco
 from jax import numpy as jp
 from mujoco import mjx
 
+from crax.envs import context
 from crax.envs.base import PipelineEnv, State
 from crax.envs.env_utils import (
     create_hazard_manager_from_specs,
@@ -384,7 +385,7 @@ class SafePush(PipelineEnv, ABC):
         self._max_placement_attempts = max_placement_attempts
         self._max_layout_attempts = max_layout_attempts
 
-        # Goal movement
+        # Goal movement (the suite's difficulty knob; read from the episode's context in step)
         self._goal_velocity = goal_velocity
 
         if self._debug:
@@ -398,7 +399,16 @@ class SafePush(PipelineEnv, ABC):
             print(f"Goal composition: {len(cube_goals)} cubes, {len(cylinder_goals)} cylinders")
             print(f"Using modular goal and hazard system with dynamic XML generation")
 
+    # The one knob of this suite, read from the episode's context (crax/envs/context.py).
+    CONTEXT_PARAMETERS: Tuple[str, ...] = ("goal_velocity",)
+
+    def default_context(self) -> jax.Array:
+        return context.encode(self, goal_velocity=self._goal_velocity)
+
     def reset(self, rng: jp.ndarray) -> State:
+        return self.reset_with_context(rng, self.default_context())
+
+    def reset_with_context(self, rng: jp.ndarray, episode_context: jax.Array) -> State:
         """Reset the environment with constrained placement using JAX control flow."""
         rng, rng1, rng2, rng_layout = jax.random.split(rng, 4)
 
@@ -508,6 +518,7 @@ class SafePush(PipelineEnv, ABC):
             print(f"[RESET] Goal velocity: {self._goal_velocity}, Initial directions: {goal_directions}")
 
         info = {
+            context.CONTEXT_KEY: episode_context,
             "goal_positions": goal_positions,
             "hazard_positions": hazard_positions,
             "block_position": block_pos,
@@ -559,16 +570,16 @@ class SafePush(PipelineEnv, ABC):
         agent_block_reward = (last_dist_block - dist_block) * self._reward_agent_block
 
         # ============================== GOAL MOVEMENT ==============================
-        # Move goals if goal_velocity > 0
+        # Goals move at the episode's goal_velocity (0 = stationary).
         rng_movement = state.info["respawn_rng"]
+        goal_velocity = context.parameter(self, state, "goal_velocity")
 
         def _move_goals(args):
             """Move goals and handle boundary bouncing."""
             gpos, gdirs, rng = args
             # Move goals: new_pos = old_pos + direction * velocity * dt
             dt = self.dt  # timestep
-            velocity = self._goal_velocity
-            new_xy = gpos[:, :2] + gdirs * velocity * dt
+            new_xy = gpos[:, :2] + gdirs * goal_velocity * dt
 
             # Check boundary collision for each goal and bounce
             minx, miny, maxx, maxy = self._placement_extents
@@ -625,18 +636,14 @@ class SafePush(PipelineEnv, ABC):
 
             return final_goal_positions, final_directions, final_rng
 
-        def _keep_goals(args):
-            """Keep goals stationary."""
-            gpos, gdirs, rng = args
-            return gpos, gdirs, rng
-
-        # Only move goals if velocity > 0
-        goal_positions, goal_directions, rng_movement = jax.lax.cond(
-            self._goal_velocity > 0.0,
-            _move_goals,
-            _keep_goals,
-            (goal_positions, goal_directions, rng_movement)
-        )
+        # The velocity is a per-episode value, so both outcomes are computed and one is
+        # kept. A stationary episode keeps its positions, directions *and* random stream
+        # untouched, exactly as if the movement code had not run.
+        moving = goal_velocity > 0.0
+        moved_positions, moved_directions, moved_rng = _move_goals((goal_positions, goal_directions, rng_movement))
+        goal_positions = jp.where(moving, moved_positions, goal_positions)
+        goal_directions = jp.where(moving, moved_directions, goal_directions)
+        rng_movement = jp.where(moving, moved_rng, rng_movement)
 
         # Update mocap positions with moved goals
         mocap_pos = data.mocap_pos

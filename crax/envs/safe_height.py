@@ -28,6 +28,7 @@ from etils import epath
 from crax import actuator
 from crax import base
 from crax import math as brax_math
+from crax.envs import context
 from crax.envs.base import PipelineEnv, State
 from crax.io import mjcf
 
@@ -135,7 +136,9 @@ class SafeHeight(PipelineEnv, ABC):
         path = epath.resource_path('crax') / self.agent_xml_path
         xml_string = path.read_text()
 
-        # Replace the placeholder with the actual max_height value
+        # The ceiling geom is visual only (contype 0) and part of the model, so it
+        # cannot follow a per-episode max_height; it is drawn at the constructor's
+        # value. The cost reads max_height from the episode's context (see step).
         xml_string = xml_string.replace('HEIGHT_PLACEHOLDER', str(self._max_height))
 
         # Parse the modified XML
@@ -175,6 +178,12 @@ class SafeHeight(PipelineEnv, ABC):
         self._progress_check_window = progress_check_window
         self._min_forward_progress = min_forward_progress
 
+    # The one knob of this suite, read from the episode's context (crax/envs/context.py).
+    CONTEXT_PARAMETERS: Tuple[str, ...] = ("max_height",)
+
+    def default_context(self) -> jax.Array:
+        return context.encode(self, max_height=self._max_height)
+
     def step(self, state: State, action: jax.Array) -> State:
         """Run one timestep of the environment's dynamics with height constraints."""
         # Scale action from [-1,1] to actuator limits
@@ -209,8 +218,9 @@ class SafeHeight(PipelineEnv, ABC):
         # Calculate height for constraint
         head_tip_height = self._get_head_tip_height(pipeline_state)
 
-        # Height constraint cost (safety constraint): require height <= max_height
-        height_excess = jp.maximum(0.0, head_tip_height - self._max_height)
+        # Height constraint cost (safety constraint): require height <= the episode's max_height
+        max_height = context.parameter(self, state, "max_height")
+        height_excess = jp.maximum(0.0, head_tip_height - max_height)
         normalized_excess = height_excess / self._hinge_margin
         height_cost = self._height_cost_weight * normalized_excess
 
@@ -281,7 +291,10 @@ class SafeHeight(PipelineEnv, ABC):
         )
 
     def reset(self, rng: jax.Array) -> State:
-        """Resets the environment to an initial state."""
+        return self.reset_with_context(rng, self.default_context())
+
+    def reset_with_context(self, rng: jax.Array, episode_context: jax.Array) -> State:
+        """Resets the environment to an initial state in the given context."""
         rng, rng1, rng2 = jax.random.split(rng, 3)
 
         low, hi = -self._reset_noise_scale, self._reset_noise_scale
@@ -328,6 +341,7 @@ class SafeHeight(PipelineEnv, ABC):
 
         # Initialize info dictionary with cost and progress tracking
         info = {
+            context.CONTEXT_KEY: episode_context,
             "cost": zero,
             "head_height": zero,
             "height_violation": zero,

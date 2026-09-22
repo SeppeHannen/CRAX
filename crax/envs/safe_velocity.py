@@ -18,6 +18,7 @@ from typing import Callable, Dict, Tuple, Type
 import jax
 from jax import numpy as jp
 
+from crax.envs import context
 from crax.envs.ant import Ant
 from crax.envs.base import PipelineEnv, State
 from crax.envs.half_cheetah import Halfcheetah
@@ -168,17 +169,11 @@ class SafeVelocityBase(PipelineEnv, ABC):
         self._cost_mode = cost_mode
         self._reward_scaler = reward_scaler
 
-    # Names, in order, of the context coordinates this environment reads from
-    # ``state.info["context"]`` (see training/contexts). The constructor value
-    # is used when no context is present, so plain training is unchanged.
+    # The one knob of this suite, read from the episode's context (crax/envs/context.py).
     CONTEXT_PARAMETERS: Tuple[str, ...] = ("velocity_threshold",)
 
-    def _threshold(self, state: State) -> jax.Array:
-        """Per-slot velocity threshold: from the context if one is set, else fixed."""
-        context = state.info.get("context") if isinstance(state.info, dict) else None
-        if context is None:
-            return jp.asarray(self._velocity_threshold, jp.float32)
-        return context[..., self.CONTEXT_PARAMETERS.index("velocity_threshold")]
+    def default_context(self) -> jax.Array:
+        return context.encode(self, velocity_threshold=self._velocity_threshold)
 
     def step(self, state: State, action: jax.Array) -> State:
         pipeline_state0 = state.pipeline_state
@@ -187,7 +182,7 @@ class SafeVelocityBase(PipelineEnv, ABC):
         pipeline_state = next_state.pipeline_state
 
         velocity_value = self._compute_velocity(pipeline_state0, pipeline_state)
-        threshold = self._threshold(state)
+        threshold = context.parameter(self, state, "velocity_threshold")
 
         if self._cost_mode == "binary":
             cost, violation = binary_velocity_cost(
@@ -227,19 +222,11 @@ class SafeVelocityBase(PipelineEnv, ABC):
             info=info
         )
 
-    def reset_with_context(self, rng: jax.Array, context: jax.Array) -> State:
-        """Reset with a per-slot context (see training/contexts); the threshold
-        metric and info then reflect the context from the very first step."""
+    def reset_with_context(self, rng: jax.Array, episode_context: jax.Array) -> State:
         state = super().reset(rng)
-        state.info["context"] = context
-        return self._finish_reset(state)
-
-    def reset(self, rng: jax.Array) -> State:
-        return self._finish_reset(super().reset(rng))
-
-    def _finish_reset(self, state: State) -> State:
+        state.info[context.CONTEXT_KEY] = episode_context
         zero = jp.zeros_like(state.reward)
-        threshold = self._threshold(state)
+        threshold = context.parameter(self, state, "velocity_threshold")
         metrics = dict(state.metrics)
         add_velocity_cost_metrics(
             metrics,
@@ -258,6 +245,9 @@ class SafeVelocityBase(PipelineEnv, ABC):
             step_count=0,
         )
         return state.replace(metrics=metrics, info=info)
+
+    def reset(self, rng: jax.Array) -> State:
+        return self.reset_with_context(rng, self.default_context())
 
 
 # ============================================================================

@@ -98,7 +98,8 @@ class SafeLiftSpider(SafeLift):
         renderer = mujoco.Renderer(self.sys.mj_model, height=height, width=width)
         camera = camera or -1
 
-        # Store original indicator colors to restore after rendering
+        # Store original indicator colors to restore after rendering. The render has
+        # no episode context, so it shows the constructor's restricted feet.
         original_rgba = {}
         for foot_key in self._restricted_feet:
             if foot_key in self._indicator_geom_ids:
@@ -110,11 +111,11 @@ class SafeLiftSpider(SafeLift):
             feet_touching = self._check_foot_floor_contacts_render(state)
 
             # Update indicator colors based on violations
-            for i, foot_key in enumerate(self._restricted_feet):
+            for foot_key in self._restricted_feet:
                 if foot_key not in self._indicator_geom_ids:
                     continue
                 indicator_id = self._indicator_geom_ids[foot_key]
-                if feet_touching[i]:
+                if feet_touching[foot_key]:
                     # Violation: show a red semi-transparent sphere
                     self.sys.mj_model.geom_rgba[indicator_id] = [1.0, 0.0, 0.0, 0.5]
                 else:
@@ -141,24 +142,7 @@ class SafeLiftSpider(SafeLift):
 
         return images
 
-    def _check_foot_floor_contacts_render(self, state: base.State) -> List[bool]:
-        """Check foot contacts for rendering."""
-        contact_geom = np.asarray(state.contact.geom)
-        contact_dist = np.asarray(state.contact.dist)
-        active_contacts = contact_dist <= 0
-
-        contacts = []
-        for foot_key in self._restricted_feet:
-            if foot_key not in self._foot_geom_ids:
-                contacts.append(False)
-                continue
-            foot_geom_id = self._foot_geom_ids[foot_key]
-
-            is_foot_floor_contact = (
-                ((contact_geom[:, 0] == foot_geom_id) & (contact_geom[:, 1] == self._floor_geom_id)) |
-                ((contact_geom[:, 1] == foot_geom_id) & (contact_geom[:, 0] == self._floor_geom_id))
-            )
-            in_contact = np.any(is_foot_floor_contact & active_contacts)
-            contacts.append(bool(in_contact))
-
-        return contacts
+    def _check_foot_floor_contacts_render(self, state: base.State) -> Dict[str, bool]:
+        """Which feet touch the floor in ``state``, by foot name, for rendering."""
+        touching = np.asarray(self._feet_in_floor_contact(state))
+        return {foot_name: bool(touching[index]) for index, foot_name in enumerate(self.foot_names)}

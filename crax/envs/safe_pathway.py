@@ -13,6 +13,7 @@ import numpy as np
 from jax import numpy as jp
 
 from crax import base
+from crax.envs import context
 from crax.envs.base import PipelineEnv, State
 from crax.envs.env_utils import generate_goal_xml_from_base
 from crax.envs.goals import GoalManager
@@ -234,30 +235,24 @@ class SafePathway(PipelineEnv, ABC):
 
     # ---------------- Core RL API ----------------
 
+    # The one knob of this suite, read from the episode's context (crax/envs/context.py).
+    # It is consumed at reset, when the corridor is laid out; nothing in step reads it.
+    CONTEXT_PARAMETERS: Tuple[str, ...] = ("max_gap",)
+
+    def default_context(self) -> jax.Array:
+        return context.encode(self, max_gap=self._max_gap)
+
     def reset(self, rng: jax.Array) -> State:
+        return self.reset_with_context(rng, self.default_context())
+
+    def reset_with_context(self, rng: jax.Array, episode_context: jax.Array) -> State:
         low, hi = -self._reset_noise_scale, self._reset_noise_scale
         rng, r1, r2, r_h = jax.random.split(rng, 4)
         q = self.sys.init_q + jax.random.uniform(r1, (self.sys.q_size(),), minval=low, maxval=hi)
         qd = jax.random.uniform(r2, (self.sys.qd_size(),), minval=low, maxval=hi)
 
-        # sample hazard positions along +x with random gaps and lateral jitter
-        n_h = len(self._hazard_mocap_ids)
-
-        def sample_positions(key):
-            key, k0 = jax.random.split(key)
-            start = jax.random.uniform(k0, (), minval=1.0, maxval=2.0)
-            xs = []
-            cur = start
-            key_loop = key
-            for i in range(n_h):
-                key_loop, kg, ky = jax.random.split(key_loop, 3)
-                gap = jax.random.uniform(kg, (), minval=self._min_gap, maxval=self._max_gap)
-                cur = cur + gap
-                y = jax.random.uniform(ky, (), minval=-self._lateral_jitter, maxval=self._lateral_jitter)
-                xs.append(jp.array([cur, y, self._hazard_height], dtype=jp.float32))
-            return jp.stack(xs) if n_h > 0 else jp.zeros((0, 3), dtype=jp.float32)
-
-        hazard_positions = sample_positions(r_h)
+        max_gap = episode_context[self.CONTEXT_PARAMETERS.index("max_gap")]
+        hazard_positions = self._lay_out_corridor(r_h, max_gap)
 
         pipeline_state = self.pipeline_init(q, qd)
 
@@ -279,9 +274,22 @@ class SafePathway(PipelineEnv, ABC):
             "ctrl_cost": zero,
             "cost": zero,
         }
-        info = {"hazard_positions": hazard_positions, "cost": zero}
+        info = {context.CONTEXT_KEY: episode_context, "hazard_positions": hazard_positions, "cost": zero}
 
         return State(pipeline_state, obs, reward, done, metrics, info)
+
+    def _lay_out_corridor(self, key: jax.Array, max_gap: jax.Array) -> jax.Array:
+        """Hazard positions ``[num_hazards, 3]`` along +x: the first 1–2 m ahead, then one
+        gap drawn uniformly from ``[min_gap, max_gap]`` between consecutive hazards, each
+        with a lateral jitter; all at ``hazard_height``."""
+        num_hazards = len(self._hazard_mocap_ids)
+        key_start, key_gaps, key_jitter = jax.random.split(key, 3)
+        start = jax.random.uniform(key_start, (), minval=1.0, maxval=2.0)
+        gaps = jax.random.uniform(key_gaps, (num_hazards,), minval=self._min_gap, maxval=max_gap)
+        xs = start + jp.cumsum(gaps)
+        ys = jax.random.uniform(key_jitter, (num_hazards,), minval=-self._lateral_jitter, maxval=self._lateral_jitter)
+        zs = jp.full((num_hazards,), self._hazard_height, dtype=jp.float32)
+        return jp.stack([xs, ys, zs], axis=-1).astype(jp.float32)
 
     def step(self, state: State, action: jax.Array) -> State:
         pipeline_state_prev = state.pipeline_state
