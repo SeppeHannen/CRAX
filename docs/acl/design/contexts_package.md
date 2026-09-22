@@ -105,19 +105,41 @@ episode's return/cost with the context it actually ran in.
   the GPU. Throughput numbers from a shared card are meaningless; run the pilot,
   and especially the T4 `level:3` vs `none` pair, on an idle GPU.
 
-Environment side:
+Environment side (`crax/envs/context.py`, 2026-09-22 — replaces the earlier
+"read the context if present, else the constructor value" fallback):
 
-- `crax/envs/safe_velocity.py`: `SafeVelocityBase` reads its threshold from
-  `state.info["context"]` when present (`_threshold(state)`), falling back to
-  the constructor value otherwise, so plain training is unchanged. It exposes
-  `CONTEXT_PARAMETERS = ("velocity_threshold",)` and `reset_with_context(rng, ω)`.
-- `crax/envs/__init__.py`: `UnifiedEnvAdapter.reset_with_context` forwards to
-  the inner env (or attaches the context after a plain reset).
+- **Invariant: every difficulty knob is read from `state.info["context"]`,
+  always.** A plain `reset(rng)` is `reset_with_context(rng, self.default_context())`;
+  the constructor's knob values exist only to build that default. Stock and
+  context runs therefore execute the same `step` code; there is no
+  "if a context is present" branch anywhere.
+- A suite adopts this with four members: `CONTEXT_PARAMETERS` (names, in Ω
+  order), `default_context()`, `reset_with_context(rng, ω)`, and `reset` as
+  above; in `step` it reads a knob with `context.parameter(self, state, name)`.
+  `crax/envs/context.py` holds the key, the `Protocol` and the two helpers.
+- `UnifiedEnvAdapter.reset_with_context` and the wrapper *require*
+  `reset_with_context`; nothing attaches a context after a plain reset.
+- `tests/test_suites.py::test_the_context_is_the_only_place_the_knob_is_read`
+  is the invariant's test, per registered suite: a level-1 env reset into the
+  level-3 context must be step-for-step identical to a level-3 env.
 
-Registered suites: `safe_velocity_{ant,halfcheetah,hopper,humanoid,swimmer,walker2d}`,
-Ω = `velocity_threshold ∈ [0.4, 1.0] × baseline` (level 3 is 0.5 ×, so Ω
-extends below the hardest level). Count-typed suites (Goal, Reach, Circle) are
-not registered; they need pad-and-mask first.
+Registered environments (15, the whole benchmark): `safe_velocity_{ant,halfcheetah,hopper,humanoid,swimmer,walker2d}`
+(Ω = `velocity_threshold ∈ [0.4, 1.0] × baseline`), `safe_height_humanoid`
+(`max_height ∈ [0.9, 1.3]`), `safe_push_point` (`goal_velocity ∈ [0, 0.8]`),
+`safe_lift_{ant,spider}` (`restrict_<foot> ∈ {0,1}` per foot — a discrete Ω of
+16 / 64 masks; the levels are three of them) and `safe_pathway_walker2d`
+(`max_gap ∈ [1.5, 8]`, the first knob consumed at reset). Level contexts are
+not written down: `level(n)` is `get_environment(env, level=n).default_context()`
+(`_level_contexts`), so they cannot drift from `crax/envs/difficulty.py`.
+`TaskDescription` carries one typed fact next to its three texts,
+`episode_ends_early`, which the dashboard uses to word its episode-length
+panels. The count-typed suites — `safe_goal_point` (Ω = four active counts +
+`goal_size`), `safe_reacher` (`active_hazards ∈ {0..10}`), `safe_circle_point`
+(`active_cylinders ∈ {0,1,2}`, `boundary_x`, `boundary_y`) and `safe_button_point`
+(two active counts, `gremlin_travel`, `placement_extent`) — share one mechanism,
+`hazard_activation.md`: the model is the union of the levels' hazards and the
+context says how many of each group are active. Button's box Ω has an
+infeasible corner (README item 4c); Ω as a union of level boxes fixes it.
 
 ## The core mechanism, verified
 

@@ -66,7 +66,7 @@ the run directory afterwards; the trace artifact is uploaded during sync.
 | Field | Meaning | Source |
 |---|---|---|
 | `epochs[].wall_seconds`, `steps_per_second` | one entry per training epoch (one `training_epoch` call) | wall clock around the blocking call |
-| `epochs[].compiles_during_epoch`, `compile_seconds_during_epoch` | XLA compilations that finished during that epoch | JAX monitoring hook `/jax/core/compile/backend_compile_duration` |
+| `epochs[].substantial_compiles_during_epoch`, `compile_seconds_during_epoch` | XLA compilations that finished during that epoch: the count of *substantial* ones (≥ `SUBSTANTIAL_COMPILE_SECONDS` = 1 s each — a rebuilt program) and the total seconds of all of them (the ~9 few-ms host-side helpers per round included). W&B: `performance/epoch_compiles` is the substantial count. | JAX monitoring hook `/jax/core/compile/backend_compile_duration` |
 | `summary.steady_steps_per_second_median`, `_iqr` | throughput over *steady* epochs: not epoch 0, not traced, compile time ≤ 2 % of wall | derived |
 | `summary.phase_environment_reset_seconds`, `phase_initial_evaluation_seconds`, `phase_epoch_compile_seconds` | one-off host-side phases | `tracker.phase(...)` |
 | `programs[].lower_time_seconds`, `compile_time_seconds` | ahead-of-time lowering and compilation of the epoch program | `jax.jit(...).lower().compile()` |
