@@ -49,10 +49,11 @@ import jax.numpy as jnp
 from crax.envs.base import Env, State, Wrapper
 from crax.envs.wrappers.training import EpisodeWrapper, VmapWrapper
 
+from crax.envs.context import CONTEXT_KEY
+
 from training.contexts.distribution import ContextDistribution, Params
 from training.contexts.space import Contexts
 
-CONTEXT_KEY = "context"
 TRANSITION_CONTEXT_KEY = "transition_context"
 PARAMS_KEY = "distribution_params"
 RNG_KEY = "context_rng"
@@ -99,17 +100,10 @@ class ContextualAutoResetWrapper(Wrapper):
         return state
 
     def _reset_in_contexts(self, keys: jax.Array, contexts: Contexts) -> State:
-        """Batched reset with one context per slot, visible to the env's reset.
-
-        The unwrapped env's ``reset(key)`` cannot take a context argument, so
-        we give each slot its context through ``reset_with_context(key, ω)``
-        when the suite defines it, and otherwise call ``reset(key)`` and inject
-        the context afterwards (correct for suites that only read the context
-        in ``step``; the value-typed suites all do). EpisodeWrapper's bookkeeping
-        fields are recreated explicitly, exactly as its ``reset`` would.
-        """
-        state = jax.vmap(_reset_single_slot, in_axes=(None, 0, 0))(self._single_slot_env, keys, contexts)
-        state.info[CONTEXT_KEY] = contexts
+        """Batched reset with one context per slot: the suite's ``reset_with_context``
+        under ``vmap`` (crax/envs/context.py). EpisodeWrapper's bookkeeping fields
+        are recreated explicitly, exactly as its ``reset`` would."""
+        state = jax.vmap(self._single_slot_env.reset_with_context)(keys, contexts)
         return _add_episode_fields(state, keys)
 
     # ---- step -------------------------------------------------------------- #
@@ -181,22 +175,6 @@ def _find_vmapped_env(env: Env) -> Env:
             return current.env
         current = current.env
     raise ValueError("ContextualAutoResetWrapper expects a VmapWrapper somewhere inside its stack")
-
-
-def _reset_single_slot(env: Env, key: jax.Array, context: jax.Array) -> State:
-    """Reset one slot with its context.
-
-    Protocol: an env (or adapter) that can use the context at reset time exposes
-    ``reset_with_context(key, context)``; adapters forward it inward (see
-    ``UnifiedEnvAdapter``). Otherwise the plain ``reset`` is used and the context
-    is attached afterwards, which is correct for suites that read it in ``step``.
-    """
-    reset_with_context = getattr(env, "reset_with_context", None)
-    if reset_with_context is not None:
-        return reset_with_context(key, context)
-    state = env.reset(key)
-    state.info[CONTEXT_KEY] = context
-    return state
 
 
 def _add_episode_fields(state: State, keys: jax.Array) -> State:
