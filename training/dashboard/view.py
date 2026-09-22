@@ -56,11 +56,13 @@ class ContextDimension:
 
 @dataclasses.dataclass(frozen=True)
 class TaskDescription:
-    """The suite's task in words (agent, reward, cost), as the suite's registry states it."""
+    """The suite's task as its registry states it: agent, reward and cost in words, and
+    whether an episode can end before the step limit (decides how episode length reads)."""
 
     agent: str
     reward: str
     cost: str
+    episode_ends_early: bool
 
 
 def _context_dimension(name: str, bounds: object) -> ContextDimension:
@@ -126,10 +128,21 @@ class RunFacts:
 
     def words(self) -> Dict[str, str]:
         """The values for the registry's :data:`FACT_PLACEHOLDERS`."""
+        if self.task.episode_ends_early:
+            episode_length_reading = (
+                f"An episode lasts {self.episode_length} steps unless the environment ends it early (see the Environment "
+                f"definition for when), so a value below {self.episode_length} means episodes were cut short."
+            )
+        else:
+            episode_length_reading = (
+                f"In this suite every episode lasts exactly {self.episode_length} steps; this panel is a constant and "
+                f"carries no information."
+            )
         words = {
             "episode_length": f"{self.episode_length}",
             "num_eval_envs": f"{self.num_eval_envs}",
             "budget": f"{self.safety_bound:g}",
+            "episode_length_reading": episode_length_reading,
         }
         if set(words) != set(FACT_PLACEHOLDERS):
             raise RuntimeError(f"RunFacts.words supplies {sorted(words)} but the registry declares {sorted(FACT_PLACEHOLDERS)}")

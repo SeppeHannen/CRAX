@@ -71,6 +71,7 @@ FACTS = dashboard.RunFacts(
         agent="A MuJoCo ant that has to run forward along the x-axis.",
         reward="Per step: forward velocity + 1 for being upright − a penalty on large torques.",
         cost="Per step, 1 if the agent's speed exceeds the episode's velocity_threshold, else 0.",
+        episode_ends_early=True,
     ),
     context_space=(dashboard.view.ContextDimension("velocity_threshold", 1.049, 2.622, "the speed above which a step counts as a violation"),),
     num_rounds=763,
@@ -165,7 +166,7 @@ def test_verdict_panels_are_return_and_cost_with_budget_on_both_evaluations():
 
 def test_trust_shows_throughput_and_compiles():
     titles = [plot.title for plot in plots_for(Group.TRUST, FACTS)]
-    assert "Throughput" in titles and "Compiles per round" in titles
+    assert "Throughput" in titles and "Substantial compiles per round" in titles and "Compile time per round" in titles
 
 
 def test_mechanism_merges_sampled_experienced_intended_means_into_one_panel():
@@ -190,7 +191,7 @@ def test_run_facts_require_dashboard_config_keys():
     with pytest.raises(KeyError, match="num_rounds"):
         dashboard.RunFacts.from_wandb_config({"num_timesteps": 1, "num_evals": 2, "num_eval_envs": 1,
                                                "episode_length": 1, "safety_bound": 1, "deployment_distribution": "level:3",
-                                               "task": {"agent": "a", "reward": "r", "cost": "c"},
+                                               "task": {"agent": "a", "reward": "r", "cost": "c", "episode_ends_early": True},
                                                "context_space": {"a": {"low": 0, "high": 1, "description": "a"}}})
     with pytest.raises(ValueError, match="num_evals"):
         dataclasses.replace(FACTS, num_evals=1)

@@ -79,35 +79,35 @@ class EpochRecord:
     environment_steps: int
     wall_seconds: float
     steps_per_second: float
-    compiles_during_epoch: int
+    substantial_compiles_during_epoch: int
     compile_seconds_during_epoch: float
     traced: bool
-
-    # An epoch is steady unless a *substantial* program was compiled during it.
-    # JAX lazily compiles ~10 tiny helper programs per epoch (copy, squeeze,
-    # broadcast_in_dim, ... from the host-side glue around the epoch call), each
-    # ~10 ms; those must not disqualify an epoch. A recompiled epoch program
-    # costs seconds. So: total compile time in the epoch must be small in absolute
-    # terms AND not a large fraction of a (possibly very short) epoch.
-    STEADY_MAX_COMPILE_SECONDS = 0.5
-    STEADY_MAX_COMPILE_FRACTION = 0.10
 
     @property
     def is_steady(self) -> bool:
         """Usable for throughput statistics: not the compile epoch, not traced,
-        and no substantial compilation happened during it."""
-        if self.index == 0 or self.traced or self.wall_seconds <= 0:
-            return False
-        return (
-            self.compile_seconds_during_epoch <= self.STEADY_MAX_COMPILE_SECONDS
-            and self.compile_seconds_during_epoch <= self.STEADY_MAX_COMPILE_FRACTION * self.wall_seconds
-        )
+        and no substantial program was compiled during it."""
+        return self.index > 0 and not self.traced and self.wall_seconds > 0 and self.substantial_compiles_during_epoch == 0
+
+
+# A compile that means a *program* was (re)built — the epoch program, an evaluation
+# program, a reset — takes seconds. Between epochs JAX also compiles a handful of
+# one-op helpers for host-side glue (`jnp.asarray` of a Python scalar, a
+# broadcast, a mean over a histogram), each a few milliseconds and re-specialised
+# whenever the Python value changes; ~9 per round is normal and means nothing.
+# This threshold separates the two. It is the one place that decides what
+# "a compile happened this round" means for the dashboard and for steadiness.
+SUBSTANTIAL_COMPILE_SECONDS = 1.0
 
 
 @dataclasses.dataclass
 class CompileEvent:
     seconds: float
     wall_time: float  # time.time() at completion, to attribute to phases/epochs
+
+    @property
+    def is_substantial(self) -> bool:
+        return self.seconds >= SUBSTANTIAL_COMPILE_SECONDS
 
 
 class PerformanceTracker:
@@ -230,13 +230,14 @@ class PerformanceTracker:
                 yield
         wall = time.time() - start
         compiles = self._compiles_between(start, time.time())
+        substantial = [event for event in compiles if event.is_substantial]
         compile_seconds = sum(event.seconds for event in compiles)
         record = EpochRecord(
             index=global_index,
             environment_steps=environment_steps,
             wall_seconds=wall,
             steps_per_second=environment_steps / wall if wall > 0 else float("nan"),
-            compiles_during_epoch=len(compiles),
+            substantial_compiles_during_epoch=len(substantial),
             compile_seconds_during_epoch=compile_seconds,
             traced=traced,
         )
@@ -244,7 +245,7 @@ class PerformanceTracker:
         scalars = {
             "epoch_wall_seconds": wall,
             "epoch_steps_per_second": record.steps_per_second,
-            "epoch_compiles": len(compiles),
+            "epoch_compiles": len(substantial),
             "epoch_compile_seconds": compile_seconds,
         }
         total_steps = self._total_environment_steps()
@@ -252,8 +253,9 @@ class PerformanceTracker:
         self.report_metrics(total_steps, {METRIC_PREFIX + key: value for key, value in scalars.items()})
         if index > 0 and not record.is_steady:
             self._say(
-                f"epoch {global_index}: {len(compiles)} compile(s) took {compile_seconds:.1f}s "
-                f"of {wall:.1f}s -> not steady state. Did shapes or pytree structure change?"
+                f"epoch {global_index}: {len(substantial)} substantial compile(s) (≥ {SUBSTANTIAL_COMPILE_SECONDS:g}s each) "
+                f"took {sum(e.seconds for e in substantial):.1f}s of {wall:.1f}s -> not steady state. "
+                f"Did shapes or pytree structure change?"
             )
 
     @contextlib.contextmanager
