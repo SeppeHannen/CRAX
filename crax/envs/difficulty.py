@@ -62,10 +62,11 @@ _TASK_DIFFICULTY_CONFIGS: dict[str, dict[int, dict[str, Any]]] = {
 
     # Circle task - navigate in circles while staying within boundaries
     "circle": {
-        # Level 1 (vertical walls)
+        # Level 1 (vertical walls, no hazards)
         1: {
             "boundary_x": 1.125,
             "boundary_y": None,
+            "hazard_specs": [],
         },
         # Level 2 (square boundary, 1 randomly placed hazard)
         2: {
@@ -87,11 +88,13 @@ _TASK_DIFFICULTY_CONFIGS: dict[str, dict[int, dict[str, Any]]] = {
         },
     },
 
-    # Button task - press the correct button among multiple buttons
+    # Button task - press the correct button among multiple buttons. The layout square and
+    # the gremlins' orbit radius are the level's context (the arena has no walls).
     "button": {
         # Level 1: Hazards and gremlins, constrained buttons
         1: {
             "placement_extents": (-2.0, -2.0, 2.0, 2.0),
+            "gremlin_travel": 0.35,
             "buttons_constrained": True,
             "hazard_specs": [
                 {"type": "cylinder", "count": 4, "size": 0.2, "height": 0.2, "collidable": True, "fixed": False},
@@ -102,6 +105,7 @@ _TASK_DIFFICULTY_CONFIGS: dict[str, dict[int, dict[str, Any]]] = {
         # Level 2: More hazards and gremlins
         2: {
             "placement_extents": (-2.5, -2.5, 2.5, 2.5),
+            "gremlin_travel": 0.35,
             "buttons_constrained": True,
             "hazard_specs": [
                 {"type": "cylinder", "count": 8, "size": 0.2, "height": 0.2, "collidable": True, "fixed": False},
@@ -112,6 +116,7 @@ _TASK_DIFFICULTY_CONFIGS: dict[str, dict[int, dict[str, Any]]] = {
         # Level 3: More hazards and larger orbits; reserve enough area for keepouts
         3: {
             "placement_extents": (-3.0, -3.0, 3.0, 3.0),
+            "gremlin_travel": 0.45,
             "buttons_constrained": True,
             "hazard_specs": [
                 {"type": "cylinder", "count": 12, "size": 0.2, "height": 0.2, "collidable": True, "fixed": False},
@@ -171,11 +176,13 @@ _TASK_DIFFICULTY_CONFIGS: dict[str, dict[int, dict[str, Any]]] = {
         3: {"restricted_feet": ["front_left", "front_right", "back_left", "back_right"]},
     },
 
-    # Reach task - reach target while avoiding hazards
+    # Reach task - reach target while avoiding hazards. The model always has the
+    # level-3 count; a level is how many of them are in the arena (the rest are
+    # parked), so the three levels are one compiled program (crax/envs/context.py).
     "reach": {
-        1: {"num_hazards": 4},
-        2: {"num_hazards": 7},
-        3: {"num_hazards": 10},
+        1: {"num_hazards": 10, "active_hazards": 4},
+        2: {"num_hazards": 10, "active_hazards": 7},
+        3: {"num_hazards": 10, "active_hazards": 10},
     },
 
     # Velocity task - maintain velocity below threshold
@@ -203,6 +210,12 @@ _ENV_TO_TASK: dict[str, str] = {
     "safe_lift_ant": "lift_ant",
     "safe_lift_spider": "lift_spider",
     "safe_reacher": "reach",
+    "safe_velocity_ant": "velocity",
+    "safe_velocity_halfcheetah": "velocity",
+    "safe_velocity_hopper": "velocity",
+    "safe_velocity_humanoid": "velocity",
+    "safe_velocity_swimmer": "velocity",
+    "safe_velocity_walker2d": "velocity",
 }
 
 
@@ -276,10 +289,26 @@ def apply_difficulty(env_name: str, env_kwargs: dict[str, Any] | None, level: in
 
     env_kwargs = deepcopy(env_kwargs or {})
     overrides = deepcopy(_TASK_DIFFICULTY_CONFIGS[task][level])
+    if task in _UNION_MODEL_TASKS:
+        overrides = _union_model_overrides(task, level, overrides)
 
     # All envs use flat kwargs: merge overrides then env_kwargs (env_kwargs wins)
     out = _merge_dict(deepcopy(overrides), deepcopy(env_kwargs))
     return out
+
+
+# Tasks whose levels differ in hazard *count*: every level is built from the union of
+# all levels' hazard specs, and the level selects how many of each group are active
+# (crax/envs/hazard_union.py, docs/acl/design/hazard_activation.md). The three levels
+# are then three contexts of one compiled program.
+_UNION_MODEL_TASKS = frozenset({"goal", "circle", "button"})
+
+
+def _union_model_overrides(task: str, level: int, overrides: dict[str, Any]) -> dict[str, Any]:
+    from crax.envs.hazard_union import union_of_levels
+
+    union = union_of_levels({lvl: cfg["hazard_specs"] for lvl, cfg in _TASK_DIFFICULTY_CONFIGS[task].items()})
+    return {**overrides, "hazard_specs": deepcopy(union.specs), "active_hazard_counts": union.counts(level)}
 
 
 def register_task_difficulty(task_name: str, level: int, config: dict[str, Any]) -> None:
