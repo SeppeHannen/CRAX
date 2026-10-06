@@ -31,10 +31,20 @@ the suite's ``reset()``; it is the first thing to measure with
 Phase: the first reset gives every slot a random head start on its step
 counter, so the first episodes end at different rounds and the population is
 spread over the episode from then on. Without it, on a suite whose episodes
-always run to the limit, all slots reset together for the whole run: every
-round's batch is one slice of the episode, and a context drawn "at the next
-reset" arrives for every slot at the same round, up to an episode late
-(``docs/acl/experiments/2026-10-06_goal_point_staged_vs_uniform.md``).
+always run to the limit, all slots reset together for the whole run. Three
+things follow from spreading, and one does not:
+
+- every round's PPO batch is a sample of the episode, not one slice of it;
+- a new distribution parameter acts at once: ~``num_slots × steps_per_round /
+  episode_length`` slots reset every round and draw from it, so q̂ ramps
+  towards q from the next round instead of jumping to it up to an episode later;
+- completed-episode feedback arrives every round in a steady stream instead of
+  all at once every ``episode_length / steps_per_round`` rounds;
+- feedback is **not** fresher: an episode's outcome is known when it ends, one
+  episode length after its context was drawn, in either regime.
+
+Decision of 2026-10-06; the lockstep run is
+``docs/acl/experiments/2026-10-06_goal_point_staged_vs_uniform.md``.
 
 Wrapper order follows Brax exactly, with this class in place of
 ``AutoResetWrapper``::
