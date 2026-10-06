@@ -1,0 +1,174 @@
+<notes date="05/10/26">
+
+  <page number="1">
+    <legend>
+      <blue>Learning</blue>
+      <orange>Contribution</orange>
+    </legend>
+  </page>
+
+  <page number="2">
+    <paragraph>
+      The TeachMyAgent paper defines 5 training distributions with different
+      properties (e.g. mostly impossible, mostly trivial, ...) and then compares
+      ACL methods to compare their performance in these situations.
+    </paragraph>
+
+    <potential_contribution>
+      For our paper we could investigate how ACL methods perform in different
+      safety settings.
+    </potential_contribution>
+
+    <paragraph>
+      What different safety settings / challenges exist that you'd like to know
+      whether your ACL method is compatible?
+    </paragraph>
+
+    <item>
+      <challenge>Reward progress conflicts with safety.</challenge>
+      <example>Navigation tasks with hazardous shortcuts.</example>
+      <test>
+        Does the ACL method prefer ↑ shortcuts ↑ reward or ↓ shortcuts ↑ safe?
+      </test>
+    </item>
+
+    <item>
+      <challenge>Few tasks permit safe success.</challenge>
+      <example>
+        Small fraction of contexts allow reaching the goal within the cost budget.
+      </example>
+      <test>
+        Does the teacher discover useful, feasible tasks and prioritize them?
+      </test>
+    </item>
+
+    <item>
+      <challenge>Few tasks are more challenging to have safe success.</challenge>
+      <example>
+        Small fraction of contexts is challenging to accomplish safely.
+      </example>
+      <test>
+        Does the teacher discover these more challenging environments and train
+        the agent on them sufficiently?
+      </test>
+    </item>
+
+    <item>
+      <challenge>Context-dependent safety.</challenge>
+      <example>
+        Moving quickly is key in some environments (for safety) whilst in others
+        moving slow is key.
+      </example>
+      <test>
+        Does the ACL method support the continual learning necessary not to
+        overfit to one setting?
+      </test>
+    </item>
+  </page>
+
+  <page number="3">
+    <paragraph>
+      Training violation regret measures the cum. violation of the constraint
+      during training.
+    </paragraph>
+
+    <paragraph>
+      Typically a goal during the training of constrained agents is to minimize
+      training violation regret.
+    </paragraph>
+
+    <paragraph>
+      I don't understand this goal. The goal is for the agent to not violate the
+      constraint while deployed.
+    </paragraph>
+
+    <paragraph>
+      Firstly,
+      <learnings>
+        I'd argue you want your agent to exhibit safety behavior that allows it
+        to act safely even in adversarial environments.
+      </learnings>
+    </paragraph>
+
+    <annotation>
+      Designed to result in constraint violation if the agent does not prioritize
+      safety (e.g. moving hazards).
+    </annotation>
+
+    <paragraph>
+      Secondly,
+      <learnings>
+        I'd argue that for an agent to perform well in adversarial environments
+        it either needs to violate the constraint during training or it needs
+        to be possible to generalize learnings from non cost incurring settings
+        to cost incurring settings.
+      </learnings>
+    </paragraph>
+
+    <paragraph>
+      As a result of this, the environments should be designed in a way that
+      allows for this generalization to happen. Then
+      <potential_contribution>
+        we'd evaluate how effectively the ACL methods teach those generalizations.
+      </potential_contribution>
+    </paragraph>
+  </page>
+
+  <page number="4">
+    <paragraph>
+      Contextualization of the constrained agent is necessary for the agent to
+      be able to adjust it's behavior to maximize reward whilst adhering to the
+      constraint — if the environment is partially observable (including partial
+      state observability and cost function uncertainty).
+    </paragraph>
+
+    <annotation>
+      Does this make the constraint satisfied in environment subspaces?
+    </annotation>
+
+    <paragraph>
+      For
+      <learnings>
+        standard RL there exists an optimal deterministic policy.
+      </learnings>
+      For
+      <learnings>
+        constrained RL under an expected-cost constraint
+      </learnings>
+      the
+      <learnings>
+        optimal policy may have to be stochastic
+      </learnings>
+      [Altman CMDPs 1999].
+    </paragraph>
+
+    <example>
+      <item>Safe route with R=0, C=0</item>
+      <item>Shortcut with R=10, C=2</item>
+      <item>Constraint = 1</item>
+    </example>
+
+    <paragraph>
+      In a standard fully observed CMDP with an expected-cost constraint, the
+      current state determines the available future reward-cost trade-offs,
+      regardless of how the agent got there.
+      <learnings>
+        Having already spent a lot does not make a valuable action less valuable.
+        Hence, there is no value in tracking a remaining allowance within each
+        episode. A randomized state-based policy is sufficient for optimal
+        expected reward under the constraint.
+      </learnings>
+    </paragraph>
+
+    <example>
+      <item>Earn 10 cent per request with 2 cent fixed cost.</item>
+      <item>Want to maximize average user experience.</item>
+      <item>Set expected cost constraint to 8 cent.</item>
+      <annotation>
+        → Stay below constraint when not needed to yield good experience,
+        go above when it is needed and would ha[text cut off]
+      </annotation>
+    </example>
+  </page>
+
+</notes>

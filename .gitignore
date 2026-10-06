@@ -18,6 +18,9 @@ __pycache__
 /logs/
 /models/
 /runs/
+
+# Papers downloaded for reading; copyrighted, large, not ours to redistribute
+/*.pdf
 /trajectories/
 /visualizations/
 
