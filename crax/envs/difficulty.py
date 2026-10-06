@@ -19,34 +19,32 @@ from typing import Any, Dict
 # ============================================================================
 
 _TASK_DIFFICULTY_CONFIGS: dict[str, dict[int, dict[str, Any]]] = {
-    # Goal navigation task - navigate to goal while avoiding hazards
+    # Goal navigation task - navigate to goal while avoiding hazards. One goal: the
+    # observation's goal compass reads one goal (docs/acl/README.md, Decisions). The
+    # arena fence is the environment's, not a hazard (crax/envs/arena.py).
     "goal": {
         1: {
             "goal_type": "cylinder",
-            "goal_count": 2,
+            "goal_count": 1,
             "goal_size": 0.2,
             "goal_height": 0.2,
             "hazard_specs": [
                 {"type": "cylinder", "count": 12, "size": 0.4, "height": 0.01, "collidable": False},
-                {"type": "outer_wall", "offset": 0.5, "thickness": 0.06, "height": 0.1, "collidable": True,
-                 "fixed": True},
             ],
         },
         2: {
             "goal_type": "cylinder",
-            "goal_count": 2,
+            "goal_count": 1,
             "goal_size": 0.18,
             "goal_height": 0.2,
             "hazard_specs": [
                 {"type": "cylinder", "count": 8, "size": 0.4, "height": 0.01, "collidable": False},
                 {"type": "cylinder", "count": 8, "size": 0.3, "height": 0.4, "collidable": True},
-                {"type": "outer_wall", "offset": 0.5, "thickness": 0.06, "height": 0.1, "collidable": True,
-                 "fixed": True},
             ],
         },
         3: {
             "goal_type": "cylinder",
-            "goal_count": 2,
+            "goal_count": 1,
             "goal_size": 0.16,
             "goal_height": 0.2,
             "hazard_specs": [
@@ -54,8 +52,6 @@ _TASK_DIFFICULTY_CONFIGS: dict[str, dict[int, dict[str, Any]]] = {
                 {"type": "cube", "count": 4, "size": 0.25, "height": 0.5, "collidable": True},
                 {"type": "cylinder", "count": 6, "size": 0.35, "height": 0.01, "collidable": False},
                 {"type": "cylinder", "count": 4, "size": 0.25, "height": 0.4, "collidable": True},
-                {"type": "outer_wall", "offset": 0.5, "thickness": 0.06, "height": 0.1, "collidable": True,
-                 "fixed": True},
             ],
         },
     },
@@ -74,7 +70,7 @@ _TASK_DIFFICULTY_CONFIGS: dict[str, dict[int, dict[str, Any]]] = {
             "boundary_y": 1.05,
             "hazard_specs": [
                 {"type": "cylinder", "count": 1, "size": 0.15, "height": 0.15, "alpha_transparent": 1.0,
-                 "collidable": False, "fixed": False},
+                 "collidable": False},
             ],
         },
         # Level 3 (smaller boundary, 2 randomly placed hazards)
@@ -83,7 +79,7 @@ _TASK_DIFFICULTY_CONFIGS: dict[str, dict[int, dict[str, Any]]] = {
             "boundary_y": 0.975,
             "hazard_specs": [
                 {"type": "cylinder", "count": 2, "size": 0.2, "height": 0.2, "alpha_transparent": 1.0,
-                 "collidable": False, "fixed": False},
+                 "collidable": False},
             ],
         },
     },
@@ -97,9 +93,8 @@ _TASK_DIFFICULTY_CONFIGS: dict[str, dict[int, dict[str, Any]]] = {
             "gremlin_travel": 0.35,
             "buttons_constrained": True,
             "hazard_specs": [
-                {"type": "cylinder", "count": 4, "size": 0.2, "height": 0.2, "collidable": True, "fixed": False},
-                {"type": "gremlin", "count": 4, "size": 0.1, "height": 0.1, "travel": 0.35, "collidable": True,
-                 "fixed": False},
+                {"type": "cylinder", "count": 4, "size": 0.2, "height": 0.2, "collidable": True},
+                {"type": "gremlin", "count": 4, "size": 0.1, "height": 0.1, "travel": 0.35, "collidable": True},
             ],
         },
         # Level 2: More hazards and gremlins
@@ -108,9 +103,8 @@ _TASK_DIFFICULTY_CONFIGS: dict[str, dict[int, dict[str, Any]]] = {
             "gremlin_travel": 0.35,
             "buttons_constrained": True,
             "hazard_specs": [
-                {"type": "cylinder", "count": 8, "size": 0.2, "height": 0.2, "collidable": True, "fixed": False},
-                {"type": "gremlin", "count": 6, "size": 0.1, "height": 0.1, "travel": 0.35, "collidable": True,
-                 "fixed": False},
+                {"type": "cylinder", "count": 8, "size": 0.2, "height": 0.2, "collidable": True},
+                {"type": "gremlin", "count": 6, "size": 0.1, "height": 0.1, "travel": 0.35, "collidable": True},
             ],
         },
         # Level 3: More hazards and larger orbits; reserve enough area for keepouts
@@ -119,9 +113,8 @@ _TASK_DIFFICULTY_CONFIGS: dict[str, dict[int, dict[str, Any]]] = {
             "gremlin_travel": 0.45,
             "buttons_constrained": True,
             "hazard_specs": [
-                {"type": "cylinder", "count": 12, "size": 0.2, "height": 0.2, "collidable": True, "fixed": False},
-                {"type": "gremlin", "count": 8, "size": 0.1, "height": 0.1, "travel": 0.45, "collidable": True,
-                 "fixed": False},
+                {"type": "cylinder", "count": 12, "size": 0.2, "height": 0.2, "collidable": True},
+                {"type": "gremlin", "count": 8, "size": 0.1, "height": 0.1, "travel": 0.45, "collidable": True},
             ],
         },
     },

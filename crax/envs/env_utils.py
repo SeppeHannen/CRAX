@@ -1,6 +1,6 @@
 import os
 import tempfile
-from typing import Optional
+from typing import List, Optional
 
 import jax
 from jax import numpy as jp
@@ -32,7 +32,6 @@ def create_hazard_manager_from_config(hazards_cfg) -> HazardManager:
             size=spec.get("size", None),
             height=spec.get("height", None),
             collidable=spec.get("collidable", True),
-            fixed=spec.get("fixed", False),
             density=spec.get("density", None),
             travel=spec.get("travel", None),
         )
@@ -62,7 +61,7 @@ def create_hazard_manager_from_specs(hazard_specs) -> HazardManager:
     """Create a HazardManager from a list of hazard spec dicts.
 
     hazard_specs: list of dicts with keys:
-      - type, count, size, height, collidable, fixed, density, positions/centers, travel (for gremlins)
+      - type, count, size, height, collidable, density, positions/centers, travel (for gremlins)
     """
     manager = HazardManager()
     for spec in hazard_specs:
@@ -75,7 +74,6 @@ def create_hazard_manager_from_specs(hazard_specs) -> HazardManager:
             "count": spec.get("count", 0),
             "positions": spec.get("positions") or spec.get("centers"),
             "collidable": spec.get("collidable", True),
-            "fixed": spec.get("fixed", False),
         }
 
         # Only add optional parameters if they're explicitly specified
@@ -113,103 +111,12 @@ def create_goal_manager_from_params(
     return manager
 
 
-def add_walls_to_specs(hazard_specs, placement_extents) -> list:
-    """Process hazard specs and expand outer_wall types into rect hazards.
-
-    Args:
-        hazard_specs: list of hazard spec dicts
-        placement_extents: (min_x, min_y, max_x, max_y) tuple
-
-    Returns:
-        New list with outer_wall specs expanded into rect specs
-    """
-    resolved = []
-    for spec in hazard_specs:
-        if not isinstance(spec, dict):
-            resolved.append(spec)
-            continue
-
-        if spec.get("type") == "outer_wall":
-            # world half-extents
-            min_x, min_y, max_x, max_y = placement_extents
-            hx = 0.5 * (max_x - min_x)
-            hy = 0.5 * (max_y - min_y)
-
-            # defaults
-            offset = float(spec.get("offset", 0.0))
-            thickness_h = float(spec.get("thickness", 0.1))  # half-thickness
-            height = float(spec.get("height", 0.1))
-            collidable = bool(spec.get("collidable", True))
-            density = float(spec.get("density", 1.0))
-            fixed = bool(spec.get("fixed", True))
-
-            # centers for the four sides
-            wx = hx + offset
-            wy = hy + offset
-
-            # half-extents for each rectangle (axis-aligned)
-            vertical_size = (thickness_h, wy)
-            horizontal_size = (wx, thickness_h)
-
-            # center z at height/2
-            zc = height * 0.5
-
-            def _wall_rect(size, center):
-                return dict(
-                    type="rect",
-                    count=1,
-                    size=size,
-                    height=height,
-                    collidable=collidable,
-                    fixed=fixed,
-                    density=density,
-                    centers=[center],
-                    positions=[center],
-                )
-
-            rect_specs = [
-                _wall_rect(vertical_size, (-wx, 0.0, zc)),    # left
-                _wall_rect(vertical_size, (wx, 0.0, zc)),     # right
-                _wall_rect(horizontal_size, (0.0, -wy, zc)),  # bottom
-                _wall_rect(horizontal_size, (0.0, wy, zc)),   # top
-            ]
-            resolved.extend(rect_specs)
-            continue
-
-        # Regular hazards: keep as-is
-        resolved.append(spec)
-
-    return resolved
-
-
-def generate_point_goal_xml(
-        goal_manager: GoalManager,
-        hazard_manager: HazardManager,
-        env_name="point_goal_hazard",
-) -> str:
-    """Generate XML file content with the specified goals and hazards.
-
-    Args:
-        goal_manager: GoalManager containing the goals
-        hazard_manager: HazardManager containing the hazards
-
-    Returns:
-        Path to the generated temporary XML file
-    """
-    # Construct absolute path to point.xml
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    base_xml_path = os.path.join(current_dir, "assets", "point.xml")
-
-    return _create_temporary_file_and_return_path(
-        base_xml_path, goal_manager, hazard_manager, env_name
-    )
-
-
 def generate_goal_xml_from_base(
         base_xml_name: str,
         goal_manager: GoalManager,
         hazard_manager: HazardManager,
         env_name="goal_hazard",
+        static_geoms: Optional[List[str]] = None,
 ) -> str:
     """Generate XML file content with the specified goals and hazards.
 
@@ -218,12 +125,13 @@ def generate_goal_xml_from_base(
         goal_manager: GoalManager containing the goals
         hazard_manager: HazardManager containing the hazards
         env_name: Name of the environment
+        static_geoms: world-body ``<geom>`` strings (the arena fence, ``crax/envs/arena.py``)
 
     Returns:
         Path to the generated temporary XML file
     """
     return _create_temporary_file_and_return_path(
-        base_xml_file_path(base_xml_name), goal_manager, hazard_manager, env_name
+        base_xml_file_path(base_xml_name), goal_manager, hazard_manager, env_name, static_geoms
     )
 
 
@@ -238,10 +146,11 @@ def _create_temporary_file_and_return_path(
         goal_manager: GoalManager,
         hazard_manager: HazardManager,
         env_name="goal_hazard",
+        static_geoms: Optional[List[str]] = None,
 ):
     # Use XMLBuilder to generate complete XML
     builder = XMLBuilder(env_name)
-    xml_content = builder.build_xml(base_xml_path, goal_manager, hazard_manager)
+    xml_content = builder.build_xml(base_xml_path, goal_manager, hazard_manager, static_geoms=static_geoms)
 
     # Create temporary file
     temp_fd, temp_path = tempfile.mkstemp(suffix=".xml", prefix="safe_goal_point_")
@@ -644,76 +553,6 @@ def place_objects(
         )
     )
     return rng_key, positions_xy, keepouts_array, placed_count, placed_positions
-
-
-def add_walls(hazards_cfg: ConfigDict, placement_cfg: ConfigDict) -> ConfigDict:
-    td = dict(getattr(hazards_cfg, "type_defaults", {}))
-    specs = list(getattr(hazards_cfg, "specs", []))
-    resolved = []
-
-    for spec in specs:
-        if not isinstance(spec, dict):
-            resolved.append(spec)
-            continue
-
-        if spec.get("type") == "outer_wall":
-            # world half-extents
-            min_x, min_y, max_x, max_y = placement_cfg.extents
-            hx = 0.5 * (max_x - min_x)
-            hy = 0.5 * (max_y - min_y)
-
-            # robust defaults
-            offset = float(spec.get("offset", 0.0))
-            thickness_h = float(spec.get("thickness", 0.1))  # half-thickness
-            height = float(spec.get("height", 0.1))
-            collidable = bool(spec.get("collidable", True))
-            density = float(spec.get("density", 1.0))
-            fixed = bool(spec.get("fixed", True))
-
-            # centers for the four sides
-            wx = hx + offset
-            wy = hy + offset
-
-            # half-extents for each rectangle (axis-aligned)
-            # vertical walls: narrow in x, long in y
-            vertical_size = (thickness_h, wy)
-            # horizontal walls: long in x, narrow in y
-            horizontal_size = (wx, thickness_h)
-
-            # place geoms resting on the ground: center z at height/2
-            zc = height * 0.5
-
-            # Some builders look for "centers", others "positions".
-            def _wall_rect(size, center):
-                return dict(
-                    type="rect",
-                    count=1,
-                    size=size,  # half-extents (x_half, y_half)
-                    height=height,  # geom thickness in z
-                    collidable=collidable,
-                    fixed=fixed,
-                    density=density,
-                    centers=[center],  # preferred
-                    positions=[center],  # fallback for older paths
-                )
-
-            rect_specs = [
-                _wall_rect(vertical_size, (-wx, 0.0, zc)),  # left
-                _wall_rect(vertical_size, (wx, 0.0, zc)),  # right
-                _wall_rect(horizontal_size, (0.0, -wy, zc)),  # bottom
-                _wall_rect(horizontal_size, (0.0, wy, zc)),  # top
-            ]
-            resolved.extend(rect_specs)
-            continue
-
-        # Regular hazards: merge with type defaults
-        t = spec.get("type")
-        base = dict(td.get(t, {}))
-        base.update(spec)  # spec overrides defaults
-        resolved.append(base)
-
-    hazards_cfg.specs = resolved
-    return hazards_cfg
 
 
 # -------------------------------- Math --------------------------------

@@ -53,8 +53,9 @@ collidable *group*, not per hazard.
 `PARKING_POSITION = (1000.0, 1000.0, hazard_height)`, written into `mocap_pos`
 for inactive hazards at reset. Far enough that no lidar (`max_dist` 3 m), no
 proximity cost (radius ≤ 0.4 m) and no contact can reach it; near enough that
-float32 keeps millimetre precision. Walls (`fixed=True`) are never parked —
-they are not part of Ω.
+float32 keeps millimetre precision. The arena fence is not a hazard at all
+(`crax/envs/arena.py`, decision of 2026-10-06): four static world-body geoms
+the robot cannot see or be costed for, so nothing here applies to it.
 
 ## The union model for goal
 
@@ -68,7 +69,7 @@ From `crax/envs/difficulty.py`, the `(type, collidable)` groups across levels
 | cube, non-collidable | — | — | 6 (0.3) | **6** |
 | cube, collidable | — | — | 4 (0.25, h 0.5) | **4** |
 
-30 hazards plus the four walls. **Size and height within a group differ
+30 hazards (the fence is separate). **Size and height within a group differ
 between levels** (cylinder 0.4 vs 0.35; collidable cylinder 0.3 vs 0.25).
 Both are JAX fields (`geom_size`, `body_pos` z) and could be per slot; for now
 the union uses **one size per group** (the larger, so level 3's hazards are

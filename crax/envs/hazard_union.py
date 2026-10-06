@@ -22,8 +22,6 @@ GroupKind = Tuple[str, bool]  # (hazard type, collidable)
 
 # Spec keys that identify a group; every other key is a per-group parameter merged by max.
 _KIND_KEYS = ("type", "collidable")
-# Specs that are part of the arena, not of Ω; they pass through unchanged and are never counted.
-_FIXED_TYPES = frozenset({"outer_wall"})
 
 
 def _kind(spec: HazardSpec) -> GroupKind:
@@ -34,8 +32,8 @@ def _kind(spec: HazardSpec) -> GroupKind:
 class HazardUnion:
     """The union model's hazard specs and the per-level active counts within it."""
 
-    specs: List[HazardSpec]  # one spec per variable group, in kind order, plus the fixed specs
-    kinds: Tuple[GroupKind, ...]  # the variable groups, in the order they appear in ``specs``
+    specs: List[HazardSpec]  # one spec per group, in kind order
+    kinds: Tuple[GroupKind, ...]  # the groups, in the order they appear in ``specs``
     counts_by_level: Mapping[int, Tuple[int, ...]]  # per level, the active count of each kind
 
     def counts(self, level: int) -> Tuple[int, ...]:
@@ -47,18 +45,12 @@ def union_of_levels(specs_by_level: Mapping[int, Sequence[HazardSpec]]) -> Hazar
 
     Groups are keyed by ``(type, collidable)``. For each group, the union spec
     has the maximum ``count`` over levels and, for every other numeric field,
-    the maximum over the levels that have the group. Fixed specs (walls) must
-    be identical at every level and are passed through once.
+    the maximum over the levels that have the group.
     """
     per_kind: Dict[GroupKind, HazardSpec] = {}
-    fixed: List[HazardSpec] = []
     order: List[GroupKind] = []
     for level in sorted(specs_by_level):
         for spec in specs_by_level[level]:
-            if spec["type"] in _FIXED_TYPES:
-                if spec not in fixed:
-                    fixed.append(spec)
-                continue
             kind = _kind(spec)
             if kind not in per_kind:
                 per_kind[kind] = dict(spec)
@@ -72,15 +64,12 @@ def union_of_levels(specs_by_level: Mapping[int, Sequence[HazardSpec]]) -> Hazar
                     merged[key] = max(merged[key], value)
                 elif merged[key] != value:
                     raise ValueError(f"hazard group {kind}: field {key!r} differs between levels ({merged[key]!r} vs {value!r}) and is not numeric")
-    if len(fixed) > 1:
-        raise ValueError(f"fixed hazard specs differ between levels: {fixed}")
 
     counts_by_level = {}
     for level, specs in specs_by_level.items():
         counts = {kind: 0 for kind in order}
         for spec in specs:
-            if spec["type"] not in _FIXED_TYPES:
-                counts[_kind(spec)] += int(spec["count"])
+            counts[_kind(spec)] += int(spec["count"])
         counts_by_level[level] = tuple(counts[kind] for kind in order)
 
-    return HazardUnion(specs=[per_kind[kind] for kind in order] + fixed, kinds=tuple(order), counts_by_level=counts_by_level)
+    return HazardUnion(specs=[per_kind[kind] for kind in order], kinds=tuple(order), counts_by_level=counts_by_level)

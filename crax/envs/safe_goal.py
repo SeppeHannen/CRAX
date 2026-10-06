@@ -20,6 +20,7 @@ from jax import numpy as jp
 from mujoco import mjx
 
 from crax.envs import context
+from crax.envs.arena import ArenaWalls
 from crax.envs.base import PipelineEnv, State
 from crax.envs.env_utils import (
     create_hazard_manager_from_specs,
@@ -31,7 +32,6 @@ from crax.envs.env_utils import (
     place_objects,
     sample_position_in_extents,
     base_xml_file_path,
-    add_walls_to_specs,
     choose_valid_position_shape_aware,
 )
 from crax.envs.hazards import HazardGroup, _type_defaults_from_registry, compute_hazard_costs
@@ -118,6 +118,8 @@ class SafeGoal(PipelineEnv, ABC):
             placement_margin: float = 0.01,
             max_placement_attempts: int = 100,
             max_layout_attempts: int = 1000,
+            # The fence around the placement square: physics only (crax/envs/arena.py)
+            arena_walls: ArenaWalls = ArenaWalls(offset=0.5, thickness=0.06, height=0.1),
             # Goal settings
             goal_type: str = 'cylinder',
             goal_count: int = 1,
@@ -125,9 +127,9 @@ class SafeGoal(PipelineEnv, ABC):
             goal_height: float = 0.2,
             goal_positions: Optional[List] = None,
             goal_collidable: bool = False,
-            # Hazard settings - list of specs: {type, count, size, height, collidable, fixed, density}
+            # Hazard settings - list of specs: {type, count, size, height, collidable, density}
             hazard_specs: Optional[List[Dict]] = None,
-            # How many hazards of each non-fixed spec are active by default, in spec order;
+            # How many hazards of each spec are active by default, in spec order;
             # None = all of them. The rest are parked (docs/acl/design/hazard_activation.md).
             active_hazard_counts: Optional[Sequence[int]] = None,
             # Debug
@@ -155,14 +157,6 @@ class SafeGoal(PipelineEnv, ABC):
                     movable=False,
                     density=1.0,
                 ),
-                dict(
-                    type='outer_wall',
-                    offset=0.5,
-                    height=0.1,
-                    thickness=0.06,
-                    collidable=True,
-                    fixed=True,
-                ),
             ]
 
         # Expand hazard specs with type defaults
@@ -177,9 +171,6 @@ class SafeGoal(PipelineEnv, ABC):
             base.update(spec)
             expanded_specs.append(base)
         hazard_specs = expanded_specs
-
-        # Add outer walls to hazard specs
-        hazard_specs = add_walls_to_specs(hazard_specs, placement_extents)
 
         # Build managers
         self._hazard_manager = create_hazard_manager_from_specs(hazard_specs)
@@ -226,8 +217,11 @@ class SafeGoal(PipelineEnv, ABC):
         self._goal_box_he = jp.array([p.half_extents_xy for p in packed], dtype=jp.float32)
         self._goal_yaws = jp.array([p.yaw for p in packed], dtype=jp.float32)
 
-        # Generate XML dynamically with the configured goals and hazards
-        xml_path = generate_goal_xml_from_base(self.agent_xml_file, self._goal_manager, self._hazard_manager)
+        # Generate XML dynamically with the configured goals and hazards, fenced by the arena walls
+        xml_path = generate_goal_xml_from_base(
+            self.agent_xml_file, self._goal_manager, self._hazard_manager,
+            static_geoms=arena_walls.geoms(placement_extents),
+        )
         self._xml_base_file_path = base_xml_file_path(self.agent_xml_file)
 
         try:
@@ -286,13 +280,7 @@ class SafeGoal(PipelineEnv, ABC):
 
         # Get hazard information from HazardManager
         self._num_hazards = self._hazard_manager.get_hazard_count()
-        self._num_fixed_hazards = self._hazard_manager.get_fixed_hazard_count()
-        self._num_movable_hazards = self._num_hazards - self._num_fixed_hazards
         self._num_goals = self._goal_manager.get_goal_count()
-        # reset places `hazards[:num_movable]` and leaves the rest where the XML put them;
-        # the activation vector is sliced the same way. Both need the movable ones first.
-        if any(h.fixed for h in hazards[:self._num_movable_hazards]):
-            raise ValueError(f"{type(self).__name__}: fixed hazards (walls) must come after the movable ones in hazard_specs")
 
         # --- Find Sensor Indices, Addresses, and Dimensions ---
         self._sensor_info = {}
@@ -370,7 +358,7 @@ class SafeGoal(PipelineEnv, ABC):
     @property
     def hazard_groups(self) -> List[HazardGroup]:
         """The hazard groups whose active count the context sets, in context order."""
-        return self._hazard_manager.variable_groups
+        return self._hazard_manager.groups
 
     @property
     def CONTEXT_PARAMETERS(self) -> Tuple[str, ...]:  # noqa: N802 — the name is the protocol's (crax/envs/context.py)
@@ -426,7 +414,7 @@ class SafeGoal(PipelineEnv, ABC):
         num_candidates = self._max_placement_attempts
 
         # Arrays to accumulate positions: max entries = agent + goal + hazards
-        max_entries = 1 + self._num_goals + self._num_movable_hazards
+        max_entries = 1 + self._num_goals + self._num_hazards
         positions_xy = jp.zeros((max_entries, 2))
         keepouts = jp.zeros((max_entries,))
 
@@ -455,34 +443,19 @@ class SafeGoal(PipelineEnv, ABC):
             keepouts_array=keepouts,
             placed_count=count,
             per_item_keepouts=self._hazard_keepouts,
-            num_items=self._num_movable_hazards,
+            num_items=self._num_hazards,
             num_candidates=num_candidates,
             placement_extents=self._placement_extents,
             placement_margin=self._placement_margin,
-            activation=activation[:self._num_movable_hazards],
+            activation=activation,
         )
 
         # Set goal and hazard positions in mocap
         goal_ids = jp.array(self._goal_mocap_ids, dtype=jp.int32)
-
-        # Only include movable hazards in mocap positioning
-        if self._num_movable_hazards > 0:
-            hazard_ids = jp.array(self._hazard_mocap_ids[:self._num_movable_hazards], dtype=jp.int32)
-        else:
-            hazard_ids = jp.array([], dtype=jp.int32)
-
-        # Only concatenate if we have movable hazards
-        if self._num_movable_hazards > 0:
-            all_ids = jp.concatenate([goal_ids, hazard_ids])
-            all_pos = jp.concatenate([goal_positions, hazard_positions], axis=0)
-        else:
-            all_ids = goal_ids
-            all_pos = goal_positions
-
+        hazard_ids = jp.array(self._hazard_mocap_ids, dtype=jp.int32)
         mpos = data.mocap_pos
-        mpos = mpos.at[all_ids].set(all_pos)
+        mpos = mpos.at[jp.concatenate([goal_ids, hazard_ids])].set(jp.concatenate([goal_positions, hazard_positions], axis=0))
         data = data.replace(mocap_pos=mpos)
-        hazard_positions = data.mocap_pos[jp.array(self._hazard_mocap_ids)]
 
         # Calculate initial distance to nearest goal
         agent_pos = data.xpos[self._agent_body]

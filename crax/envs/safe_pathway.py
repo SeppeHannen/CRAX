@@ -160,7 +160,6 @@ class SafePathway(PipelineEnv, ABC):
                 size=size,
                 height=self._hazard_height,
                 collidable=False,
-                fixed=False,
                 density=1.0,
                 alpha_transparent=1.0,
             )

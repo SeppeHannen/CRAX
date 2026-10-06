@@ -97,7 +97,7 @@ class SafeReacher(PipelineEnv):
                 raise ValueError(f"Unknown hazard type '{t}'")
 
             hazard_manager.add_hazards(t, 1, positions=[(0.0, 0.0, self._hazard_height)], size=size,
-                                       height=self._hazard_height, collidable=False, fixed=False, density=1.0)
+                                       height=self._hazard_height, collidable=False, density=1.0)
 
         # Build a SphereGoal via GoalManager
         goal_manager = GoalManager()

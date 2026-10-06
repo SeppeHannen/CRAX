@@ -29,7 +29,6 @@ from crax.envs.env_utils import (
     safe_norm,
     sample_candidate_positions,
     base_xml_file_path,
-    add_walls_to_specs,
     compute_gremlin_positions,
 )
 from crax.envs.hazards import (
@@ -134,7 +133,7 @@ class SafeButton(PipelineEnv, ABC):
             placement_margin: float = 0.01,
             max_placement_attempts: int = 100,
             max_layout_attempts: int = 1000,
-            # Hazard settings - list of specs: {type, count, size, height, collidable, fixed, density, travel (for gremlins)}
+            # Hazard settings - list of specs: {type, count, size, height, collidable, density, travel (for gremlins)}
             hazard_specs: Optional[List[Dict]] = None,
             active_hazard_counts: Optional[Sequence[int]] = None,
             gremlin_travel: Optional[float] = None,
@@ -182,13 +181,10 @@ class SafeButton(PipelineEnv, ABC):
             t = spec.get("type")
             base = dict(type_defaults.get(t, {}))
             base.update(spec)
-            if t != "outer_wall" and not (base.get("positions") or base.get("centers")):
+            if not (base.get("positions") or base.get("centers")):
                 base["positions"] = [(0.0, 0.0, base["height"])] * base.get("count", 0)
             expanded_specs.append(base)
         hazard_specs = expanded_specs
-
-        # Add outer walls to hazard specs (none of the stock levels asks for any)
-        hazard_specs = add_walls_to_specs(hazard_specs, placement_extents)
 
         # MJX does not support cylinder-box collisions; convert cylinders to cubes
         if backend == "mjx":
@@ -220,37 +216,11 @@ class SafeButton(PipelineEnv, ABC):
             [h.get_keepout_radius() for h in hazards], dtype=jp.float32
         ) if len(hazards) > 0 else jp.zeros((0,), dtype=jp.float32)
 
-        # Hazard shape info
-        is_rect = []
-        half_ext = []
-        radii = []
-
-        for h in hazards:
-            shape, param = h.get_keepout_shape()
-            if shape == "rect":
-                is_rect.append(True)
-                half_ext.append(jp.array([float(param[0]), float(param[1])]))
-                radii.append(0.0)
-            else:  # "circle"
-                is_rect.append(False)
-                half_ext.append(jp.array([0.0, 0.0]))
-                radii.append(float(param[0]))
-
-        self._hazard_is_rect = jp.array(is_rect, dtype=jp.bool_) if len(hazards) > 0 else jp.zeros((0,), dtype=jp.bool_)
-        self._hazard_half_extents = jp.stack(half_ext) if len(hazards) > 0 else jp.zeros((0, 2))
-        self._hazard_radii = jp.array(radii) if len(hazards) > 0 else jp.zeros((0,))
-
-        self._movable_hazard_indices = jp.array(
-            [i for i, h in enumerate(hazards) if not h.fixed], dtype=jp.int32
-        )
-        self._fixed_hazard_indices = jp.array(
-            [i for i, h in enumerate(hazards) if h.fixed], dtype=jp.int32
-        )
-        # The layout's objects: the buttons, then the movable hazards. Their keepouts here are
+        # The layout's objects: the buttons, then the hazards. Their keepouts here are
         # the model's; the episode's gremlin keepouts follow the context's travel (_layout_keepouts).
         model_layout_keepouts = jp.concatenate([
             jp.full((button_count,), self._button_keepout),
-            self._hazard_keepouts[self._movable_hazard_indices],
+            self._hazard_keepouts,
         ])
         # Place large orbit disks first, then restore the original object order.
         self._layout_order = jp.argsort(-model_layout_keepouts, stable=True)
@@ -324,8 +294,6 @@ class SafeButton(PipelineEnv, ABC):
 
         # Hazard info
         self._num_hazards = self._hazard_manager.get_hazard_count()
-        self._num_fixed_hazards = self._hazard_manager.get_fixed_hazard_count()
-        self._num_movable_hazards = self._num_hazards - self._num_fixed_hazards
 
         # Gremlins: which hazards they are and their box half-extents. Their orbit radius is
         # the context's gremlin_travel (one value for all); the specs' travel only sizes the
@@ -408,7 +376,7 @@ class SafeButton(PipelineEnv, ABC):
     @property
     def hazard_groups(self) -> List[HazardGroup]:
         """The hazard groups whose active count the context sets, in context order."""
-        return self._hazard_manager.variable_groups
+        return self._hazard_manager.groups
 
     @property
     def CONTEXT_PARAMETERS(self) -> Tuple[str, ...]:  # noqa: N802 — the name is the protocol's (crax/envs/context.py)
@@ -432,13 +400,13 @@ class SafeButton(PipelineEnv, ABC):
         return jp.broadcast_to(travel, (self._num_gremlins,))
 
     def _layout_keepouts(self, episode_context: jax.Array) -> jax.Array:
-        """Keepout radius of each layout object (buttons, then movable hazards) this episode: gremlins' follow the context's travel."""
+        """Keepout radius of each layout object (buttons, then hazards) this episode: gremlins' follow the context's travel."""
         hazard_keepouts = self._hazard_keepouts.at[self._gremlin_indices].set(
             gremlin_keepout_radius(self._gremlin_sizes, self._gremlin_travel_radii(episode_context))
         )
         return jp.concatenate([
             jp.full((self._button_count,), self._button_keepout),
-            hazard_keepouts[self._movable_hazard_indices],
+            hazard_keepouts,
         ])
 
     def _generate_button_xml(self) -> str:
@@ -483,28 +451,17 @@ class SafeButton(PipelineEnv, ABC):
 
         return temp_path
 
-    def _fixed_clearances(self, xy, keepout, fixed_positions):
-        """Clearance to fixed rectangles or circular (including orbit) keepouts."""
-        indices = self._fixed_hazard_indices
-        delta = jp.abs(xy[..., None, :] - fixed_positions[:, :2])
-        q = delta - self._hazard_half_extents[indices]
-        rect_distance = jp.linalg.norm(jp.maximum(q, 0.0), axis=-1)
-        rect_distance += jp.minimum(jp.max(q, axis=-1), 0.0)
-        circle_distance = jp.linalg.norm(delta, axis=-1) - self._hazard_radii[indices]
-        return jp.where(self._hazard_is_rect[indices], rect_distance, circle_distance) - keepout - self._placement_margin
-
     def _sample_layout(
             self,
             rng: jax.Array,
             agent_xy: jax.Array,
-            fixed_positions: jax.Array,
             object_keepouts: jax.Array,
             object_activation: jax.Array,
             placement_extent: jax.Array,
     ) -> Tuple[jax.Array, jax.Array, jax.Array]:
         """Sample a validated layout with bounded, whole-layout retries.
 
-        Objects (buttons, then movable hazards) are placed in ``_layout_order`` inside
+        Objects (buttons, then hazards) are placed in ``_layout_order`` inside
         the square of half-width ``placement_extent``. An inactive object constrains
         nothing, is always valid, and ends up parked at ``PARKING_XY``.
         """
@@ -528,8 +485,6 @@ class SafeButton(PipelineEnv, ABC):
                 slack = jp.min(jp.where((jp.arange(count) < i) & active, slack, jp.inf), axis=-1)
                 agent_slack = jp.linalg.norm(candidates - agent_xy, axis=-1) - radius - self._agent_keepout - self._placement_margin
                 slack = jp.minimum(slack, agent_slack)
-                if self._num_fixed_hazards:
-                    slack = jp.minimum(slack, jp.min(self._fixed_clearances(candidates, radius, fixed_positions), axis=-1))
                 best = jp.argmax(slack)
                 positions = positions.at[i].set(candidates[best])
                 return (key, positions, valid & ((slack[best] >= 0) | ~active[i])), None
@@ -544,8 +499,6 @@ class SafeButton(PipelineEnv, ABC):
             attempt,
             (rng, jp.array(0), jp.array(False), jp.zeros((count, 2))),
         )
-        if self._num_fixed_hazards:
-            valid &= jp.all(self._fixed_clearances(agent_xy, self._agent_keepout, fixed_positions) >= 0)
 
         def check_layout(ok):
             if not bool(ok):
@@ -597,13 +550,11 @@ class SafeButton(PipelineEnv, ABC):
         data = self.pipeline_init(qpos, qvel)
         agent_pos = data.xpos[self._agent_body]
 
-        fixed_ids = self._hazard_mocap_ids_arr[self._fixed_hazard_indices]
         rng_layout, layout_xy, layout_attempts = self._sample_layout(
             rng_layout,
             agent_pos[:2],
-            data.mocap_pos[fixed_ids],
             object_keepouts=self._layout_keepouts(episode_context),
-            object_activation=jp.concatenate([jp.ones((self._button_count,)), activation[self._movable_hazard_indices]]),
+            object_activation=jp.concatenate([jp.ones((self._button_count,)), activation]),
             placement_extent=placement_extent,
         )
         button_positions = jp.concatenate([
@@ -616,13 +567,9 @@ class SafeButton(PipelineEnv, ABC):
         mpos = data.mocap_pos
         mpos = mpos.at[button_ids].set(button_positions)
 
-        if self._num_movable_hazards > 0:
-            hazard_ids = self._hazard_mocap_ids_arr[self._movable_hazard_indices]
-            mpos = mpos.at[hazard_ids, :2].set(layout_xy[self._button_count:])
-
+        mpos = mpos.at[self._hazard_mocap_ids_arr, :2].set(layout_xy[self._button_count:])
         data = data.replace(mocap_pos=mpos)
 
-        # Get all hazard positions (including fixed ones)
         all_hazard_positions = data.mocap_pos[self._hazard_mocap_ids_arr]
 
         # Select active button randomly

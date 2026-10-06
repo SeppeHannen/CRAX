@@ -14,8 +14,11 @@ class BaseHazard(ABC):
     """Base class for all hazard types."""
 
     def __init__(self, hazard_id: int, position: tuple, size: Tuple[float] | float, height: float, collidable: bool,
-                 fixed: bool, density: float, alpha_transparent: float):
+                 density: float, alpha_transparent: float):
         """Initialize a hazard.
+
+        Every hazard is placed by the environment's reset, is observed (lidar,
+        compass) and costs; the arena fence is not a hazard (``crax/envs/arena.py``).
 
         Args:
             hazard_id: Unique identifier for this hazard
@@ -23,15 +26,13 @@ class BaseHazard(ABC):
             size: Size parameter for the hazard (interpretation depends on hazard type)
             height: Height parameter for the hazard (if applicable)
             collidable: Whether the hazard is collidable
-            fixed: Whether the hazard should be randomly relocated on reset
-            density: Density of the hazard (if movable)
+            density: Density of the hazard
         """
         self.hazard_id = hazard_id
         self.position = position
         self.size = size
         self.height = height
         self.collidable = collidable
-        self.fixed = fixed
         self.density = density
         self.mass = self.calculate_mass()
         self.geom_id = -1  # Will be populated by the environment after mj_model is created.
@@ -123,8 +124,8 @@ class CubeHazard(BaseHazard):
     """Cube-shaped hazard with binary collision cost."""
 
     def __init__(self, hazard_id: int, position: tuple = (0.0, 0.0, 0.09), size: float = 0.2, height: float = 0.2,
-                 collidable: bool = True, fixed: bool = False, density: float = 1.0, alpha_transparent: float = 0.35):
-        super().__init__(hazard_id, position, size, height, collidable, fixed, density, alpha_transparent)
+                 collidable: bool = True, density: float = 1.0, alpha_transparent: float = 0.35):
+        super().__init__(hazard_id, position, size, height, collidable, density, alpha_transparent)
 
     def proximity_cost(self, agent_xy: jp.ndarray, hazard_xy: jp.ndarray) -> jp.ndarray:
         # Use radial distance (same formula as CylinderHazard) so the agent receives
@@ -178,14 +179,13 @@ class RectHazard(BaseHazard):
                  size: tuple = (0.5, 0.05),  # (sx, sy)
                  height: float = 0.02,
                  collidable: bool = False,
-                 fixed: bool = False,
                  density: float = 1.0,
                  alpha_transparent: float = 0.35):
         # normalize size to tuple
         if not (isinstance(size, (tuple, list)) and len(size) == 2):
             raise ValueError("RectHazard.size must be a (sx, sy) tuple of half-extents.")
         self.size_xy = (float(size[0]), float(size[1]))
-        super().__init__(hazard_id, position, size, height, collidable, fixed, density, alpha_transparent)
+        super().__init__(hazard_id, position, size, height, collidable, density, alpha_transparent)
 
     def proximity_cost(self, agent_xy: jp.ndarray, hazard_xy: jp.ndarray) -> jp.ndarray:
         sx, sy = self.size_xy
@@ -227,8 +227,8 @@ class CylinderHazard(BaseHazard):
     """Cylinder-shaped hazard with distance-based cost."""
 
     def __init__(self, hazard_id: int, position: tuple = (0.0, 0.0, 0.02), size: float = 0.3, height: float = 0.02,
-                 collidable: bool = True, fixed: bool = False, density: float = 1.0, alpha_transparent: float = 0.35):
-        super().__init__(hazard_id, position, size, height, collidable, fixed, density, alpha_transparent)
+                 collidable: bool = True, density: float = 1.0, alpha_transparent: float = 0.35):
+        super().__init__(hazard_id, position, size, height, collidable, density, alpha_transparent)
 
     def proximity_cost(self, agent_xy: jp.ndarray, hazard_xy: jp.ndarray) -> jp.ndarray:
         diff = agent_xy - hazard_xy
@@ -278,7 +278,7 @@ class GremlinHazard(BaseHazard):
     """
 
     def __init__(self, hazard_id: int, position: tuple = (0.0, 0.0, 0.1), size: float = 0.1, 
-                 height: float = 0.1, collidable: bool = True, fixed: bool = False, 
+                 height: float = 0.1, collidable: bool = True, 
                  density: float = 0.001, alpha_transparent: float = 0.35, travel: float = 0.3):
         """Initialize a gremlin hazard.
         
@@ -288,12 +288,11 @@ class GremlinHazard(BaseHazard):
             size: Size parameter (half-extent for box)
             height: Height parameter
             collidable: Whether the hazard is collidable
-            fixed: Whether the hazard should be randomly relocated on reset
             density: Density of the hazard
             alpha_transparent: Transparency alpha value
             travel: Radius of the circular orbit path
         """
-        super().__init__(hazard_id, position, size, height, collidable, fixed, density, alpha_transparent)
+        super().__init__(hazard_id, position, size, height, collidable, density, alpha_transparent)
         self.travel = travel
         self.center_position = position  # Store center for orbit calculation
 
@@ -340,12 +339,10 @@ class HazardGroup:
 
     A group is the unit whose *count* a context can vary: activating ``n`` of a
     group means its first ``n`` hazards (``docs/acl/design/hazard_activation.md``).
-    Fixed groups (walls) are always fully active.
     """
 
     hazard_type: str
     collidable: bool
-    fixed: bool
     first_index: int  # index into HazardManager.hazards
     count: int
 
@@ -368,21 +365,16 @@ class HazardManager:
 
     def add_hazard(self, hazard: BaseHazard):
         """Add a hazard to the manager (as a group of one)."""
-        self.groups.append(HazardGroup(hazard.hazard_type, hazard.collidable, hazard.fixed, len(self.hazards), 1))
+        self.groups.append(HazardGroup(hazard.hazard_type, hazard.collidable, len(self.hazards), 1))
         self.hazards.append(hazard)
-
-    @property
-    def variable_groups(self) -> List[HazardGroup]:
-        """The groups whose count a context may set: every non-fixed group, in order."""
-        return [group for group in self.groups if not group.fixed]
 
     def validate_active_counts(self, environment_name: str, active_counts: Optional[Sequence[int]]) -> Tuple[int, ...]:
         """The per-group active counts an environment was constructed with, checked against its groups.
 
-        ``None`` means every hazard active. Each variable group must have a distinct
+        ``None`` means every hazard active. Each group must have a distinct
         context name, and each count must fit its group.
         """
-        groups = self.variable_groups
+        groups = self.groups
         names = [group.context_name for group in groups]
         if len(set(names)) != len(names):
             raise ValueError(f"{environment_name}: two hazard groups share a (type, collidable) kind: {names}; merge them into one spec")
@@ -396,20 +388,20 @@ class HazardManager:
         return tuple(int(count) for count in active_counts)
 
     def activation_from_counts(self, counts: jp.ndarray) -> jp.ndarray:
-        """Per-hazard activation ``[num_hazards]`` of 0/1 from per-group counts ``[len(variable_groups)]``.
+        """Per-hazard activation ``[num_hazards]`` of 0/1 from per-group counts ``[len(groups)]``.
 
-        Group ``g`` with count ``n`` activates its first ``n`` hazards; fixed groups
-        are always active. ``counts`` may be traced (it comes from the context).
+        Group ``g`` with count ``n`` activates its first ``n`` hazards. ``counts``
+        may be traced (it comes from the context).
         """
-        activation = jp.ones((len(self.hazards),), jp.float32)
-        for group_index, group in enumerate(self.variable_groups):
+        activation = jp.zeros((len(self.hazards),), jp.float32)  # every hazard belongs to a group
+        for group_index, group in enumerate(self.groups):
             position_in_group = jp.arange(group.count, dtype=jp.float32)
             active = (position_in_group < counts[group_index]).astype(jp.float32)
             activation = activation.at[group.first_index:group.first_index + group.count].set(active)
         return activation
 
     def add_hazards(self, hazard_type: str, count: int, positions: List[tuple] = None, size: float = None,
-                    height: float = None, collidable: bool = None, fixed: bool = False, density: float = None,
+                    height: float = None, collidable: bool = None, density: float = None,
                     alpha_transparent = 0.35, travel: float = None):
         """Add multiple hazards of the same type.
 
@@ -420,7 +412,6 @@ class HazardManager:
             size: Size parameter. If None, default size will be used.
             height: Height parameter. If None, default height will be used.
             collidable: Whether hazards are collidable. If None, default will be used.
-            fixed: Whether hazards should be randomly relocated on reset
             density: Density of hazards. If None, default will be used.
             alpha_transparent: Transparency alpha value
             travel: Orbit radius for gremlin hazards. If None, default will be used.
@@ -438,14 +429,14 @@ class HazardManager:
             hazard_id = len(self.hazards) + 1
             if hazard_type == "gremlin":
                 if travel is None:
-                    hazard = cls(hazard_id, positions[i], size, height, collidable, fixed, density, alpha_transparent)
+                    hazard = cls(hazard_id, positions[i], size, height, collidable, density, alpha_transparent)
                 else:
-                    hazard = cls(hazard_id, positions[i], size, height, collidable, fixed, density, alpha_transparent, travel)
+                    hazard = cls(hazard_id, positions[i], size, height, collidable, density, alpha_transparent, travel)
             else:
-                hazard = cls(hazard_id, positions[i], size, height, collidable, fixed, density, alpha_transparent)
+                hazard = cls(hazard_id, positions[i], size, height, collidable, density, alpha_transparent)
             self.hazards.append(hazard)
         if count > 0:
-            self.groups.append(HazardGroup(hazard_type, bool(self.hazards[first_index].collidable), fixed, first_index, count))
+            self.groups.append(HazardGroup(hazard_type, bool(self.hazards[first_index].collidable), first_index, count))
 
     def get_xml_assets(self) -> str:
         """Generate XML asset definitions for hazards.
@@ -477,10 +468,6 @@ class HazardManager:
     def get_hazard_count(self) -> int:
         """Get the total number of hazards."""
         return len(self.hazards)
-
-    def get_fixed_hazard_count(self) -> int:
-        """Get the total number of hazards."""
-        return sum(1 for h in self.hazards if h.fixed)
 
     def get_hazards_by_type(self, hazard_type: str) -> List[BaseHazard]:
         """Get all hazards of a specific type."""

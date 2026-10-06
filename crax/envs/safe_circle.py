@@ -27,7 +27,6 @@ from crax.envs.env_utils import (
     safe_norm,
     place_objects,
     base_xml_file_path,
-    add_walls_to_specs,
 )
 from crax.envs.goals import GoalManager
 from crax.envs import context
@@ -152,9 +151,6 @@ class SafeCircle(PipelineEnv, ABC):
             base.update(spec)
             expanded_specs.append(base)
         hazard_specs = expanded_specs
-
-        # Add outer walls to hazard specs
-        hazard_specs = add_walls_to_specs(hazard_specs, placement_extents)
 
         # Circle task params (set before XML generation)
         self._circle_radius = float(circle_radius)
@@ -309,8 +305,6 @@ class SafeCircle(PipelineEnv, ABC):
 
         # Hazard counts
         self._num_hazards = self._hazard_manager.get_hazard_count()
-        self._num_fixed_hazards = self._hazard_manager.get_fixed_hazard_count()
-        self._num_movable_hazards = self._num_hazards - self._num_fixed_hazards
 
         # Sensor info
         self._sensor_info = {}
@@ -367,7 +361,7 @@ class SafeCircle(PipelineEnv, ABC):
     @property
     def hazard_groups(self) -> List[HazardGroup]:
         """The hazard groups whose active count the context sets, in context order."""
-        return self._hazard_manager.variable_groups
+        return self._hazard_manager.groups
 
     @property
     def CONTEXT_PARAMETERS(self) -> Tuple[str, ...]:  # noqa: N802 — the name is the protocol's (crax/envs/context.py)
@@ -433,7 +427,7 @@ class SafeCircle(PipelineEnv, ABC):
 
         num_candidates = self._max_placement_attempts
 
-        max_entries = 1 + self._num_movable_hazards
+        max_entries = 1 + self._num_hazards
         positions_xy = jp.zeros((max_entries, 2))
         keepouts = jp.zeros((max_entries,))
 
@@ -446,7 +440,7 @@ class SafeCircle(PipelineEnv, ABC):
             goal_ids = jp.array(self._goal_mocap_ids, dtype=jp.int32)
             mpos = mpos.at[goal_ids].set(self._goal_positions)
 
-        if self._num_movable_hazards > 0:
+        if self._num_hazards > 0:
             # Use keepout-based placement to prevent overlapping hazards, inside this
             # episode's boundaries; inactive hazards are parked
             (rng_layout, positions_xy, keepouts, count, hazard_positions) = place_objects(
@@ -454,15 +448,15 @@ class SafeCircle(PipelineEnv, ABC):
                 positions_xy=positions_xy,
                 keepouts_array=keepouts,
                 placed_count=count,
-                per_item_keepouts=self._hazard_keepouts[:self._num_movable_hazards],
-                num_items=self._num_movable_hazards,
+                per_item_keepouts=self._hazard_keepouts,
+                num_items=self._num_hazards,
                 num_candidates=num_candidates,
                 placement_extents=(-boundary_x, -boundary_y, boundary_x, boundary_y),
                 placement_margin=self._placement_margin,
-                activation=activation[:self._num_movable_hazards],
+                activation=activation,
             )
 
-            hazard_ids = jp.array(self._hazard_mocap_ids[:self._num_movable_hazards], dtype=jp.int32)
+            hazard_ids = jp.array(self._hazard_mocap_ids, dtype=jp.int32)
             mpos = mpos.at[hazard_ids].set(hazard_positions)
 
         data = data.replace(mocap_pos=mpos)

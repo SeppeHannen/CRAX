@@ -330,7 +330,8 @@ class XMLBuilder:
                   goal_manager: Optional[GoalManager] = None,
                   hazard_manager: Optional[HazardManager] = None,
                   additional_assets: List[str] = None,
-                  additional_bodies: List[str] = None) -> str:
+                  additional_bodies: List[str] = None,
+                  static_geoms: List[str] = None) -> str:
         """Build complete XML from components.
 
         Args:
@@ -339,6 +340,9 @@ class XMLBuilder:
             hazard_manager: HazardManager containing hazards
             additional_assets: Additional asset definitions
             additional_bodies: Additional body definitions
+            static_geoms: ``<geom>`` strings attached directly to the world body
+                (the arena fence, ``crax/envs/arena.py``): physics only, no body,
+                no mocap, nothing the task code can see
 
         Returns:
             Complete XML string
@@ -374,6 +378,13 @@ class XMLBuilder:
 
         # Start worldbody
         xml_parts.append('  <worldbody>')
+
+        if static_geoms:
+            xml_parts.extend([
+                '      <!-- Static geometry -->',
+                *static_geoms,
+                ''
+            ])
 
         # Add goals
         if goal_manager and goal_manager.get_goal_count() > 0:
