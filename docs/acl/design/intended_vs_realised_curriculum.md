@@ -56,6 +56,13 @@ Consequences:
 - **Lag.** A sharp change in $q$ at round $k$ appears in $\hat q$ gradually
   over the next ~4 rounds. A staged curriculum (level 1 → 2 → 3) does not
   switch the training data at the stage boundary; it blends over it.
+  *This assumes the slots are spread over the episode.* If they all reset
+  together — which happens by itself on a suite whose episodes always run to
+  the limit, since every slot starts at step 0 — the change arrives for every
+  slot at the next common reset, up to a whole episode (12.5 rounds here)
+  late, as a step rather than a blend. The goal-point baseline of 2026-10-06
+  ran this way; since then `ContextualAutoResetWrapper` gives each slot a
+  random initial step offset so the population is spread from the first round.
 - **Update lag.** The feedback used to compute $\phi_{k+1}$ comes from episodes
   that *completed* in round $k$, i.e. were mostly *started* under
   $\phi_{k-3}, \ldots, \phi_{k-1}$. Every online curriculum whose episodes

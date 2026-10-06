@@ -28,6 +28,14 @@ done — that is how per-slot conditionals work on a GPU (see
 the suite's ``reset()``; it is the first thing to measure with
 ``--measure_performance``.
 
+Phase: the first reset gives every slot a random head start on its step
+counter, so the first episodes end at different rounds and the population is
+spread over the episode from then on. Without it, on a suite whose episodes
+always run to the limit, all slots reset together for the whole run: every
+round's batch is one slice of the episode, and a context drawn "at the next
+reset" arrives for every slot at the same round, up to an episode late
+(``docs/acl/experiments/2026-10-06_goal_point_staged_vs_uniform.md``).
+
 Wrapper order follows Brax exactly, with this class in place of
 ``AutoResetWrapper``::
 
@@ -74,6 +82,7 @@ class ContextualAutoResetWrapper(Wrapper):
         # fields like `cost` are still added). We vmap its reset ourselves so a
         # per-slot context can travel alongside the per-slot key.
         self._single_slot_env = _find_vmapped_env(env)
+        self._episode_length = _find_episode_wrapper(env).episode_length
 
     # ---- reset ------------------------------------------------------------- #
 
@@ -89,10 +98,13 @@ class ContextualAutoResetWrapper(Wrapper):
 
     def reset_with_parameters(self, rng: jax.Array, params: Params) -> State:
         num_slots = rng.shape[0]
-        keys = jax.vmap(lambda k: jax.random.split(k, 3))(rng)  # [N, 3, 2]
-        sample_key, reset_keys, next_rng = keys[0, 0], keys[:, 1], keys[:, 2]
+        keys = jax.vmap(lambda k: jax.random.split(k, 4))(rng)  # [N, 4, 2]
+        sample_key, reset_keys, next_rng, phase_key = keys[0, 0], keys[:, 1], keys[:, 2], keys[0, 3]
         contexts = self.distribution.sample(params, sample_key, num_slots)
         state = self._reset_in_contexts(reset_keys, contexts)
+        # Spread the slots over the episode: slot i's first episode is cut short by
+        # its offset, after which the population stays desynchronised (module docstring).
+        state.info["steps"] = jax.random.randint(phase_key, (num_slots,), 0, self._episode_length).astype(state.info["steps"].dtype)
         state.info[CONTEXT_KEY] = contexts
         state.info[TRANSITION_CONTEXT_KEY] = contexts
         state.info[PARAMS_KEY] = _broadcast_params(params, (num_slots,))
@@ -175,6 +187,16 @@ def _find_vmapped_env(env: Env) -> Env:
             return current.env
         current = current.env
     raise ValueError("ContextualAutoResetWrapper expects a VmapWrapper somewhere inside its stack")
+
+
+def _find_episode_wrapper(env: Env) -> EpisodeWrapper:
+    """The EpisodeWrapper in a wrapper stack (it owns the step counter and the episode length)."""
+    current = env
+    while isinstance(current, Wrapper):
+        if isinstance(current, EpisodeWrapper):
+            return current
+        current = current.env
+    raise ValueError("ContextualAutoResetWrapper expects an EpisodeWrapper somewhere inside its stack")
 
 
 def _add_episode_fields(state: State, keys: jax.Array) -> State:

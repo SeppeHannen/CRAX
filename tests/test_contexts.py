@@ -111,17 +111,27 @@ def test_uniform_contexts_differ_per_slot_and_env_reads_them(suite, env):
 
 
 def test_context_changes_exactly_at_episode_end(suite, env):
+    """A slot's context changes on exactly the steps its episode ends, and the slots
+    are spread over the episode: the first reset gives each a random head start, so
+    their first episodes end at different steps and they never all end together."""
     reset, step = build(env, C.UniformDistribution(suite.space))
     state = reset(jax.random.split(jax.random.PRNGKey(0), NUM_SLOTS))
+    initial_steps = np.asarray(state.info["steps"]).astype(int)
+    assert len(set(initial_steps.tolist())) > 1, initial_steps
+    assert np.all((0 <= initial_steps) & (initial_steps < EPISODE_LENGTH))
     history = [np.asarray(C.current_contexts(state))[:, 0]]
+    done_history = []
     for _ in range(2 * EPISODE_LENGTH + 1):
         state = step(state, zero_actions(env))
         history.append(np.asarray(C.current_contexts(state))[:, 0])
+        done_history.append(np.asarray(state.done).astype(bool))
         # the env's view must always agree with the wrapper's
         np.testing.assert_allclose(np.asarray(state.info["velocity_threshold"]), history[-1])
-    changes = (np.abs(np.diff(np.stack(history), axis=0)) > 1e-6).sum(axis=0)
-    assert np.all(changes == 2), changes  # episodes end at t=25 and t=50
-    assert int(state.info["steps"][0]) == (2 * EPISODE_LENGTH + 1) % EPISODE_LENGTH
+    changed = np.abs(np.diff(np.stack(history), axis=0)) > 1e-6  # [T, N]
+    np.testing.assert_array_equal(changed, np.stack(done_history))  # change iff that slot's episode ended
+    first_end = np.argmax(np.stack(done_history), axis=0)
+    np.testing.assert_array_equal(first_end + 1, EPISODE_LENGTH - initial_steps)  # the head start shortens the first episode
+    assert not np.any(np.stack(done_history).all(axis=1)), "every slot ended on the same step: slots are synchronised"
 
 
 def test_fixed_context_holds_across_resets(suite, env):
