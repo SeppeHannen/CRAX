@@ -16,10 +16,12 @@ from typing import Dict, List, Tuple
 
 import jax
 import jax.numpy as jnp
+import mujoco
 import numpy as np
 import pytest
 
 from crax import envs
+from crax.envs import context
 from crax.envs.base import Env, State
 from crax.envs.context import CONTEXT_KEY
 from training import contexts as C
@@ -31,6 +33,16 @@ from training.contexts.registry import LEVELS
 SUITES = C.registered_environments()
 NUM_SLOTS = 2
 EPISODE_LENGTH = 5
+
+# Button's Ω contains layouts its arena cannot hold (docs/acl/README.md, Known defects):
+# Uniform(Ω) reaches them and the reset raises. Strict, so the day Ω is fixed this flips.
+_UNIFORM_BUTTON_IS_INFEASIBLE = pytest.mark.xfail(
+    strict=True, raises=Exception,
+    reason="safe_button_point: Uniform(Ω) samples layouts that do not fit the 2 m square (README, Known defects)",
+)
+SUITES_UNDER_UNIFORM = [
+    pytest.param(name, marks=_UNIFORM_BUTTON_IS_INFEASIBLE) if name == "safe_button_point" else name for name in SUITES
+]
 
 
 def _uniform_training_stack(env_name: str) -> Tuple[Env, Env, State]:
@@ -58,7 +70,7 @@ def _logged_keys(env_name: str) -> List[str]:
     return keys
 
 
-@pytest.mark.parametrize("env_name", SUITES)
+@pytest.mark.parametrize("env_name", SUITES_UNDER_UNIFORM)
 def test_every_key_the_suite_logs_is_registered(env_name):
     keys = _logged_keys(env_name)
     assert "episodic/cost" in keys and f"evaluation/{C.DEPLOYMENT_EVALUATION}/episode_reward" in keys
@@ -153,3 +165,46 @@ def test_task_description_states_whether_episodes_can_end_early(env_name):
             ended_early = True
             break
     assert suite.task.episode_ends_early or not ended_early, f"{env_name} ended an episode early but its task says episodes never do"
+
+
+def _wall_geoms(env: Env) -> List[str]:
+    """The arena fence's geom names (``crax/envs/arena.py``); empty for an open arena."""
+    model = env.sys.mj_model
+    names = (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, index) or "" for index in range(model.ngeom))
+    return [name for name in names if name.startswith("wall_")]
+
+
+FENCED_SUITES = [name for name in SUITES if _wall_geoms(envs.get_environment(name, level=1).unwrapped)]
+
+
+@pytest.mark.parametrize("env_name", FENCED_SUITES)
+def test_the_fence_is_not_among_the_hazards(env_name):
+    """The invariant of crax/envs/arena.py, structurally: the four walls are world-body
+    geoms, and every hazard the environment knows is one of its hazard specs' — none
+    is a wall, so nothing that iterates over hazards (cost, lidar, compass, placement)
+    can reach the fence."""
+    env = envs.get_environment(env_name, level=1).unwrapped
+    assert len(_wall_geoms(env)) == 4
+    assert all(hazard.hazard_type != "rect" for hazard in env._hazard_manager.hazards)
+    assert env._num_hazards == sum(group.count for group in env._hazard_manager.groups)
+
+
+def test_driving_into_the_fence_is_free_and_invisible():
+    """The invariant of crax/envs/arena.py, behaviourally, on the one fenced suite whose
+    arena can be emptied (goal: activate no hazard). Full thrust at a wall for 300
+    steps: the robot stays in, pays nothing, and its hazard lidar stays dark."""
+    env = envs.get_environment("safe_goal_point", level=1).unwrapped
+    suite = C.suite_contexts("safe_goal_point")
+    counts = {name: 0.0 for name in suite.space.names if name.startswith("active_")}
+    state = jax.jit(env.reset_with_context)(jax.random.PRNGKey(0), context.encode(env, **counts, goal_size=0.2))
+    step = jax.jit(env.step)
+    thrust = jnp.zeros((env.action_size,)).at[0].set(1.0)
+    hazard_lidar = slice(12 + env._lidar_num_bins, 12 + 2 * env._lidar_num_bins)
+    arena_half_width = env._placement_extents[2] + 0.5  # the fence stands 0.5 m outside the placement square
+    for _ in range(300):
+        state = step(state, thrust)
+        position = np.asarray(state.pipeline_state.xpos[env._agent_body][:2])
+        assert np.all(np.abs(position) < arena_half_width), f"the robot left the arena at {position}"
+        assert float(state.info["cost"]) == 0.0
+        assert float(jnp.max(state.obs[hazard_lidar])) == 0.0
+    assert abs(position[0]) > env._placement_extents[2], "the robot never reached the fence"

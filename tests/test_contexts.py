@@ -64,6 +64,38 @@ def test_uniform_samples_inside_space(suite):
     assert bool(jnp.all(suite.space.contains(samples)))
 
 
+def test_integer_total_cap_cuts_the_box_and_uniform_is_uniform_over_what_remains():
+    """A capped Ω: integer tuples over the cap are outside Ω, the sampler never draws
+    them, every admissible tuple is equally likely (no endpoint bias from rounding),
+    and the log-density is one constant over Ω."""
+    space = C.ContextSpace(
+        (C.Dimension("a", 0, 3, "integer"), C.Dimension("b", 0, 2, "integer"), C.Dimension("x", 0.0, 1.0)),
+        integer_total_cap=3,
+    )
+    admissible = {(a, b) for a in range(4) for b in range(3) if a + b <= 3}
+    assert {tuple(point) for point in space.integer_points} == admissible
+    assert not bool(space.contains(space.encode(a=3, b=1, x=0.5)[None])[0])
+    assert bool(space.contains(space.encode(a=3, b=0, x=0.5)[None])[0])
+
+    samples = np.asarray(space.sample_uniform(jax.random.PRNGKey(0), 20_000))
+    assert bool(jnp.all(space.contains(jnp.asarray(samples))))
+    tuples, counts = np.unique(samples[:, :2].astype(int), axis=0, return_counts=True)
+    assert {tuple(point) for point in tuples} == admissible
+    expected = 20_000 / len(admissible)
+    assert np.all(np.abs(counts - expected) < 4 * np.sqrt(expected)), counts  # endpoints get full weight
+
+    uniform = C.UniformDistribution(space)
+    log_density = uniform.log_probability(uniform.initialise(jax.random.PRNGKey(0)), jnp.asarray(samples[:5]))
+    assert np.allclose(np.asarray(log_density), -np.log(len(admissible)))  # continuous volume is 1
+
+
+def test_a_cap_below_every_integer_total_is_refused():
+    with pytest.raises(ValueError, match="integer_total_cap"):
+        C.ContextSpace((C.Dimension("a", 2, 5, "integer"),), integer_total_cap=1)
+    with pytest.raises(ValueError, match="no integer dimension"):
+        C.ContextSpace((C.Dimension("x", 0.0, 1.0),), integer_total_cap=1)
+
+
 # --------------------------------------------------------------------------- #
 # Wrapper: per-slot contexts, reset on done
 # --------------------------------------------------------------------------- #

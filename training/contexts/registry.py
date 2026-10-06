@@ -248,8 +248,9 @@ def _push_point() -> SuiteContexts:
         space=space,
         level_contexts=_level_contexts(env_name),
         task=TaskDescription(
-            agent="A wheeled point robot in a walled arena that has to push a block into a goal disc, among six "
-            "solid cube hazards it can bump into and six flat cube hazards it can drive over. Actions are two "
+            agent="A wheeled point robot in a fenced arena that has to push a block into a goal disc, among six "
+            "solid cube hazards it can bump into and six flat cube hazards it can drive over (the fence is not "
+            "observed and costs nothing). Actions are two "
             "wheel torques in [−1, 1]. When the block reaches the goal, the goal respawns elsewhere and the "
             "episode continues; an episode ends at the step limit, or earlier if the robot flips or leaves its "
             "healthy height range.",
@@ -364,6 +365,13 @@ def _pathway_walker2d() -> SuiteContexts:
 # points: L1 = (12, 0, 0, 0, 0.20), L2 = (8, 8, 0, 0, 0.18), L3 = (6, 4, 6, 4, 0.16).
 # Uniform over Ω therefore includes layouts no level has (many cubes *and* many
 # cylinders); that is the point of Ω, and is said in the thesis.
+#
+# The counts are capped in total: the 5 m square holds about as many hazards as
+# level 3 asks for and no more (measured 2026-10-06: at level 3's keepout area,
+# 9.1 m², 4 % of resets have two hazards overlapping; one more hazard kind at full
+# count and half of them do). The cap is level 3's total, so the hardest level is
+# the densest point of Ω and nothing denser is ever sampled.
+_GOAL_MAX_ACTIVE_HAZARDS = 20
 
 _GOAL_SIZE_LOW = 0.14
 _GOAL_SIZE_HIGH = 0.22
@@ -391,20 +399,20 @@ def _goal_point() -> SuiteContexts:
         ))
     dimensions.append(Dimension(
         "goal_size", low=_GOAL_SIZE_LOW, high=_GOAL_SIZE_HIGH,
-        description="the radius in metres of the goal discs the robot has to reach; smaller = harder to hit",
+        description="the radius in metres of the goal disc the robot has to reach; smaller = harder to hit",
     ))
     return SuiteContexts(
         env_name=env_name,
-        space=ContextSpace(tuple(dimensions)),
+        space=ContextSpace(tuple(dimensions), integer_total_cap=_GOAL_MAX_ACTIVE_HAZARDS),
         level_contexts=_level_contexts(env_name),
         task=TaskDescription(
-            agent="A wheeled point robot in a 5 m × 5 m walled arena that has to drive to one of two goal discs, "
-            "avoiding hazards placed at random when the episode starts: flat discs and squares it can drive over "
-            "(a proximity cost) and solid cylinders and cubes it bumps into (a contact cost). Actions are two "
-            "wheel torques in [−1, 1]. When the robot reaches a goal, that goal respawns elsewhere and the episode "
-            "continues; an episode ends at the step limit, or earlier if the robot flips or leaves its healthy "
-            "height range.",
-            reward="Per step: 1 each time the robot enters a goal disc (the dense distance term is off). The return "
+            agent="A wheeled point robot in a 5 m × 5 m arena that has to drive to a goal disc, avoiding hazards "
+            "placed at random when the episode starts: flat discs and squares it can drive over (a proximity cost) "
+            "and solid cylinders and cubes it bumps into (a contact cost). A fence around the arena keeps the robot "
+            "in; it is not observed and costs nothing. Actions are two wheel torques in [−1, 1]. When the robot "
+            "reaches the goal, the goal respawns elsewhere and the episode continues; an episode ends at the step "
+            "limit, or earlier if the robot flips or leaves its healthy height range.",
+            reward="Per step: 1 each time the robot enters the goal disc (the dense distance term is off). The return "
             "is the number of goals reached in the episode.",
             cost="Per step, the sum over the active hazards of 2 × (1 − distance/size) for each flat hazard the robot "
             "is within one size of, plus 3 for each solid hazard it is in contact with. The episode's cost is the "

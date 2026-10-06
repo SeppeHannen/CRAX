@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from typing import Dict, List, Mapping, Sequence, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 import wandb_workspaces.reports.v2 as panels
 import wandb_workspaces.workspaces as workspaces
@@ -87,6 +87,8 @@ class RunFacts:
     deployment_distribution: str
     task: TaskDescription
     context_space: Tuple[ContextDimension, ...]
+    # None, or the most the integer coordinates of ω may sum to (training/contexts/space.py)
+    context_space_integer_total_cap: Optional[int]
     num_rounds: int
     environment_steps_per_round: int
 
@@ -106,6 +108,9 @@ class RunFacts:
             deployment_distribution=str(config["deployment_distribution"]),
             task=TaskDescription(**config["task"]),
             context_space=tuple(_context_dimension(name, bounds) for name, bounds in config["context_space"].items()),
+            context_space_integer_total_cap=(
+                None if config["context_space_integer_total_cap"] is None else int(config["context_space_integer_total_cap"])
+            ),
             num_rounds=int(config["num_rounds"]),
             environment_steps_per_round=int(config["environment_steps_per_round"]),
         )
@@ -172,6 +177,11 @@ LEGEND = (
 
 def _environment(facts: RunFacts) -> str:
     omega = "\n".join(f"- {dimension.describe()}" for dimension in facts.context_space)
+    if facts.context_space_integer_total_cap is not None:
+        omega += (
+            f"\n\nThe integer coordinates together are capped at {facts.context_space_integer_total_cap}: the arena holds "
+            f"at most that many objects at once, so Ω excludes the corner of the box where they would not fit."
+        )
     return (
         f"**Environment.** {facts.task.agent}\n\n"
         f"**Reward.** {facts.task.reward}\n\n"

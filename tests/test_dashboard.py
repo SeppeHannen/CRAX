@@ -74,6 +74,7 @@ FACTS = dashboard.RunFacts(
         episode_ends_early=True,
     ),
     context_space=(dashboard.view.ContextDimension("velocity_threshold", 1.049, 2.622, "the speed above which a step counts as a violation"),),
+    context_space_integer_total_cap=None,
     num_rounds=763,
     environment_steps_per_round=655_360,
 )
@@ -192,6 +193,7 @@ def test_run_facts_require_dashboard_config_keys():
         dashboard.RunFacts.from_wandb_config({"num_timesteps": 1, "num_evals": 2, "num_eval_envs": 1,
                                                "episode_length": 1, "safety_bound": 1, "deployment_distribution": "level:3",
                                                "task": {"agent": "a", "reward": "r", "cost": "c", "episode_ends_early": True},
-                                               "context_space": {"a": {"low": 0, "high": 1, "description": "a"}}})
+                                               "context_space": {"a": {"low": 0, "high": 1, "description": "a"}},
+                                               "context_space_integer_total_cap": None})
     with pytest.raises(ValueError, match="num_evals"):
         dataclasses.replace(FACTS, num_evals=1)

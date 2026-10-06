@@ -89,6 +89,7 @@ class ContextTrainingSetup:
                 dimension.name: {"low": dimension.low, "high": dimension.high, "description": dimension.description}
                 for dimension in self.suite.space.dimensions
             },
+            "context_space_integer_total_cap": self.suite.space.integer_total_cap,
             "training_distribution": self.training_spec,
             "deployment_distribution": self.deployment_spec,
             "num_rounds": self.total_rounds,
