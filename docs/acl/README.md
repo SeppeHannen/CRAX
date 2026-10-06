@@ -76,16 +76,21 @@ In order. Each item says what it produces and where it goes.
    collapse was the blind student) but is never safe: λ decays to 0 on level 1
    and cannot climb fast enough after the switches. Only `level:3` meets the
    budget; `uniform` has the reward. See Results.
-2b. **Desynchronise the slots** — **done 2026-10-06**
+2b. **Spread the slots over the episode** — **done 2026-10-06**
    (`ContextualAutoResetWrapper.reset_with_parameters`: a uniform random
    initial step offset per slot; verified on goal-point at 8192 slots, offsets
    uniform over 0–999, so ~655 episodes complete every round instead of 8192
    every 12.5). Why: on goal-point every episode runs to 1000 steps, so all
-   slots reset together and stayed in lockstep for the whole baseline run —
-   each round's batch was one 80-step slice of the episode and a stage switch
-   took effect at the next common reset, up to 12.5 rounds late. Applies to
-   the context path only; the stock `AutoResetWrapper` keeps the behaviour
-   (Tristan, item 14).
+   slots reset together and stayed in lockstep for the whole baseline run.
+   What spreading changes: each round's PPO batch is a sample of the episode
+   rather than one 80-step slice; a new φ acts from the next round (q̂ ramps
+   towards q) instead of taking effect all at once up to 12.5 rounds later; a
+   teacher gets completed episodes every round rather than in bursts. What it
+   does *not* change: feedback latency — an outcome is known one episode after
+   its context was drawn, either way. Decision taken with Giuseppe after the
+   fact; a lockstep-vs-spread comparison on the three arms is the check that
+   outcomes do not depend on it. Context path only; the stock `AutoResetWrapper`
+   keeps lockstep (Tristan, item 14).
    *Still open:* `training/logger.py` `MetricsLogger` buffers `training/*` and
    `episodic/*` and flushes their mean when a step counter (rebuilt from two
    32-bit halves inside a callback) has advanced by `training_metrics_steps`.

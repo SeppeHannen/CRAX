@@ -1,0 +1,43 @@
+paper_id,title,year,source,stage_reached,decision,criterion
+2007.03964,Responsive Safety in Reinforcement Learning by PID Lagrangian Methods,2020,seed:2007.03964,2,include,abstract names oscillation/overshoot failure; evidence in full text
+2606.20376,CRAX: Fast Safe Reinforcement Learning Benchmarking,2026,seed:2606.20376,2,include,benchmark for safe RL; multi-level; evidence found
+2310.12567,Safety-Gymnasium: A Unified Safe Reinforcement Learning Benchmark,2023,seed:2310.12567,2,include,benchmark for safe RL; oscillation reported (full text not fetched)
+2305.09304,OmniSafe: An Infrastructure for Accelerating Safe Reinforcement Learning Research,2023,seed:2305.09304,2,exclude,no property evidence (full text not accessed)
+2402.02025,A Survey of Constraint Formulations in Safe Reinforcement Learning,2024,seed:2402.02025,2,exclude,no property evidence (abstract only accessed)
+2006.12136,Safe Reinforcement Learning via Curriculum Induction,2020,seed:2006.12136,2,include,curriculum + constrained learner (by-product A)
+2202.06558,Saute RL: Almost Surely Safe Reinforcement Learning Using State Augmentation,2022,seed:2202.06558,2,exclude,no property evidence (abstract only accessed)
+2103.09815,TeachMyAgent: a Benchmark for Automatic Curriculum Learning in Deep RL,2021,seed:2103.09815,1,exclude,not constrained/safe RL (seed for structure only)
+2110.02102,Contextualize Me -- The Case for Context in Reinforcement Learning,2023,seed:2110.02102,1,exclude,not constrained/safe RL (not opened)
+2012.02096,Emergent Complexity and Zero-shot Transfer via Unsupervised Environment Design,2020,seed:2012.02096,1,exclude,not constrained/safe RL (not opened)
+2010.03934,Prioritized Level Replay,2021,seed:2010.03934,1,exclude,not constrained/safe RL (not opened)
+2203.01302,Evolving Curricula with Regret-Based Environment Design,2022,seed:2203.01302,1,exclude,not constrained/safe RL (not opened)
+2206.02675,Effects of Safety State Augmentation on Safe Exploration,2022,snowball:2202.06558,2,include,names sparse-cost violation failure; budget curriculum
+2503.08241,HASARD: A Benchmark for Vision-Based Safe Reinforcement Learning in Embodied Agents,2025,snowball:2606.20376,2,include,safe RL benchmark with levels; design rationale (snippet only)
+2609.15315,Evaluation Metrics for Safe Reinforcement Learning,2026,snowball:2606.20376,2,include,large comparison on CRAX; reports violation under eval shift
+2610.05569,Factoriax: A GPU-Accelerated Factorio-Style Simulator for Reinforcement Learning,2026,snowball:2606.20376,1,exclude,not safe/constrained RL
+2609.37070,Predictive Safety Curricula for Robust Legged Locomotion,2026,QA1,1,include,curriculum + safety cost (by-product A); full text unreadable
+2511.02690,Curriculum Design for Trajectory-Constrained Agent: Compressing Chain-of-Thought Tokens in LLMs,2025,QA1,1,exclude,constraint is token length not safety cost
+2502.15119,CurricuVLM: Towards Safe Autonomous Driving via Personalized Safety-Critical Curriculum Learning with Vision-Language Models,2025,QA1,1,include,safety curriculum for RL driving (by-product A; learner unverified)
+2309.14091,On the Benefit of Optimal Transport for Curriculum Reinforcement Learning,2023,QA1,1,exclude,no constrained/safe learner
+2412.04426,Towards Fast Safe Online Reinforcement Learning via Policy Finetuning,2024,Q3,2,include,reports Lagrange multiplier mismatch after distribution change
+2512.23770,SB-TRPO: Towards Safe Reinforcement Learning with Hard Constraints,2025,Q3,2,include,names over-conservatism/multiplier ratchet (snippet only)
+2301.10339,AutoCost: Evolving Intrinsic Cost for Zero-violation Reinforcement Learning,2023,Q3,2,include,reports oscillation around cost limit (snippet only)
+2601.18142,Enhance the Safety in Reinforcement Learning by ADRC Lagrangian Methods,2026,snowball:2305.09304,2,exclude,no property evidence (full text not accessed)
+2510.17564,Towards a Practical Understanding of Lagrangian Methods in Safe Reinforcement Learning,2025,snowball:2305.09304,2,include,large comparison across 8 tasks and cost limits
+2405.20860,Enhancing Efficiency of Safe Reinforcement Learning via Sample Manipulation,2024,snowball:2305.09304,1,exclude,no named failure in abstract/snippet
+2112.12228,Direct Behavior Specification via Constrained Reinforcement Learning,2022,Q4,2,include,reports multiplier blow-up under unsatisfiable constraint
+2105.10682,Feasible Actor-Critic: Constrained Reinforcement Learning for Ensuring Statewise Safety,2021,Q4,2,include,theory naming infeasibility (P2 rule)
+2205.07536,Reachability Constrained Reinforcement Learning,2022,Q4,2,include,theory naming infeasible states (P2 rule)
+1907.01475,Generalizing from a few environments in safety-critical reinforcement learning,2019,Q2,2,include,evaluates safety across environments; reports failure on unseen
+2601.21094,Safety Generalization Under Distribution Shift in Safe Reinforcement Learning: A Diabetes Testbed,2026,Q2,2,include,reports violation under shift (abstract)
+2506.11033,Adaptive Shielding for Safe Reinforcement Learning under Hidden-Parameter Dynamics Shifts,2025,Q2,2,include,constrained learners across hidden-parameter family; failure reported
+2605.18842,Safe Continual Reinforcement Learning under Nonstationarity via Adaptive Safety Constraints,2026,Q2,2,include,constrained RL across nonstationary contexts
+2509.25582,Safe In-Context Reinforcement Learning,2025,Q2,2,exclude,no property evidence (full text not accessed)
+2205.14691,On the Robustness of Safe Reinforcement Learning under Observational Perturbations,2022,QA2,2,exclude,no property evidence (observation attack not context family)
+2509.18648,SPiDR: A Simple Approach for Zero-Shot Safety in Sim-to-Real Transfer,2025,Q6,2,include,domain randomisation + constrained learner; DR violation reported
+2301.12593,Risk-Averse Model Uncertainty for Distributionally Robust Safe Reinforcement Learning,2023,Q6,2,include,safe RL across perturbed dynamics incl. DR baseline (snippet)
+2108.06266,Safe Learning in Robotics: From Learning-Based Control to Safe Reinforcement Learning,2021,Q6,1,exclude,review without named family failure in abstract
+2609.15915,Safe Meta-Reinforcement Learning via Information Space Reachability,2026,snowball:2506.11033,2,include,argues context-dependent safety; meta-RL CMDP experiments
+2101.00531,Context-Aware Safe Reinforcement Learning for Non-Stationary Environments,2021,snowball:2506.11033,2,exclude,no property evidence beyond abstract claim
+2606.11266,Seeing Before Colliding: Anticipatory Safe RL with Frozen Vision-Language Models,2026,snowball:2202.06558,2,include,names reactive-cost failure of Lagrangian (snippet only)
+2608.30283,BCPPO: Bachelier-Inspired Constrained Proximal Policy Optimization for Tail-Risk-Aware Safe Reinforcement Learning,2026,Q5,2,include,argues expected-cost budget hides rare high-cost outcomes
