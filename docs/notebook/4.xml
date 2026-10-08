@@ -1,0 +1,118 @@
+<notes date="06/10/26">
+
+  <page number="4">
+
+    <section title="Reward–safety conflict">
+      <learnings>
+        In a constrained task, earning more reward usually means incurring more
+        cost. Benchmark authors build their tasks this way on purpose. CRAX says
+        so of all its tasks: "achieving high reward typically requires incurring
+        higher cost" (Tomilin 2026 §1). Safety-Gymnasium says it of its velocity
+        tasks: "agents aim for higher reward by moving faster, but they must also
+        adhere to velocity constraints" (Ji 2023 §4.1). In these benchmarks the
+        conflict exists in every context, so by itself it does not make one
+        context harder than another. What matters for a curriculum is where in Ω
+        the costly shortcut lies, because a curriculum that looks only at reward
+        will move there. Koprulu 2025 §4.2 shows this happening: CURROT moved its
+        goals straight through the hazards.
+      </learnings>
+    </section>
+
+    <section title="Over-conservatism">
+      <learnings>
+        A constrained agent can learn to satisfy the constraint and fail to
+        reach high reward. In CRAX, PPO-Lag is the only method that satisfies
+        every bound on Levels 2 and 3, and it "fails to reach high rewards"
+        (Tomilin 2026 §5.1). On Pathway and Height, training directly on Level 3
+        "yields overly conservative policies that underutilize the available
+        safety budget" (§5.2). These are the two suites where the CRAX level
+        curriculum helped.
+      </learnings>
+    </section>
+
+    <section title="Violation-dominated exploration">
+      <learnings>
+        A constrained agent can keep violating the constraint while it explores
+        and make little progress. CRAX says this of direct training on Level 3
+        in general: "exploration becomes dominated by constraint violations and
+        sparse progress" (Tomilin 2026 §5.2). On Goal, the suite I use, PPO-Lag
+        reaches reward 7.0 on Level 3 against 34.8 on Level 1 (Table 5). Goal is
+        the suite where the CRAX level curriculum did not help.
+      </learnings>
+    </section>
+
+    <section title="Constraint generalisation">
+      <learnings>
+        A policy that is safe on the contexts it trained on is often unsafe on
+        contexts it has not seen. Four groups report this with five different
+        kinds of shift: patient physiology (Kwon 2026: "policies satisfying
+        constraints during training frequently violate safety requirements on
+        unseen patients"), gravity, mass and friction (Kwon 2025), sim-to-real
+        (As 2025), perturbed dynamics (Queeney 2023), and unseen procedural
+        levels (Kenton 2019, counting catastrophes rather than a cost
+        constraint). Training on q and deploying on w is such a shift.
+      </learnings>
+    </section>
+
+    <section title="λ at a distribution change">
+      <learnings>
+        Three facts about the Lagrange multiplier λ. Under a fixed distribution
+        it oscillates around the cost limit and overshoots (Stooke 2020 §1: "we
+        witnessed numerous problematic cases", with a 90° phase lag between λ
+        and cost). The value it needs changes with the task and with the cost
+        limit (Spoor 2025). After a distribution change it can be far off (Chen
+        2024, "Lagrangian mismatch" between a multiplier learned offline and the
+        one online training needs; the reported values are about 1500 versus
+        0.65). A curriculum is a sequence of distribution changes. I found no
+        paper that measures λ across one. My velocity-ant collapse (λ 1.5 → 405
+        at the level switch) is a first observation.
+      </learnings>
+      <annotation>
+        The 1500 / 0.65 figures come from Chen 2024 §3.2 as extracted by the
+        deep-research run; the abstract confirms the phenomenon, the numbers
+        themselves I have not opened. Check before citing them.
+      </annotation>
+    </section>
+
+    <learnings>
+      SCG, the safe curriculum of Koprulu 2025, only proposes contexts where the
+      current policy's cost is already under a threshold (eq. 4). This targets
+      violation-dominated exploration. It does not target over-conservatism,
+      because a safe policy with low reward passes the filter. We should expect
+      SCG to help in one of these two and not in the other.
+    </learnings>
+
+    <contribution>
+      TeachMyAgent evaluates curriculum methods by building one task
+      distribution per property that makes teaching hard (mostly infeasible,
+      mostly trivial, ...) and running every method on each. I do the same for
+      constrained RL. Each property above becomes one distribution over Ω that
+      isolates it, and the question per distribution is which curriculum
+      methods still train a policy that is safe and performant on w:
+      <item>(1) where in Ω the reward–safety conflict sits</item>
+      <item>(2) over-conservatism on w</item>
+      <item>(3) violation-dominated exploration on w</item>
+      <item>(4) constraint generalisation from q to w</item>
+      <item>(5) λ at a curriculum switch</item>
+      For property 5 I found no measurement and already have one observation.
+      My earlier properties 2 (few contexts feasible) and 3 (rare hard tail) are
+      replaced by the two failures that CRAX reports.
+    </contribution>
+
+    <references>
+      <ref key="As 2025" id="2509.18648">SPiDR: Zero-Shot Safety in Sim-to-Real Transfer</ref>
+      <ref key="Chen 2024" id="2412.04426">Towards Fast Safe Online RL via Policy Finetuning</ref>
+      <ref key="Ji 2023" id="2310.12567">Safety-Gymnasium</ref>
+      <ref key="Kenton 2019" id="1907.01475">Generalizing from a few environments in safety-critical RL</ref>
+      <ref key="Koprulu 2025" venue="ICLR 2025">Safety-Prioritizing Curricula for Constrained RL</ref>
+      <ref key="Kwon 2025" id="2506.11033">Adaptive Shielding for Safe RL under Hidden-Parameter Dynamics Shifts</ref>
+      <ref key="Kwon 2026" id="2601.21094">Safety Generalization Under Distribution Shift in Safe RL: A Diabetes Testbed</ref>
+      <ref key="Queeney 2023" id="2301.12593">Risk-Averse Model Uncertainty for Distributionally Robust Safe RL</ref>
+      <ref key="Spoor 2025" id="2510.17564">Towards a Practical Understanding of Lagrangian Methods in Safe RL</ref>
+      <ref key="Stooke 2020" id="2007.03964">Responsive Safety in RL by PID Lagrangian Methods</ref>
+      <ref key="Tomilin 2026" id="2606.20376">CRAX: Fast Safe Reinforcement Learning Benchmarking</ref>
+    </references>
+
+  </page>
+
+</notes>

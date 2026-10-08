@@ -3,28 +3,57 @@
 Giuseppe Hannen's graduation project. Start here. This file is the goal, the
 plan and the state of the work; the reasons live in the documents it points to.
 
-## The goal
+## Goals
 
-A thesis chapter that says: *here are four safety situations an automated
-curriculum can face; here is how each method behaves in each.* The structure
-is TeachMyAgent's — fixed scenarios that each isolate one property, methods
-compared across them — with safety properties as the scenarios
-(notebook 2026-10-05, `docs/notebook/1-3.xml`).
+Three goals, each with the idea that serves it and the questions it asks
+(presented to the supervisor 2026-10-08). Where each stands is in *The plan*.
+Notation: context ω ∈ Ω, training distribution q, deployment distribution w,
+return R(π, ω), cost C(π, ω), budget d, policy parameters θ.
 
-| # | situation | example on `safe_goal_point` | the test |
+| | goal | idea | what we want to explore |
 |---|---|---|---|
-| 1 | reward progress conflicts with safety | hazards between start and goal: the shortcut is unsafe | does the curriculum drift toward high-shortcut contexts (more reward) or away from them (more safety)? |
-| 2 | few contexts permit safe success | most of Ω is infeasible within the budget | does it find the feasible region and concentrate there? |
-| 3 | few contexts are hard but feasible | most of Ω is easy; deployment w is the hard tail | does it find the tail and train on it enough? |
-| 4 | safety depends on the context | fast is safe in some contexts, slow in others (physics, dynamics) | does the agent stay good at both ends of Ω at once? |
+| 1 | **Which curriculum methods suit which environment spaces.** | One distribution over Ω per *challenge*, a property of the space that makes teaching hard; every method on each. The challenges are TeachMyAgent's, read again with a constraint (table below). | Does a method that copes with a challenge on reward still cope when the budget binds? Where does each method put its mass, and does that predict reward and cost on w? |
+| 2 | **Explain the differences, and use the explanation to build a method.** | Subspaces Ω_x, Ω_y, … ⊆ Ω where skill x, y, … is *needed* to do well. They overlap: a context in Ω_x may need y too; what defines Ω_x is that x is required there. Evaluate every method on each subspace at checkpoints through training. | Which skills does each curriculum develop, in what order, and does the order predict performance on w? Does the λ mechanism explain the staged failures? |
+| 3 | **Where does generalised learning happen during training.** | Data attribution, TracIn-style (`literature/data_attribution_reading.md`): the gradient a training record induces under PPO-Lag, dotted with the gradient of a target we care about. A return target and a **cost target**, kept separate; the target's expectation over the current buffer, a future policy's buffer, or held-out contexts. | Does a cost-target score predict one-round changes in cost, and better than the cost advantage alone? Where in the state space do reward and safety conflict, and how does that band move? Which contexts produced the data that helped on held-out contexts, and when? |
+
+### Goal 1: the challenges
+
+A thesis chapter that says: *here are the challenges a curriculum faces when
+the learner is constrained; here is how each method behaves on each.* The
+structure is TeachMyAgent's (Romac et al. 2021): one task distribution per
+challenge, each isolating one property of the task space, every method run on
+each. The challenges are **TMA's own, asked again with a constraint**, plus
+the one thing a constraint adds that TMA has no row for.
+
+The constraint changes the task space in exactly one way: difficulty becomes
+two-dimensional. A context is easy or hard for *reward*, and separately easy
+or hard for *staying under the budget*. TMA's challenges are about one
+landscape; ours are about two.
+
+| TMA challenge | on the reward landscape (TMA's reading) | on the constraint landscape (what the budget adds) | what it needs on `safe_goal_point` |
+|---|---|---|---|
+| mostly infeasible | most contexts cannot be solved: no policy reaches the goal | most contexts cannot be solved *safely*: a policy can reach the goal, but no policy does so with cost ≤ d | hazard density high enough that the cheapest path to the goal costs ≈ d; current Ω with the run's d set accordingly |
+| mostly trivial | most contexts are solved by any policy: the goal is reached without learning | most contexts are safe for any policy: nothing near the path incurs cost, so the budget never binds and λ decays to 0 | low hazard counts; current Ω |
+| rugged difficulty | a small change in ω produces a large change in how hard the goal is to reach | a small change in ω produces a large change in how hard it is to stay under d; the two landscapes need not have their cliffs in the same places | a layout dimension with cliffs in cost but not in reward, or the reverse |
+| forgetting student | the policy loses a skill it had | the policy loses a skill it had, *or* the multiplier λ loses its calibration: too small, the agent violates; too large, it stops moving | staged q with a large jump between stages; observed twice (Results) |
+| diverse students | the method must work for different learners (SAC, PPO; different bodies) | the method must also work for different constraint handlers: Lagrange, PID-Lagrange, Sauté, each with its own failure mode | the `--alg` flag |
+| no expert knowledge | the method gets no initial distribution, no target, no mastery threshold | unchanged; the budget d is given to the learner, not to the curriculum | — |
+| **(new) the two landscapes disagree** | — (TMA has one landscape, so this cannot arise) | the contexts where reward is easy to earn are the contexts where cost is hard to avoid, or the reverse; a curriculum that selects by reward moves into cost | a layout dimension: hazard density *on the shortest path to the goal* (Koprulu 2025 §4.2 observed CURROT doing this) |
+
+The seventh row is the general form of "reward conflicts with safety"; the
+first row is the general form of "tight budget". The concrete things (hazards
+on the shortest path, budget near minimum cost) are how a challenge is
+*instantiated* on one suite, and belong in the experimental design, not in
+the definition. The constraint column is what we test; the reward column is
+there so each constrained reading can be checked against the original.
 
 Every test is a question about where the realised curriculum q̂ put its mass,
-read against performance on w — both are logged every round already.
-Situations 2 and 3 need nothing new. Situation 1 needs a layout dimension
-(hazard density between start and goal). Situation 4 needs a physics dimension
-*and* a policy that can tell contexts apart (plan item 5).
+read against reward and cost on w — both logged every round already. Rows 1,
+2 and 4 need nothing new. Rows 3 and 7 need a layout dimension. Any physics
+dimension needs a policy that can tell contexts apart (*Later*: context
+observation).
 
-Two statements that frame the chapter, from the same notes:
+Two statements that frame the chapter:
 
 - **The constraint is on deployment, not on training.** Training under q
   enforces $\mathbb{E}_{\omega \sim q}[C] \le d$; that says nothing about w or
@@ -36,96 +65,99 @@ Two statements that frame the chapter, from the same notes:
 - **Training-violation regret is not our objective.** It counts cost incurred,
   not constraints failed. In CRAX cost is per step and the constraint is on
   the episode sum, so an agent can incur sub-budget cost, learn from it and
-  never violate. "How informative is sub-budget cost" is a candidate fifth axis.
+  never violate.
+
+**How we got here** (2026-10-05 → 10-08), so the next change of mind has
+something to push against:
+
+1. *Notebook 2026-10-05* (`docs/notebook/1-3.xml`): four safety situations
+   from intuition — reward vs safety, few contexts feasible, rare hard tail,
+   context-dependent safety.
+2. *Literature pass 2026-10-06* (`literature/synthesis.md`): two of the four
+   had no reported evidence as stated (few feasible, rare hard tail). What
+   *is* reported on hard contexts is two opposite failures — over-conservatism
+   and violation-dominated exploration (CRAX §5.1–5.2). λ fragility is
+   documented in-distribution and offline→online, never at a curriculum
+   switch. Prior art: Koprulu, Simão, Jansen, Topcu, ICLR 2025 (SCG,
+   confirmed by Giuseppe as "Safe Curriculum Generation").
+3. *Reframe 2026-10-07*: five concrete challenges (misaligned reward/cost,
+   over-conservatism, violation-dominated exploration, constraint shift, λ at
+   a switch). Giuseppe: two of these are *outcomes*, not configurations — you
+   cannot set "conservatism" before training. Collapsed to four configurable
+   ones; conservatism vs violation became the analysis question asked of every
+   result.
+4. *After the supervisor meeting 2026-10-08*: TMA's challenges are general
+   properties of the difficulty landscape ("mostly infeasible", "rugged") and
+   need no defence; ours were concrete and would need a deep review to defend.
+   Giuseppe: ask instead *what does a constraint add to TMA's list?* Answer:
+   one new row (the two landscapes disagree) and a second reading of each
+   existing row. The concrete challenges of step 3 become instantiations.
+   "λ at a switch" is a property of a method class, not of a task space; it
+   moves to goal 2 (explaining method differences). "3D" is not the axis that
+   matters; nothing above depends on it.
 
 ## The plan
 
-In order. Each item says what it produces and where it goes.
+In this order (Giuseppe, 2026-10-08).
 
-0. **Ground the situations in the literature** → `literature/`. A one-afternoon
-   documented review (protocol, screening table, extraction form, verified
-   references) of *which properties of a constrained environment family make
-   training hard, as reported*. Candidate properties P1–P6 go in; evidence by
-   type (reported / designed / reviewed / argued) comes out. Two independent
-   deep-research runs (Claude, ChatGPT) on `literature/deep_research_prompt.md`;
-   references checked with `literature/verify_references.py`. Decided
-   2026-10-06 after discussing TeachMyAgent: its challenges were problem-side
-   properties, operationalised one per unit test; the method-failure analysis
-   came afterwards to explain results. We follow the same order.
-   **Done 2026-10-06** → `literature/synthesis.md`. 56 papers screened, 54 ids
-   clean. Verdicts: P1 universal by benchmark design (the Ω-distribution of the
-   conflict is ours); P4 ≡ *shift-violation*, the best-evidenced family
-   property (6 REPORTED); P5 (λ lag) documented offline→online, never at a
-   curriculum switch — promote to a situation; P2/P3 unevidenced as stated —
-   reframe as the two reported failure modes on hard contexts,
-   *over-conservatism* vs *violation-dominated exploration* (CRAX's own
-   curriculum helped only where the failure was conservatism); P6 no support.
-   Both runs: the budget d is a context dimension (noted, not adopted).
-   By-product A: Koprulu, Simão, Jansen, Topcu, *Safety-Prioritizing Curricula
-   for Constrained RL* (ICLR 2025) is the prior art — **confirm with the
-   supervisor that this is "Safe Curriculum Generation"**.
-1. **Write the situations down** → `design/safety_challenges.md`. Per
-   situation: the property and its evidence (from 0), the Ω dimensions on
-   `safe_goal_point`, how the distribution over Ω is skewed, the test
-   question, the number that answers it, the *predicted* ordering of method
-   classes and why, what is missing. Plus the constraint statement above. No
-   code.
-2. ~~**Baseline on `safe_goal_point`**~~ **Done 2026-10-06** —
-   `experiments/2026-10-06_goal_point_staged_vs_uniform.md`, W&B group
-   `goal_point_staged_vs_uniform`. Staged does **not** collapse (the velocity
-   collapse was the blind student) but is never safe: λ decays to 0 on level 1
-   and cannot climb fast enough after the switches. Only `level:3` meets the
-   budget; `uniform` has the reward. See Results.
-2b. **Spread the slots over the episode** — **done 2026-10-06**
-   (`ContextualAutoResetWrapper.reset_with_parameters`: a uniform random
-   initial step offset per slot; verified on goal-point at 8192 slots, offsets
-   uniform over 0–999, so ~655 episodes complete every round instead of 8192
-   every 12.5). Why: on goal-point every episode runs to 1000 steps, so all
-   slots reset together and stayed in lockstep for the whole baseline run.
-   What spreading changes: each round's PPO batch is a sample of the episode
-   rather than one 80-step slice; a new φ acts from the next round (q̂ ramps
-   towards q) instead of taking effect all at once up to 12.5 rounds later; a
-   teacher gets completed episodes every round rather than in bursts. What it
-   does *not* change: feedback latency — an outcome is known one episode after
-   its context was drawn, either way. Decision taken with Giuseppe after the
-   fact; a lockstep-vs-spread comparison on the three arms is the check that
-   outcomes do not depend on it. Context path only; the stock `AutoResetWrapper`
-   keeps lockstep (Tristan, item 14).
-   *Still open:* `training/logger.py` `MetricsLogger` buffers `training/*` and
-   `episodic/*` and flushes their mean when a step counter (rebuilt from two
-   32-bit halves inside a callback) has advanced by `training_metrics_steps`.
-   That design serves the stock 1 M-step cadence; we set the cadence to one
-   round, so the counter always fires and the buffer averages one value — a
-   second door to W&B that does what the round hook already does. Replace by
-   one `progress_fn` call per round from the trainer; `MetricsLogger` stays
-   only if the stock (non-context) path still needs it — ask Tristan.
-3. **The λ fix is PPO-PID, not PPO-Saute.** Repeat 2 with `ppo_pid`, same
-   group layout. Two experiments now say the Lagrange multiplier is calibrated
-   to the stage that just ended — over-wound on velocity (froze the policy),
-   at zero on goal (never enforced). PID's proportional term reacts to the
-   *current* violation; hypothesis: within a few rounds of each switch the
-   staged arm's cost returns to budget. Saute changes the *constraint*
-   (almost-sure per episode; remaining budget in the state) rather than the
-   multiplier; for an expected-cost constraint a state-based stochastic policy
-   is already optimal (Altman 1999). Footnote on constraint semantics only.
-4. **First curriculum method**, chosen so that "where did q go" is legible.
-   Baselines: uniform, staged, and the supervisor's constrained CURROT ("Safe
-   Curriculum Generation") — the constrained objective is not our novelty.
-5. **Let the learner see its context.** Needed for situation 4 and for any
-   physics dimension. Two options, both change the benchmark's observation
-   space (agree with Tristan first): *told* — ω in the observation, a
-   contextual CMDP, the oracle; *infer* — last step's cost and reward in the
-   observation, with or without memory. Measure the gap to the oracle before
-   building memory. Read first: CARL (how it exposes ω, what its results say
-   for both modes); contextual MDPs (Hallak et al. 2015; Modi et al. 2018);
-   belief-state / Bayes-adaptive MDPs (Duff 2002; Ghavamzadeh et al. 2015),
-   RL² (Duan et al. 2016), VariBAD (Zintgraf et al. 2020); what PLR, ACCEL,
-   SPaCE and CURROT do about the observation. With ω hidden the problem is a
-   POMDP over (s, ω); a recurrent policy approximates the belief; for the
-   velocity suite the sufficient statistic is just the bracket [max v with
-   cost, min v without]. Decision → `design/context_observation.md`.
-6. **The four situations**, each with its distribution over Ω and the methods
-   from 4.
+1. **Prioritized Level Replay** (Jiang et al. 2021) as the first curriculum
+   method. Chosen because it needs no target distribution, no mastery
+   threshold and no context observation. One `ContextDistribution`: Φ is a
+   score per visited context, `update` reads the round's per-context value
+   loss from the round hook, `sample` mixes replay with fresh draws. Design
+   first (`design/prioritized_level_replay.md`): which score, how a continuous
+   Ω becomes "levels", the replay mix. Check: trains on goal-point at least as
+   fast as uniform, and q̂ moves where the value loss says.
+2. **An out-of-distribution context space for goal-point**
+   (`design/goal_point_ood.md`): contexts outside the training Ω, as values on
+   the existing dimensions (counts above the cap, goal size below the smallest
+   level). Registered as a distribution so it is an evaluation target like any
+   other.
+3. **Uniform vs staged vs PLR, 500 M steps, goal-point**, every arm evaluated
+   on the target (uniform over Ω) and the OOD target (uniform over 2) at
+   `--num_evals` points through training. Both targets go in via
+   `evaluation_wrap_env_fns`, which already exists. Result: the two curves per
+   arm, and when a gap between them opens. Write-up in `experiments/`.
+
+Then: PPO-PID on the same arms (λ is calibrated to the stage that just ended,
+seen twice); skill probes as extra evaluation targets on the same runs; the
+cost-critic pre-check for attribution on any of them.
+
+### Done
+
+- Literature pass on the six candidate properties (2026-10-06) →
+  `literature/synthesis.md`.
+- Goal-point baseline, uniform vs staged vs level:3 (2026-10-06) →
+  `experiments/2026-10-06_goal_point_staged_vs_uniform.md`. Staged is never
+  safe: λ decays to 0 on level 1. Only `level:3` meets the budget.
+- Slots spread over the episode (2026-10-06): ~655 episodes complete per
+  round instead of 8192 every 12.5; reasons in the docstring of
+  `training/contexts/wrapper.py`. *Open:* `MetricsLogger` duplicates the
+  round hook at our cadence; one `progress_fn` call per round instead.
+
+### Later, with the reason
+
+- **Back the constrained challenges with evidence.** The table above is TMA
+  with a constraint added to each row. That is a hypothesis, not a result: for
+  each row we need to show that the constrained reading is a difficulty
+  someone has reported, or demonstrate it ourselves, or drop the row. The
+  review: TMA's own sources, CARL, PAIRED/PLR/ACCEL, the safe-RL benchmarks'
+  design sections, Koprulu 2025 in full. Then
+  `design/constrained_challenges.md`, one section per surviving row with its
+  instantiation on goal-point and a predicted method ordering. After the
+  first comparison, so the predictions are made with one curriculum result.
+- **Let the learner see its context** (`design/context_observation.md`).
+  Needed for physics dimensions of Ω and for SCG, whose Def. 3.1 assumes it.
+  Told (ω in the observation) vs inferred (last cost and reward, with or
+  without memory). Changes the benchmark's observation space: Tristan first.
+- **SCG and CURROT as baselines**, after context observation.
+- **Attribute cost to training records.** First the cost critic's explained
+  variance on an existing run (if the critic is unfit, every score is noise).
+  Then: does the cost-target score predict one-round changes in cost better
+  than the cost advantage alone; where in the state space reward and safety
+  conflict; which contexts produced the data that helped on held-out
+  contexts. Order and reasons in `literature/data_attribution_reading.md`.
+  Needs a curriculum result to attribute.
 
 ### Deferred, with the reason
 
@@ -134,7 +166,7 @@ In order. Each item says what it produces and where it goes.
   too, and is handled by the cap on the total count (Decisions) — one
   constraint on the box rather than a union of boxes. Button's corner would be
   handled the same way (a cap, or a cap depending on `placement_extent`). The
-  situations define their own distributions, so this is off the path.
+  challenges define their own distributions, so this is off the path.
   Design, kept for when a second suite is used: Ω = B₁ ∪ B₂ ∪ B₃; uniform =
   pick a level with probability ⅓, then uniform in its box; widen a box only
   along the dimensions the ladder varies, halfway to the neighbouring level;
@@ -159,22 +191,16 @@ In order. Each item says what it produces and where it goes.
 - A **learning-signal study**: per-context PPO statistics (value loss,
   explained variance, clip fraction, KL) against the next evaluation delta on
   w — *when* does useful learning happen. Logging only; rides any experiment.
-- **Skill probes over training** (Giuseppe, 2026-10-06). The inverse of the
-  TMA design: train every method on the *full* Ω, and evaluate at ~10
-  checkpoints on several *probe subspaces* $\Omega_s \subset \Omega$, each
-  chosen to force one behaviour (e.g. dense hazards between start and goal →
-  threading; large goal far away → navigation; many collidable blocks → contact
-  avoidance). Output: per-method skill-acquisition curves (reward, cost, and
-  whether the constraint holds *on that subspace*), overlaid with the mass q̂
-  placed on $\Omega_s$ per round. The lag between "teacher samples $\Omega_s$"
-  and "agent becomes good on $\Omega_s$" says whether the curriculum caused the
-  skill, followed it, or never trained it. Answers *how* a method's capability
-  came about; the situations answer *whether* it has it. Needs no code:
-  `evaluation_wrap_env_fns` already takes any number of evaluation
-  distributions and `--num_evals` sets the checkpoints; probes are box
-  distributions over Ω. Caveat: a subspace is a region of the world, not a
-  skill — each probe needs a sentence saying which behaviour it forces and why
-  the alternative does not pass. Can ride the plan-item-2 baseline for free.
+- **Skill probes** (Giuseppe, 2026-10-06; the idea behind goal 2, see the
+  goals table). Two things the table does not say. The diagnostic is the lag
+  between "the curriculum samples $\Omega_s$" and "the agent becomes good on
+  $\Omega_s$": it tells whether the curriculum caused the skill, followed it,
+  or never trained it. And a subspace is a region of the world, not a skill:
+  each probe needs a sentence saying which behaviour it requires and why the
+  alternative does not pass. Candidate probes on goal-point: dense hazards
+  between start and goal (threading), a far small goal (navigation), many
+  collidable blocks (contact avoidance). No code: probes are box distributions
+  passed to `evaluation_wrap_env_fns`.
 
 ## What is built
 
@@ -388,7 +414,7 @@ Upstream bugs found, and places where our changes alter the benchmark:
 | w | the deployment distribution; what the agent is evaluated on (level 3 by default). |
 | round | one PPO training step; with a context distribution, one compiled call. |
 | q vs q̂ | *intended* curriculum (what the distribution samples at round k) vs *realised* (what the gradient came from, per transition). In the logs: `sampled` vs `experienced`. They differ when episode length depends on ω and because episodes straddle rounds. Always shown together. |
-| situation | one of the four safety scenarios in *The goal*: a distribution over Ω chosen to isolate one property. |
+| challenge | one row of the table in *The goal*: a property of the task space, TMA's or the constraint's addition, realised as one distribution over Ω that isolates it. Replaces "situation" (2026-10-08). |
 
 ## Running
 
@@ -438,14 +464,19 @@ docs/acl/
   literature/
     protocol.md                      (plan item 0) question, candidate properties, queries, seeds, screening rules, extraction form
     deep_research_prompt.md          the exact prompt both models got
-    synthesis.md                     merged verdict per property, NEW properties, by-product A, run disagreements — the evidence column for design/safety_challenges.md
+    synthesis.md                     merged verdict per property, NEW properties, by-product A, run disagreements — the evidence column for design/constrained_challenges.md
+    data_attribution_reading.md      (goal 3) Giuseppe's reading: TracIn, Hu et al. local attribution, lookahead + replay-LOO, RFT-Inf, PIToD, influence functions; our cost-target extension and three experiments
     runs/{claude,chatgpt}/           each run's screening.csv, evidence.csv, by_product_A.csv, synthesis.md, free_text.md
     *-deep-research.md               the raw outputs as pasted
     split_run.py                     raw output → runs/<model>/ files
     verify_references.py             resolves every paper_id (Semantic Scholar / arXiv / Crossref) and compares titles; fabricated ids and real-but-wrong ids both fail
   design/
-    safety_challenges.md             (plan item 1) the four situations as distributions over Ω on safe_goal_point
-    context_observation.md           (plan item 5) told vs infer: decision and reasons
+    prioritized_level_replay.md      (plan 1) PLR as a ContextDistribution: score, binning of a continuous Ω, replay mix          [to write]
+    goal_point_ood.md                (plan 2) the out-of-distribution context space for goal-point, and why those values        [to write]
+    constrained_challenges.md        (goal 1, later) TMA's challenges with a constraint, plus the one the constraint adds; each as a distribution over Ω   [to write]
+    skill_probes.md                  (goal 2, later) probe subspaces of Ω where one skill is needed; skill-acquisition curves against q̂   [to write]
+    data_attribution.md              (goal 3, later) the cost-target attribution: where the gradient is taken, which checkpoint, how records carry their context   [to write]
+    context_observation.md           (later) told vs infer: decision and reasons   [to write]
     contexts_package.md              how training/contexts works and how it is wired into the trainer
     intended_vs_realised_curriculum.md   why q ≠ q̂, and why both are reported
     training_round.md                why one compiled call is one training step
