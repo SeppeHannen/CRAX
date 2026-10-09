@@ -137,6 +137,7 @@ def main():
             config.context_distribution,
             config.deployment_distribution,
             num_timesteps=int(config.num_timesteps),
+            num_envs=config.num_envs,
             batch_size=config.batch_size,
             unroll_length=config.unroll_length,
             num_minibatches=config.num_minibatches,

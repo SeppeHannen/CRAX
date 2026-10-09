@@ -43,15 +43,19 @@ VELOCITY_ANT_KEYS: List[str] = [
     ],
     *[f"evaluation/{d}/{name}" for d in ("deployment", "uniform") for name in ("avg_episode_length", "std_episode_length", "epoch_eval_time", "sps", "walltime")],
     *[f"training/{name}" for name in ("cost_v_loss", "cost_violation", "entropy_loss", "lambda_lagr", "mean_cost", "policy_loss", "sps", "total_loss", "v_loss", "walltime")],
-    "training_curriculum/experienced/velocity_threshold",
-    "training_curriculum/experienced/velocity_threshold/mean",
-    "training_curriculum/experienced/velocity_threshold/std",
-    "training_curriculum/sampled/velocity_threshold",
-    "training_curriculum/sampled/velocity_threshold/mean",
-    "training_curriculum/sampled/velocity_threshold/std",
+    *[
+        f"training_curriculum/{name}/velocity_threshold{suffix}"
+        for name in ("intended", "sampled", "experienced")
+        for suffix in ("", "/mean", "/std")
+    ],
     "training_curriculum/episode_length/velocity_threshold",
-    "training_curriculum/intended/context/velocity_threshold",
-    "training_curriculum/intended/stage",
+    "training_curriculum/value_loss/velocity_threshold",
+    "training_curriculum/distribution/stage",  # staged
+    *[  # PLR
+        f"training_curriculum/distribution/{name}"
+        for name in ("replay_probability", "buffer_occupancy", "score/mean", "score/max", "staleness/mean",
+                     "replay_mass/top_10", "replay_mass/top_100")
+    ],
     "training_curriculum/num_completed_episodes",
     "training_curriculum/num_transitions",
     # reported by the performance tracker through the same progress callback
@@ -177,7 +181,7 @@ def test_mechanism_merges_sampled_experienced_intended_means_into_one_panel():
     assert mean_context.series == (
         "training_curriculum/experienced/velocity_threshold/mean",
         "training_curriculum/sampled/velocity_threshold/mean",
-        "training_curriculum/intended/context/velocity_threshold",
+        "training_curriculum/intended/velocity_threshold/mean",
     )
     assert not any("training_curriculum/experienced/velocity_threshold" == key for plot in plots for key in plot.series), "histograms are heatmaps, not line panels"
 

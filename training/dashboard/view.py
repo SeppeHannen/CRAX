@@ -216,9 +216,9 @@ def _preamble(group: Group, facts: RunFacts) -> str:
             f"**Population.** Each point summarises the round's own training data — all of its transitions, or the "
             f"training episodes that ended in it — collected under the contexts the training distribution drew and "
             f"with exploration noise. These values are therefore not comparable to the Verdict section's.\n\n"
-            f"**Heatmaps.** The distributions over Ω of the sampled and experienced contexts, and of episode length "
-            f"per context, are logged as histograms; W&B renders them as heatmaps over rounds in its auto-generated "
-            f"section `training_curriculum`.\n\n{LEGEND}"
+            f"**Heatmaps.** The distributions over Ω of the intended, sampled and experienced contexts, and the "
+            f"episode length and the reward critic's error per context, are logged as histograms; W&B renders them "
+            f"as heatmaps over rounds in its auto-generated section `training_curriculum`.\n\n{LEGEND}"
         )
     if group is Group.TRUST:
         return (

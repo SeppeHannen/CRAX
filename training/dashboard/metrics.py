@@ -35,6 +35,8 @@ import enum
 import re
 from typing import Any, Dict, Mapping, Optional, Tuple
 
+from training.contexts.training_curriculum import NUM_INTENDED_DRAWS
+
 # The names Brax's MuJoCo agents give the terms of their reward (each agent its own subset):
 # the forward term, the per-step upright bonus, the control penalty, the contact penalty.
 # Named here so the registry can drop them all under one reason without naming agents.
@@ -146,18 +148,41 @@ KEPT: Tuple[Metric, ...] = (
     Metric("{evaluation}/episode_cost", "Cost per episode", "cost per episode", Group.VERDICT,
            f"the cost (defined above) summed over one episode, mean over {EVALUATION_POPULATION}."),
     # Mechanism: what the student trained on and how the constraint reacted.
+    Metric("training_curriculum/intended/{dimension}", "Contexts intended (the distribution in force)", "share of draws per bin", Group.MECHANISM,
+           f"heatmap over rounds: the share at each value of {{dimension}} of {NUM_INTENDED_DRAWS} draws from the distribution the "
+           f"round sampled new episodes from — q as the training distribution states it, before any episode has run.", histogram=True),
     Metric("training_curriculum/experienced/{dimension}", "Contexts experienced (per transition)", "share of the round's transitions per bin", Group.MECHANISM,
            "heatmap over rounds: the share of the round's *transitions* whose episode ran at each value of {dimension} (q̂, the realised curriculum).", histogram=True),
     Metric("training_curriculum/sampled/{dimension}", "Contexts sampled (per completed episode)", "share of the round's completed episodes per bin", Group.MECHANISM,
            "heatmap over rounds: the share of the round's *completed episodes* that ran at each value of {dimension} (the empirical q).", histogram=True),
+    Metric("training_curriculum/value_loss/{dimension}", "Value error per value of {dimension}", "mean |reward advantage|", Group.MECHANISM,
+           "heatmap over rounds: the mean |reward advantage| (the L1 error of the reward critic, PLR's score) of the round's "
+           "transitions per value of {dimension} (0 = no transition there). Where the learner's value estimate is most wrong — "
+           "read against *intended* to see whether the curriculum went there.", histogram=True),
     Metric("training_curriculum/experienced/{dimension}/mean", "experienced", "{dimension}", Group.MECHANISM,
            "**experienced** = mean {dimension} over the round's transitions: every step counts once, so contexts with long episodes weigh more — the data the gradient came from.", panel=MEAN_CONTEXT_PANEL),
     Metric("training_curriculum/sampled/{dimension}/mean", "sampled", "{dimension}", Group.MECHANISM,
            "**sampled** = mean {dimension} over the round's completed episodes: every episode counts once — what the training distribution chose. Sampled and experienced are the same contexts counted per episode vs per step; they differ when episode length depends on the context.", panel=MEAN_CONTEXT_PANEL),
-    Metric("training_curriculum/intended/context/{dimension}", "intended", "{dimension}", Group.MECHANISM,
-           "**intended** = the {dimension} a fixed or staged distribution states for the round (absent for uniform).", panel=MEAN_CONTEXT_PANEL),
-    Metric("training_curriculum/intended/stage", "Stage of the staged curriculum", "stage index", Group.MECHANISM,
-           "which stage of a staged curriculum the round sampled from (absent for other distributions)."),
+    Metric("training_curriculum/intended/{dimension}/mean", "intended", "{dimension}", Group.MECHANISM,
+           f"**intended** = mean {{dimension}} over {NUM_INTENDED_DRAWS} draws from the distribution in force during the round — what it "
+           f"would choose, before the lag of episodes ending. Sampled follows intended about one episode later.", panel=MEAN_CONTEXT_PANEL),
+    Metric("training_curriculum/distribution/stage", "Stage of the staged curriculum", "stage index", Group.MECHANISM,
+           "which stage of a staged curriculum the round sampled from."),
+    Metric("training_curriculum/distribution/replay_probability", "PLR: probability of replaying a buffered context", "probability", Group.MECHANISM,
+           "the probability that a new episode replays a context from the buffer rather than drawing a fresh one from "
+           "Uniform(Ω); the method's constant p, 0 only while the buffer is empty."),
+    Metric("training_curriculum/distribution/score/mean", "PLR: mean score in the buffer", "mean |reward advantage|", Group.MECHANISM,
+           "mean over the buffer's contexts of their score (the mean |reward advantage| when each was last trained on). "
+           "Falls as the critic fits the buffered contexts.", panel="PLR: scores in the buffer"),
+    Metric("training_curriculum/distribution/score/max", "PLR: highest score in the buffer", "mean |reward advantage|", Group.MECHANISM,
+           "the highest score in the buffer — the context replay favours most.", panel="PLR: scores in the buffer"),
+    Metric("training_curriculum/distribution/replay_mass/top_10", "top 10 rows", "share of replay probability", Group.MECHANISM,
+           "the share of the replay distribution on its 10 most-replayed contexts (of 1000). How concentrated the "
+           "curriculum is — the heatmaps over one dimension of Ω cannot show this. 0.01 would be uniform over the buffer.",
+           panel="PLR: concentration of the replay distribution"),
+    Metric("training_curriculum/distribution/replay_mass/top_100", "top 100 rows", "share of replay probability", Group.MECHANISM,
+           "the share of the replay distribution on its 100 most-replayed contexts. 0.1 would be uniform over the buffer.",
+           panel="PLR: concentration of the replay distribution"),
     Metric("training/lambda_lagr", "Lagrange multiplier λ", "λ", Group.MECHANISM,
            "PPO-Lagrange's multiplier after the round's update; it grows while the batch's cost per step exceeds the budget per step and shrinks otherwise."),
     Metric("episodic/cost", "Training cost per episode", "cost per episode", Group.MECHANISM,
@@ -176,6 +201,11 @@ KEPT: Tuple[Metric, ...] = (
            f"steps per episode, mean over {EVALUATION_POPULATION}. {EPISODE_LENGTH_READING}"),
     Metric("training_curriculum/num_completed_episodes", "Completed training episodes per round", "episodes", Group.TRUST,
            "how many training episodes ended in the round — the sample size behind *sampled*."),
+    Metric("training_curriculum/distribution/buffer_occupancy", "PLR: buffer occupancy", "fraction of rows filled", Group.TRUST,
+           "the fraction of the buffer that holds a context. Fills over the first rounds."),
+    Metric("training_curriculum/distribution/staleness/mean", "PLR: mean age of the buffer's scores", "rounds", Group.TRUST,
+           "mean over the buffer of how many rounds ago each context's score was set. High = the buffer holds "
+           "contexts that are rarely replayed, so their scores describe an old policy."),
     Metric("performance/epoch_steps_per_second", "Throughput", "environment steps per second", Group.TRUST,
            "environment steps of the round divided by its wall-clock, from the performance tracker."),
     Metric("performance/epoch_compiles", "Substantial compiles per round", "compiled programs ≥ 1 s", Group.TRUST,
@@ -264,6 +294,8 @@ KEPT: Tuple[Metric, ...] = (
            "standard deviation of {dimension} over the round's transitions.", panel=CONTEXT_SPREAD_PANEL),
     Metric("training_curriculum/sampled/{dimension}/std", "sampled", "{dimension}", Group.DETAIL,
            "standard deviation of {dimension} over the round's completed episodes.", panel=CONTEXT_SPREAD_PANEL),
+    Metric("training_curriculum/intended/{dimension}/std", "intended", "{dimension}", Group.DETAIL,
+           f"standard deviation of {{dimension}} over {NUM_INTENDED_DRAWS} draws from the distribution in force (0 for a point mass).", panel=CONTEXT_SPREAD_PANEL),
     Metric("training_curriculum/episode_length/{dimension}", "Mean training episode length per value of {dimension}", "steps", Group.DETAIL,
            "heatmap over rounds: mean length of the round's completed episodes per value of {dimension} (0 = none ended there) — why sampled ≠ experienced.", histogram=True),
     Metric("training_curriculum/num_transitions", "Transitions per round", "transitions", Group.DETAIL,

@@ -63,7 +63,8 @@ def _logged_keys(env_name: str) -> List[str]:
     def zero_policy(_params):
         return lambda observation, key: (jnp.zeros((observation.shape[0], env.action_size)), {})
 
-    evaluator = Evaluator(wrapped, zero_policy, num_eval_envs=NUM_SLOTS, episode_length=EPISODE_LENGTH,
+    evaluation_env = C.wrap_for_context_evaluation(env, C.UniformDistribution(C.suite_contexts(env_name).space), episode_length=EPISODE_LENGTH)
+    evaluator = Evaluator(evaluation_env, zero_policy, num_eval_envs=NUM_SLOTS, episode_length=EPISODE_LENGTH,
                           action_repeat=1, key=jax.random.PRNGKey(1))
     for distribution in (C.DEPLOYMENT_EVALUATION, C.UNIFORM_EVALUATION):
         keys += [_evaluation_metric_name(key, distribution) for key in evaluator.run_evaluation(None, training_metrics={})]

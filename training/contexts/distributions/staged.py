@@ -13,12 +13,12 @@ import jax
 import jax.numpy as jnp
 from flax import struct
 
-from training.contexts.distribution import EpisodeFeedback
+from training.contexts.rollout import RoundRollout
 from training.contexts.space import Contexts, ContextSpace
 
 
 @struct.dataclass
-class StagedParams:
+class StagedParameters:
     stage: jax.Array  # scalar int32, index into the stage table
     round_index: jax.Array  # scalar int32
 
@@ -45,25 +45,18 @@ class StagedContexts:
         switch_rounds = [round(total_rounds * (i + 1) / num_stages) for i in range(num_stages - 1)]
         return cls(space=space, stages=stages, switch_rounds=switch_rounds)
 
-    def initialise(self, key: jax.Array) -> StagedParams:
-        del key
-        return StagedParams(stage=jnp.asarray(0, jnp.int32), round_index=jnp.asarray(0, jnp.int32))
+    def initialise(self) -> StagedParameters:
+        return StagedParameters(stage=jnp.asarray(0, jnp.int32), round_index=jnp.asarray(0, jnp.int32))
 
-    def sample(self, params: StagedParams, key: jax.Array, n: int) -> Contexts:
+    def sample(self, parameters: StagedParameters, key: jax.Array, n: int) -> Contexts:
         del key
-        current = jnp.asarray(self.stages, jnp.float32)[params.stage]
+        current = jnp.asarray(self.stages, jnp.float32)[parameters.stage]
         return jnp.broadcast_to(current, (n, self.space.size))
 
-    def update(self, params: StagedParams, feedback: EpisodeFeedback) -> StagedParams:
-        next_round = feedback.round_index + 1
+    def update(self, parameters: StagedParameters, rollout: RoundRollout) -> StagedParameters:
+        next_round = rollout.round_index + 1
         stage = sum(1 for r in self.switch_rounds if next_round >= r)
-        return StagedParams(stage=jnp.asarray(stage, jnp.int32), round_index=jnp.asarray(next_round, jnp.int32))
+        return StagedParameters(stage=jnp.asarray(stage, jnp.int32), round_index=jnp.asarray(next_round, jnp.int32))
 
-    def log_probability(self, params: StagedParams, contexts: Contexts) -> jax.Array:
-        current = jnp.asarray(self.stages, jnp.float32)[params.stage]
-        match = jnp.all(jnp.isclose(contexts, current, atol=1e-6), axis=-1)
-        return jnp.where(match, 0.0, -jnp.inf)
-
-    def summary(self, params: StagedParams) -> Dict[str, float]:
-        current = self.space.decode(jnp.asarray(self.stages)[int(params.stage)])
-        return {"stage": float(params.stage), **{f"context/{k}": float(v) for k, v in current.items()}}
+    def summary(self, parameters: StagedParameters) -> Dict[str, float]:
+        return {"stage": float(parameters.stage)}

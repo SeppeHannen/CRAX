@@ -127,6 +127,37 @@ def compute_gae(
     return jax.lax.stop_gradient(vs), jax.lax.stop_gradient(advantages)
 
 
+def compute_reward_advantages(
+    params: PPONetworkParams,
+    normalizer_params: Any,
+    data: types.Transition,
+    ppo_network: ppo_networks.PPONetworks,
+    discounting: float,
+    reward_scaling: float,
+    gae_lambda: float,
+) -> jnp.ndarray:
+    """The reward GAE of every transition in ``data`` (leading dimension ``[B, T]``), as
+    ``[B, T]``, under the value function in ``params``.
+
+    The same estimate the PPO-family losses make before normalising, computed once
+    for the whole batch so that a round hook can read it per transition (the losses
+    see shuffled minibatches). Its magnitude is the L1 value loss of PLR.
+    """
+    data = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), data)
+    obs = with_shared_latent(ppo_network, params, normalizer_params, data.observation)
+    baseline = ppo_network.value_network.apply(normalizer_params, params.value, obs)
+    terminal_obs = jax.tree_util.tree_map(lambda x: x[-1], data.next_observation)
+    terminal_obs = with_shared_latent(ppo_network, params, normalizer_params, terminal_obs)
+    bootstrap_value = ppo_network.value_network.apply(normalizer_params, params.value, terminal_obs)
+    truncation = data.extras['state_extras']['truncation']
+    termination = (1 - data.discount) * (1 - truncation)
+    _, advantages = compute_gae(
+        truncation=truncation, termination=termination, rewards=data.reward * reward_scaling,
+        values=baseline, bootstrap_value=bootstrap_value, lambda_=gae_lambda, discount=discounting,
+    )
+    return jnp.swapaxes(advantages, 0, 1)
+
+
 def compute_ppo_loss(
     params: PPONetworkParams,
     normalizer_params: Any,

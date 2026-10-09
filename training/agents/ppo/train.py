@@ -349,8 +349,10 @@ def train(
         Returns initial aux_state value. Used for Lagrange multipliers, PID state, etc.
       round_hook: optional `training.rounds.RoundHook`. When set, one compiled
         call is one training step (a *round*); the hook's `extra_fields` are
-        recorded per transition and handed to `hook.observe` during the round,
-        and `hook.on_round_end` runs on the host after every round and may edit
+        recorded per transition and handed to `hook.observe` during the round
+        together with the round's `LearningSignals` (the reward advantage of
+        every transition under the pre-update value function), and
+        `hook.on_round_end` runs on the host after every round and may edit
         the environment state for the next one. Evaluations still happen
         `num_evals` times. Incompatible with `num_resets_per_eval > 0`.
       evaluation_wrap_env_fns: optional `name -> wrap_env_fn`. One evaluator per
@@ -648,10 +650,6 @@ def train(
                 data.extras['state_extras']['episode_done'],
                 training_state.env_steps + env_step_per_training_step,
             )
-        if round_hook is not None:
-            # Every transition's recorded `extra_fields`, to the host.
-            with tracker.scope("round_hook_callback"):
-                jax.debug.callback(round_hook.observe, data.extras['state_extras'])
 
         # Update normalization params and normalize observations.
         with tracker.scope("observation_normalizer_update"):
@@ -660,6 +658,19 @@ def train(
                 _remove_pixels(data.observation),
                 pmap_axis_name=pmap_axis_name,
             )
+
+        if round_hook is not None:
+            # Every transition's recorded `extra_fields` and the learner's view of it
+            # (the reward advantage under the parameters SGD starts from), to the host.
+            with tracker.scope("learning_signals"):
+                learning_signals = rounds.LearningSignals(
+                    reward_advantage=ppo_losses.compute_reward_advantages(
+                        training_state.params, normalizer_params, data, ppo_network,
+                        discounting=discounting, reward_scaling=reward_scaling, gae_lambda=gae_lambda,
+                    )
+                )
+            with tracker.scope("round_hook_callback"):
+                jax.debug.callback(round_hook.observe, data.extras['state_extras'], learning_signals)
 
         with tracker.scope("sgd"):
             (optimizer_state, params, _), metrics = jax.lax.scan(

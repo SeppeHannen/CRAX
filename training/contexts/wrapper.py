@@ -6,8 +6,11 @@ stock wrapper never calls ``reset()`` after the first one: it caches the initial
 state per slot and copies it back whenever ``done`` fires, so a slot replays
 the *same* layout for the whole run. This wrapper instead, on every step:
 
-1. draws a fresh context for every slot from the distribution parameters that
-   were handed in for this round (``state.info["distribution_params"]``);
+1. draws a fresh context for every slot from the distribution parameters φ
+   that were handed in for this round (``state.info["distribution_parameters"]``,
+   one value for the whole population — lifted out of the state while the inner,
+   vmapped stack steps, since every array that stack sees must have the slot
+   axis first; see ``DistributionParameters`` in ``distribution.py``);
 2. runs the environment's ``reset()`` for every slot with that context;
 3. keeps the fresh state where ``done`` is set and the stepped state elsewhere
    (``jnp.where``), and likewise keeps the fresh context only for done slots.
@@ -28,11 +31,14 @@ done — that is how per-slot conditionals work on a GPU (see
 the suite's ``reset()``; it is the first thing to measure with
 ``--measure_performance``.
 
-Phase: the first reset gives every slot a random head start on its step
-counter, so the first episodes end at different rounds and the population is
-spread over the episode from then on. Without it, on a suite whose episodes
-always run to the limit, all slots reset together for the whole run. Three
-things follow from spreading, and one does not:
+Phase (**training only**): the first reset gives every slot a random head
+start on its step counter, so the first episodes end at different rounds and
+the population is spread over the episode from then on. Without it, on a suite
+whose episodes always run to the limit, all slots reset together for the whole
+run. An *evaluation* episode must run its full length from step 0, so the
+evaluation stack (:func:`wrap_for_context_evaluation`) never spreads; the two
+stacks differ in nothing else. Three things follow from spreading, and one does
+not:
 
 - every round's PPO batch is a sample of the episode, not one slice of it;
 - a new distribution parameter acts at once: ~``num_slots × steps_per_round /
@@ -60,7 +66,7 @@ PPO-Lagrange read are untouched. The env's ``reset`` is therefore called via
 from __future__ import annotations
 
 import functools
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional
 
 import jax
 import jax.numpy as jnp
@@ -69,11 +75,11 @@ from crax.envs.wrappers.training import EpisodeWrapper, VmapWrapper
 
 from crax.envs.context import CONTEXT_KEY
 
-from training.contexts.distribution import ContextDistribution, Params
+from training.contexts.distribution import ContextDistribution, DistributionParameters
+from training.contexts.rollout import SLOT_INDEX_KEY, TRANSITION_CONTEXT_KEY
 from training.contexts.space import Contexts
 
-TRANSITION_CONTEXT_KEY = "transition_context"
-PARAMS_KEY = "distribution_params"
+DISTRIBUTION_PARAMETERS_KEY = "distribution_parameters"
 RNG_KEY = "context_rng"
 
 
@@ -84,10 +90,14 @@ class ContextualAutoResetWrapper(Wrapper):
     leading axis of every array is the slot axis.
     """
 
-    def __init__(self, env: Env, distribution: ContextDistribution):
+    def __init__(self, env: Env, distribution: ContextDistribution, spread_initial_phase: bool):
+        """``spread_initial_phase``: give each slot a random head start on its step
+        counter at the first reset (module docstring). True for the training
+        population, False wherever every episode must run its full length."""
         super().__init__(env)
         self.distribution = distribution
         self.space = distribution.space
+        self.spread_initial_phase = spread_initial_phase
         # The single-slot env that VmapWrapper batches (adapters included, so
         # fields like `cost` are still added). We vmap its reset ourselves so a
         # per-slot context can travel alongside the per-slot key.
@@ -103,21 +113,24 @@ class ContextualAutoResetWrapper(Wrapper):
         round-0 parameters are attached to the state; the trainer replaces them
         between rounds with :func:`attach_parameters`.
         """
-        params = self.distribution.initialise(rng[0])
-        return self.reset_with_parameters(rng, params)
+        return self.reset_with_parameters(rng, self.distribution.initialise())
 
-    def reset_with_parameters(self, rng: jax.Array, params: Params) -> State:
+    def reset_with_parameters(self, rng: jax.Array, parameters: DistributionParameters) -> State:
         num_slots = rng.shape[0]
         keys = jax.vmap(lambda k: jax.random.split(k, 4))(rng)  # [N, 4, 2]
         sample_key, reset_keys, next_rng, phase_key = keys[0, 0], keys[:, 1], keys[:, 2], keys[0, 3]
-        contexts = self.distribution.sample(params, sample_key, num_slots)
+        contexts = self.distribution.sample(parameters, sample_key, num_slots)
         state = self._reset_in_contexts(reset_keys, contexts)
-        # Spread the slots over the episode: slot i's first episode is cut short by
-        # its offset, after which the population stays desynchronised (module docstring).
-        state.info["steps"] = jax.random.randint(phase_key, (num_slots,), 0, self._episode_length).astype(state.info["steps"].dtype)
+        if self.spread_initial_phase:
+            # Slot i's first episode is cut short by its offset, after which the
+            # population stays desynchronised (module docstring).
+            state.info["steps"] = jax.random.randint(phase_key, (num_slots,), 0, self._episode_length).astype(state.info["steps"].dtype)
         state.info[CONTEXT_KEY] = contexts
         state.info[TRANSITION_CONTEXT_KEY] = contexts
-        state.info[PARAMS_KEY] = _broadcast_params(params, (num_slots,))
+        # Each slot carries its own index so the host can lay the recorded transitions
+        # out per slot without knowing how the trainer orders them (rollout.py).
+        state.info[SLOT_INDEX_KEY] = jnp.arange(num_slots, dtype=jnp.int32)
+        state.info[DISTRIBUTION_PARAMETERS_KEY] = parameters  # one copy per run, not per slot (see `step`)
         state.info[RNG_KEY] = next_rng
         return state
 
@@ -137,15 +150,20 @@ class ContextualAutoResetWrapper(Wrapper):
         if "steps" in state.info:
             steps = state.info["steps"]
             state.info.update(steps=jnp.where(state.done, jnp.zeros_like(steps), steps))
-        state = state.replace(done=jnp.zeros_like(state.done))
+        # Every array in the state has the slot axis first except φ, which is one
+        # value for the whole population (DistributionParameters). VmapWrapper runs
+        # the single-slot step once per row of every array it is given, so φ must
+        # not be in the state it sees. Nothing below this wrapper reads φ.
+        info_for_step = dict(state.info)
+        parameters = info_for_step.pop(DISTRIBUTION_PARAMETERS_KEY)
+        state = state.replace(done=jnp.zeros_like(state.done), info=info_for_step)
         stepped = self.env.step(state, action)
 
         # Fresh contexts + fresh episodes, computed for every slot every step.
         num_slots = stepped.done.shape[0]
         keys = jax.vmap(lambda k: jax.random.split(k, 3))(state.info[RNG_KEY])
         sample_key, reset_keys, next_rng = keys[0, 0], keys[:, 1], keys[:, 2]
-        params = _unbroadcast_params(state.info[PARAMS_KEY])
-        new_contexts = self.distribution.sample(params, sample_key, num_slots)
+        new_contexts = self.distribution.sample(parameters, sample_key, num_slots)
         fresh = self._reset_in_contexts(reset_keys, new_contexts)
 
         done = stepped.done
@@ -174,13 +192,13 @@ class ContextualAutoResetWrapper(Wrapper):
         # before any reset; the slot's context switches where done.
         info[TRANSITION_CONTEXT_KEY] = stepped.info[CONTEXT_KEY]
         info[CONTEXT_KEY] = where_done(new_contexts, stepped.info[CONTEXT_KEY])
-        info[PARAMS_KEY] = state.info[PARAMS_KEY]
+        info[DISTRIBUTION_PARAMETERS_KEY] = parameters
         info[RNG_KEY] = next_rng
         return stepped.replace(pipeline_state=pipeline_state, obs=obs, info=info)
 
 
 _EPISODE_BOOKKEEPING = frozenset({"steps", "truncation", "episode_done", "episode_metrics"})
-_WRAPPER_OWNED = frozenset({CONTEXT_KEY, TRANSITION_CONTEXT_KEY, PARAMS_KEY, RNG_KEY})
+_WRAPPER_OWNED = frozenset({CONTEXT_KEY, TRANSITION_CONTEXT_KEY, SLOT_INDEX_KEY, DISTRIBUTION_PARAMETERS_KEY, RNG_KEY})
 
 
 def _same_structure(a, b) -> bool:
@@ -223,44 +241,57 @@ def _add_episode_fields(state: State, keys: jax.Array) -> State:
     return state
 
 
-def _broadcast_params(params: Params, batch_shape: Tuple[int, ...]) -> Params:
-    return jax.tree_util.tree_map(lambda x: jnp.broadcast_to(x, tuple(batch_shape) + jnp.shape(x)), params)
-
-
-def _unbroadcast_params(params: Params, batch_axes: int = 1) -> Params:
-    return jax.tree_util.tree_map(lambda x: x[(0,) * batch_axes], params)
-
-
 # --------------------------------------------------------------------------- #
 # Host-side helpers
 # --------------------------------------------------------------------------- #
 #
-# Inside the wrapper the leading axis is the slot axis. The trainer's state has
-# one more leading axis (devices, size 1 on a single GPU), so these helpers
-# derive the batch shape from ``state.done`` instead of assuming one axis.
+# Inside the wrapper φ has no batch axis. The trainer's state has one leading
+# axis over devices (size 1 on a single GPU; ``jax.vmap`` / ``pmap`` of the
+# wrapper's reset and step add it to every leaf, φ included), so these helpers
+# add and remove that one axis, derived from ``state.done``.
 
 
-def attach_parameters(state: State, params: Params) -> State:
-    """Hand the distribution parameters for the coming round to the batched state.
+def _device_axes(state: State) -> int:
+    return state.done.ndim - 1  # done is [devices..., num_slots] on the host
 
-    ``params`` is broadcast over every batch axis of the state so all slots
-    sample from the same φ_k. Call between training rounds, after
-    ``distribution.update``. Broadcasting keeps the pytree *structure* identical
-    to what the compiled program was traced with, so no recompile.
+
+def attach_parameters(state: State, parameters: DistributionParameters) -> State:
+    """Hand the distribution parameters for the coming round to the trainer's state.
+
+    Call between training rounds, after ``distribution.update``. ``parameters`` is
+    broadcast over the device axis only, which keeps the pytree *structure and
+    shapes* identical to what the compiled program was traced with, so no
+    recompile.
     """
+    batch_shape = state.done.shape[: _device_axes(state)]
     info = dict(state.info)
-    info[PARAMS_KEY] = _broadcast_params(params, state.done.shape)
+    info[DISTRIBUTION_PARAMETERS_KEY] = jax.tree_util.tree_map(lambda x: jnp.broadcast_to(x, batch_shape + jnp.shape(x)), parameters)
     return state.replace(info=info)
 
 
-def current_parameters(state: State) -> Params:
-    """The (un-batched) parameters currently attached to a batched state."""
-    return _unbroadcast_params(state.info[PARAMS_KEY], batch_axes=state.done.ndim)
+def current_parameters(state: State) -> DistributionParameters:
+    """The parameters currently attached to the trainer's state, without the device axis."""
+    return jax.tree_util.tree_map(lambda x: x[(0,) * _device_axes(state)], state.info[DISTRIBUTION_PARAMETERS_KEY])
 
 
 def current_contexts(state: State) -> Contexts:
     """``[..., num_slots, D]`` contexts of the episodes currently running."""
     return state.info[CONTEXT_KEY]
+
+
+def _wrap_with_contexts(
+    env: Env,
+    distribution: ContextDistribution,
+    episode_length: int,
+    action_repeat: int,
+    randomization_fn: Optional[Callable],
+    spread_initial_phase: bool,
+) -> Wrapper:
+    if randomization_fn is not None:
+        raise NotImplementedError("randomization_fn is not supported with context distributions")
+    env = VmapWrapper(env)
+    env = EpisodeWrapper(env, episode_length, action_repeat)
+    return ContextualAutoResetWrapper(env, distribution, spread_initial_phase=spread_initial_phase)
 
 
 def wrap_for_context_training(
@@ -270,7 +301,7 @@ def wrap_for_context_training(
     action_repeat: int = 1,
     randomization_fn: Optional[Callable] = None,
 ) -> Wrapper:
-    """Training wrapper stack with per-slot contexts.
+    """The **training** stack: per-slot contexts, slots spread over the episode.
 
     Same as ``crax.envs.training.wrap`` with ``ContextualAutoResetWrapper`` in
     place of ``AutoResetWrapper``::
@@ -281,16 +312,25 @@ def wrap_for_context_training(
     accepted for signature compatibility with ``wrap`` but not supported
     together with contexts: contexts are the mechanism for varying the task.
     """
-    if randomization_fn is not None:
-        raise NotImplementedError("randomization_fn is not supported with context distributions")
-    env = VmapWrapper(env)
-    env = EpisodeWrapper(env, episode_length, action_repeat)
-    env = ContextualAutoResetWrapper(env, distribution)
-    return env
+    return _wrap_with_contexts(env, distribution, episode_length, action_repeat, randomization_fn, spread_initial_phase=True)
+
+
+def wrap_for_context_evaluation(
+    env: Env,
+    distribution: ContextDistribution,
+    episode_length: int,
+    action_repeat: int = 1,
+    randomization_fn: Optional[Callable] = None,
+) -> Wrapper:
+    """The **evaluation** stack: the training stack without the phase spread, so
+    every evaluation episode starts at step 0 and runs its full length. The
+    Evaluator sums an episode's reward and cost until its first ``done``; a
+    head start would cut that sum short by the head start."""
+    return _wrap_with_contexts(env, distribution, episode_length, action_repeat, randomization_fn, spread_initial_phase=False)
 
 
 def make_wrap_env_fn(distribution: ContextDistribution) -> Callable[..., Wrapper]:
-    """A ``wrap_env_fn`` for ``train(...)`` that installs this distribution.
+    """A training ``wrap_env_fn`` for ``train(...)`` that installs this distribution.
 
     Every CRAX trainer accepts ``wrap_env_fn(env, episode_length=, action_repeat=,
     randomization_fn=)`` in place of the default ``crax.envs.training.wrap``. This
@@ -299,3 +339,8 @@ def make_wrap_env_fn(distribution: ContextDistribution) -> Callable[..., Wrapper
         train(environment=env, wrap_env_fn=make_wrap_env_fn(distribution), ...)
     """
     return functools.partial(wrap_for_context_training, distribution=distribution)
+
+
+def make_evaluation_wrap_env_fn(distribution: ContextDistribution) -> Callable[..., Wrapper]:
+    """An evaluation ``wrap_env_fn`` for ``train(evaluation_wrap_env_fns={name: ...})``."""
+    return functools.partial(wrap_for_context_evaluation, distribution=distribution)

@@ -5,19 +5,24 @@ Non-adaptive:
 * :class:`FixedContext` — a single context (one difficulty level; the target w).
 * :class:`StagedContexts` — a fixed sequence switched at fixed rounds (the manual curriculum).
 
-Adaptive methods (PLR-style replay, learnability, …) go here as further modules.
+Adaptive:
+* :class:`PrioritizedLevelReplay` — PLR (Jiang et al. 2021) in its unbounded-level form:
+  a buffer of contexts scored by L1 value loss, replayed by rank and staleness
+  (``docs/acl/design/prioritized_level_replay.md``).
 """
 
-from training.contexts.distributions.fixed import FixedContext, FixedParams
-from training.contexts.distributions.staged import StagedContexts, StagedParams
-from training.contexts.distributions.uniform import UniformDistribution, UniformParams, uniform_log_density
+from training.contexts.distributions.fixed import FixedContext, FixedParameters
+from training.contexts.distributions.prioritized_level_replay import PrioritizedLevelReplay, PrioritizedLevelReplayParameters
+from training.contexts.distributions.staged import StagedContexts, StagedParameters
+from training.contexts.distributions.uniform import UniformDistribution, UniformParameters
 
 __all__ = [
     "FixedContext",
-    "FixedParams",
+    "FixedParameters",
+    "PrioritizedLevelReplay",
+    "PrioritizedLevelReplayParameters",
     "StagedContexts",
-    "StagedParams",
+    "StagedParameters",
     "UniformDistribution",
-    "UniformParams",
-    "uniform_log_density",
+    "UniformParameters",
 ]

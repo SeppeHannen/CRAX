@@ -21,11 +21,12 @@ context and a *fresh* episode (new context, new layout) whenever it terminates.
 See ``docs/acl/design/`` for the constraints this design follows.
 """
 
-from training.contexts.distribution import ContextDistribution, EpisodeFeedback, Params
-from training.contexts.distributions import FixedContext, StagedContexts, UniformDistribution
+from training.contexts.distribution import ContextDistribution, DistributionParameters
+from training.contexts.distributions import FixedContext, PrioritizedLevelReplay, StagedContexts, UniformDistribution
 from training.contexts.training_curriculum import training_curriculum_metrics
 from training.contexts.registry import SuiteContexts, registered_environments, suite_contexts
-from training.contexts.rollout import RoundRollout, completed_episodes
+from training.contexts.episodes import EpisodeTracker
+from training.contexts.rollout import SLOT_INDEX_KEY, TRANSITION_CONTEXT_KEY, CompletedEpisodes, RoundRollout, Transitions
 from training.contexts.round_hook import ContextRoundHook
 from training.contexts.setup import (
     DEPLOYMENT_EVALUATION,
@@ -39,12 +40,13 @@ from training.contexts.setup import (
 from training.contexts.space import Context, Contexts, ContextSpace, Dimension, box
 from training.contexts.wrapper import (
     CONTEXT_KEY,
-    TRANSITION_CONTEXT_KEY,
     ContextualAutoResetWrapper,
     attach_parameters,
     current_contexts,
     current_parameters,
+    make_evaluation_wrap_env_fn,
     make_wrap_env_fn,
+    wrap_for_context_evaluation,
     wrap_for_context_training,
 )
 
@@ -52,6 +54,7 @@ __all__ = [
     "CONTEXT_KEY",
     "DEPLOYMENT_EVALUATION",
     "NO_DISTRIBUTION",
+    "SLOT_INDEX_KEY",
     "TRANSITION_CONTEXT_KEY",
     "UNIFORM_EVALUATION",
     "Context",
@@ -61,25 +64,29 @@ __all__ = [
     "ContextTrainingSetup",
     "Contexts",
     "ContextualAutoResetWrapper",
+    "CompletedEpisodes",
     "Dimension",
-    "EpisodeFeedback",
+    "EpisodeTracker",
     "FixedContext",
-    "Params",
+    "DistributionParameters",
+    "PrioritizedLevelReplay",
     "RoundRollout",
     "StagedContexts",
     "SuiteContexts",
+    "Transitions",
     "UniformDistribution",
     "attach_parameters",
     "box",
-    "completed_episodes",
     "context_training_setup",
     "current_contexts",
     "current_parameters",
+    "make_evaluation_wrap_env_fn",
     "make_wrap_env_fn",
     "parse_distribution",
     "training_curriculum_metrics",
     "registered_environments",
     "spec_label",
     "suite_contexts",
+    "wrap_for_context_evaluation",
     "wrap_for_context_training",
 ]

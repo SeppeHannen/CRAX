@@ -9,50 +9,40 @@ Two halves, matching the two places code can run (see
 ``docs/acl/design/training_round.md``):
 
 * :meth:`sample` is **JAX** and runs *inside* the compiled training step,
-  every time a slot's episode ends. It may only use ``params`` and a PRNG key.
-  ``params`` are frozen for the whole round.
-* :meth:`update` runs on the **host between rounds**, with the completed
-  episodes of the round as feedback. It may do anything (Python, NumPy, call
-  the policy) and returns the parameters for the next round.
+  every time a slot's episode ends. It may only use ``parameters`` and a PRNG key.
+  ``parameters`` are frozen for the whole round.
+* :meth:`update` runs on the **host between rounds**, with the round's
+  transitions as feedback (:class:`~training.contexts.rollout.RoundRollout`:
+  every transition's context, the episode bookkeeping and the learner's reward
+  advantage). It may do anything (Python, NumPy) and returns the parameters for
+  the next round.
 
-Uniform sampling is the degenerate case: ``update`` returns ``params`` unchanged.
+Uniform sampling is the degenerate case: ``update`` returns ``parameters`` unchanged.
 """
 from __future__ import annotations
 
-import dataclasses
-from typing import Any, Dict, Protocol, Union, runtime_checkable
+from typing import Any, Dict, Protocol, runtime_checkable
 
 import jax
-import numpy as np
 
+from training.contexts.rollout import RoundRollout
 from training.contexts.space import ContextSpace, Contexts
 
-Params = Any  # a pytree of jax arrays; checkpointed as part of the run state
-HostArray = Union[np.ndarray, jax.Array]  # feedback lives on the host; NumPy in practice
+DistributionParameters = Any
+"""φ: everything a distribution needs to ``sample`` from, as a pytree of JAX arrays.
 
+The wrapper carries φ inside the environment state between rounds; the host
+replaces it after every ``update``. Three things follow for how a method lays
+φ out:
 
-@dataclasses.dataclass(frozen=True)
-class EpisodeFeedback:
-    """Outcomes of the episodes that *completed* during one training round.
-
-    All arrays have a leading axis of length ``num_completed``. This is what a
-    distribution learns from; it deliberately contains episodic aggregates only.
-    Built on the host by :func:`training.contexts.rollout.completed_episodes`.
-    """
-
-    contexts: HostArray  # [N, D] the context each episode was run in
-    returns: HostArray  # [N]    undiscounted episodic return R(τ)
-    costs: HostArray  # [N]      undiscounted episodic cost C(τ)
-    lengths: HostArray  # [N]    steps until termination or truncation
-    round_index: int
-
-    @property
-    def num_completed(self) -> int:
-        return int(self.contexts.shape[0])
-
-    def safe(self, cost_threshold: float) -> HostArray:
-        """Boolean ``[N]``: episode satisfied the cost budget."""
-        return self.costs <= cost_threshold
+* **Shapes are fixed for the whole run.** The training round is compiled once;
+  a φ whose shapes change forces a recompile (~50 s). A buffer is a fixed number
+  of rows plus an ``occupied`` mask, never a growing array.
+* **No slot axis.** φ is one value for the whole population, not one per
+  environment; the wrapper hands it to ``sample`` once per step. Every other
+  array in the state has the slot axis first, which is why the wrapper lifts φ
+  out before the vmapped stack steps.
+"""
 
 
 @runtime_checkable
@@ -61,21 +51,16 @@ class ContextDistribution(Protocol):
 
     space: ContextSpace
 
-    def initialise(self, key: jax.Array) -> Params:
+    def initialise(self) -> DistributionParameters:
         """Parameters φ_0 before any training."""
 
-    def sample(self, params: Params, key: jax.Array, n: int) -> Contexts:
+    def sample(self, parameters: DistributionParameters, key: jax.Array, n: int) -> Contexts:
         """Draw ``n`` contexts. JAX; called inside the compiled training step."""
 
-    def update(self, params: Params, feedback: EpisodeFeedback) -> Params:
-        """Host-side update from the round's completed episodes -> φ_{k+1}."""
+    def update(self, parameters: DistributionParameters, rollout: RoundRollout) -> DistributionParameters:
+        """Host-side update from the round's transitions -> φ_{k+1}."""
 
-    def log_probability(self, params: Params, contexts: Contexts) -> jax.Array:
-        """log q(ω) for each row of ``contexts``, shape ``[N]``.
-
-        Used for importance weights and for comparing the intended distribution
-        with the realised one. May return ``-inf`` for contexts outside support.
-        """
-
-    def summary(self, params: Params) -> Dict[str, float]:
-        """Low-dimensional scalars describing φ, for logging each round."""
+    def summary(self, parameters: DistributionParameters) -> Dict[str, float]:
+        """Low-dimensional scalars describing φ, for logging each round
+        (``training_curriculum/distribution/<key>``). Empty when φ has nothing
+        to say beyond what sampling it shows."""

@@ -6,6 +6,8 @@ A distribution is written as a short spec, the same grammar for both flags:
     uniform            r, Uniform(Ω)
     level:3            point mass on the suite's difficulty level 3
     staged:1,2,3       CRAX's manual curriculum: level 1, then 2, then 3, equal split of the rounds
+    plr                Prioritized Level Replay with the defaults of its class (an adaptive
+                       curriculum; docs/acl/design/prioritized_level_replay.md)
 
 The training distribution is what the student learns on. The deployment
 distribution w is what it is *for*; the policy is evaluated on w and, always,
@@ -20,15 +22,15 @@ import math
 from typing import Any, Dict, Optional
 
 from training.contexts.distribution import ContextDistribution
-from training.contexts.distributions import FixedContext, StagedContexts, UniformDistribution
+from training.contexts.distributions import FixedContext, PrioritizedLevelReplay, StagedContexts, UniformDistribution
 from training.contexts.registry import SuiteContexts, suite_contexts
 from training.contexts.round_hook import ContextRoundHook
-from training.contexts.wrapper import make_wrap_env_fn
+from training.contexts.wrapper import make_evaluation_wrap_env_fn, make_wrap_env_fn
 
 NO_DISTRIBUTION = "none"
 DEPLOYMENT_EVALUATION = "deployment"
 UNIFORM_EVALUATION = "uniform"
-SPEC_HELP = "'uniform', 'level:<n>', or 'staged:<n>,<n>,...'"
+SPEC_HELP = "'uniform', 'level:<n>', 'staged:<n>,<n>,...', or 'plr'"
 
 
 def parse_distribution(spec: str, suite: SuiteContexts, total_rounds: int) -> ContextDistribution:
@@ -36,6 +38,8 @@ def parse_distribution(spec: str, suite: SuiteContexts, total_rounds: int) -> Co
     kind, _, argument = spec.partition(":")
     if kind == "uniform" and not argument:
         return UniformDistribution(suite.space)
+    if kind == "plr" and not argument:
+        return PrioritizedLevelReplay(suite.space)
     if kind == "level" and argument:
         return FixedContext(suite.space, suite.level(int(argument)))
     if kind == "staged" and argument:
@@ -61,6 +65,7 @@ class ContextTrainingSetup:
     deployment_spec: str
     distribution: ContextDistribution
     deployment: ContextDistribution
+    num_envs: int
     steps_per_round: int
     total_rounds: int
 
@@ -73,10 +78,10 @@ class ContextTrainingSetup:
         """
         return {
             "wrap_env_fn": make_wrap_env_fn(self.distribution),
-            "round_hook": ContextRoundHook(self.distribution),
+            "round_hook": ContextRoundHook(self.distribution, num_slots=self.num_envs),
             "evaluation_wrap_env_fns": {
-                DEPLOYMENT_EVALUATION: make_wrap_env_fn(self.deployment),
-                UNIFORM_EVALUATION: make_wrap_env_fn(UniformDistribution(self.suite.space)),
+                DEPLOYMENT_EVALUATION: make_evaluation_wrap_env_fn(self.deployment),
+                UNIFORM_EVALUATION: make_evaluation_wrap_env_fn(UniformDistribution(self.suite.space)),
             },
             "training_metrics_steps": self.steps_per_round,
         }
@@ -112,6 +117,7 @@ def context_training_setup(
     deployment_spec: str,
     *,
     num_timesteps: int,
+    num_envs: int,
     batch_size: int,
     unroll_length: int,
     num_minibatches: int,
@@ -129,6 +135,7 @@ def context_training_setup(
         deployment_spec=deployment_spec,
         distribution=parse_distribution(training_spec, suite, total_rounds),
         deployment=parse_distribution(deployment_spec, suite, total_rounds),
+        num_envs=num_envs,
         steps_per_round=steps_per_round,
         total_rounds=total_rounds,
     )

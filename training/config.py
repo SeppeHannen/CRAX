@@ -109,11 +109,12 @@ def add_shared_training_args(parser: argparse.ArgumentParser) -> argparse.Argume
     # With a training distribution other than 'none', every parallel slot gets
     # its own context per episode, one compiled call is one training round, and
     # the policy is evaluated on the deployment distribution w and on Uniform(Ω).
-    # Spec grammar (both flags): 'uniform' | 'level:<n>' | 'staged:<n>,<n>,...'
+    # Spec grammar (both flags): 'uniform' | 'level:<n>' | 'staged:<n>,<n>,...' | 'plr'
     parser.add_argument("--context_distribution", type=str, default="none",
                         help="Distribution the student trains on. 'none' (default) = stock CRAX at --difficulty. "
                              "'uniform' = Uniform(Ω); 'level:3' = that difficulty level only; "
-                             "'staged:1,2,3' = manual curriculum, equal split of the rounds.")
+                             "'staged:1,2,3' = manual curriculum, equal split of the rounds; "
+                             "'plr' = Prioritized Level Replay (docs/acl/design/prioritized_level_replay.md).")
     parser.add_argument("--deployment_distribution", type=str, default="level:3",
                         help="Distribution w the policy is for; evaluated on it (eval/deployment/*) next to "
                              "Uniform(Ω) (eval/uniform/*). Same grammar as --context_distribution.")
