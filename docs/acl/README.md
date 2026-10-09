@@ -103,8 +103,7 @@ In this order (Giuseppe, 2026-10-08).
 1. **Prioritized Level Replay** (Jiang et al. 2021) as the first curriculum
    method. Chosen because it needs no target distribution, no mastery
    threshold and no context observation. **Code reviewed and committed
-   2026-10-09** (`docs/acl/PR_prioritized_level_replay.md` is the call-tree
-   walk of the change): `design/prioritized_level_replay.md`;
+   2026-10-09** (242f0a6): `design/prioritized_level_replay.md`;
    `--context_distribution plr`; the trainer ships every transition's reward
    advantage to the round hook (`LearningSignals`); new
    `training_curriculum/{intended,value_loss}/<d>` heatmaps and
@@ -532,7 +531,6 @@ docs/acl/
     *-deep-research.md               the raw outputs as pasted
     split_run.py                     raw output → runs/<model>/ files
     verify_references.py             resolves every paper_id (Semantic Scholar / arXiv / Crossref) and compares titles; fabricated ids and real-but-wrong ids both fail
-  PR_prioritized_level_replay.md     (plan 1) the review walk of the PLR change: a call tree from the CLI flag to the dashboard; the template for PR write-ups (AGENTS.md)
   design/
     prioritized_level_replay.md      (plan 1) PLR as a ContextDistribution: what the paper does, what changes on a continuous Ω with frozen φ, diagnostics
     goal_point_ood.md                (plan 2) the out-of-distribution context space for goal-point, and why those values        [to write]

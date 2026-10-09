@@ -74,7 +74,8 @@ Every change must raise the average quality of the repository. Concretely:
 ## Pull-request write-ups
 
 Giuseppe reviews by following the data through the code, not file by file.
-`docs/acl/PR_prioritized_level_replay.md` is the template. Its spine is **the
+The write-up lives with the PR, not in the repository (the PLR review of
+2026-10-09, commit 242f0a6, was the first in this form). Its spine is **the
 walk**: a call tree from the entry point (a CLI flag) to the last effect (a
 point on the dashboard), through changed and unchanged files alike. Rules,
 from program-comprehension and code-review research (Letovsky; Pennington;
