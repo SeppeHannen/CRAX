@@ -102,12 +102,22 @@ In this order (Giuseppe, 2026-10-08).
 
 1. **Prioritized Level Replay** (Jiang et al. 2021) as the first curriculum
    method. Chosen because it needs no target distribution, no mastery
-   threshold and no context observation. One `ContextDistribution`: Φ is a
-   score per visited context, `update` reads the round's per-context value
-   loss from the round hook, `sample` mixes replay with fresh draws. Design
-   first (`design/prioritized_level_replay.md`): which score, how a continuous
-   Ω becomes "levels", the replay mix. Check: trains on goal-point at least as
-   fast as uniform, and q̂ moves where the value loss says.
+   threshold and no context observation. **Code reviewed and committed
+   2026-10-09** (`docs/acl/PR_prioritized_level_replay.md` is the call-tree
+   walk of the change): `design/prioritized_level_replay.md`;
+   `--context_distribution plr`; the trainer ships every transition's reward
+   advantage to the round hook (`LearningSignals`); new
+   `training_curriculum/{intended,value_loss}/<d>` heatmaps and
+   `distribution/*` scalars on every arm. GPU smoke on goal-point passed
+   (zero recompiles, 85 k SPS, buffer dynamics as designed). Check: trains on
+   goal-point at least as fast as uniform, and q̂ moves where the value loss
+   says — being answered by the run below.
+   **Done (2026-10-09):**
+   `experiments/2026-10-08_goal_point_uniform_staged_plr_500M.md`, plan item
+   3's three arms at 500 M (without the OOD target, plan item 2, not built
+   yet); W&B group `goal_point_uniform_staged_plr_500M_v2`. Result in *Results
+   so far*. Consequence for the plan: PPO-PID first — every arm's end state is
+   set by the Lagrange integrator; then PLR with the cost-critic score.
 2. **An out-of-distribution context space for goal-point**
    (`design/goal_point_ood.md`): contexts outside the training Ω, as values on
    the existing dimensions (counts above the cap, goal size below the smallest
@@ -258,10 +268,31 @@ every step — both stock).
 
 ## Results so far
 
+**Goal point, uniform vs staged vs PLR, 500 M steps, one seed**
+(`experiments/2026-10-08_goal_point_uniform_staged_plr_500M.md`). PLR ends
+best on both targets (level 3: 15.3 return / 73 cost; Ω: 21.3 / 17, under
+budget at 20 of 21 evaluations) against uniform (12.5 / 108; 16.0 / 26) and a
+staged arm whose policy is motionless from round 470 (2.7 / 22 — a budget met
+by doing nothing). No moving policy is under budget on level 3; every arm is
+on budget on its own $q$ — the framing statement, a third time. **The Lagrange
+integrator sets every end state**: staged's λ climbs 0.3 → 40 after the
+level-2 switch (the velocity collapse on a suite whose student sees its
+context — λ alone suffices); uniform's λ hits 0 at round 388, then rises to 22
+and is still rising at 500 M, costing a third of the return at round 546;
+PLR's λ peaks at 10.5 while its mass shifts to denser layouts, then rests at 0
+for 120 rounds with cost under budget. PLR tilted every hazard count 6–14 %
+towards level 3 and held it, on a reward-critic score that varies only 1.6×
+across its buffer. Next: PPO-PID, then PLR on the cost critic.
+
 **Goal point, staged vs uniform vs level 3, 100 M steps, one seed**
-(`experiments/2026-10-06_goal_point_staged_vs_uniform.md`). On level 3 after
-100 M: staged 14.5 reward / 135 cost, uniform 16.9 / 138, level:3 5.1 / 22
-(budget 25). Staged does not collapse at either switch — reward holds — but
+(`experiments/2026-10-06_goal_point_staged_vs_uniform.md`). **Its evaluation
+numbers are about half the true values** (Known defects, first item; found
+2026-10-08): on level 3 after 100 M, as logged, staged 14.5 reward / 135 cost,
+uniform 16.9 / 138, level:3 5.1 / 22 (budget 25) — so `level:3` was in truth
+at roughly twice the budget, not under it, and the other two at ~10×. The
+qualitative reading survives, the budget comparison does not; the re-run is
+`experiments/2026-10-08_goal_point_uniform_staged_plr_500M.md`. Staged does not
+collapse at either switch — reward holds — but
 learns to drive through hazards on level 1 (λ → 0), and after the switches λ
 climbs from zero too slowly to ever enforce the budget (75 and rising at the
 end). Only training on the deployment distribution is safe; uniform and staged
@@ -337,6 +368,19 @@ is the mechanism, seen twice.
 
 ## Known defects
 
+- **Every context-run evaluation between 2026-10-06 and 2026-10-08 reported
+  about half an episode** (fixed 2026-10-08, uncommitted). The slot
+  desynchronisation added on 2026-10-06 gives each slot a random head start on
+  its step counter at the first reset; the evaluation environment was built
+  through the same stack, so every evaluation episode was cut off after
+  `1000 − head start` steps while `avg_episode_length` read 1000. Affects
+  `evaluation/*` in the 2026-10-06 goal-point experiment and the first launch
+  of the 2026-10-08 one; training-side metrics (`episodic/*`, `training/*`,
+  `training_curriculum/*`) and the velocity-ant results (pre-date the spread)
+  are unaffected. The evaluation stack (`wrap_for_context_evaluation`) now
+  never spreads; `tests/test_contexts.py::test_evaluation_episodes_start_at_step_zero_and_are_summed_whole`
+  holds the Evaluator to a step-0 start.
+
 - **The goal-point baseline (2026-10-06) ran with synchronised slots**: 80
   env steps per slot per round, 1000-step episodes, no early termination → all
   8192 slots reset together every 12.5 rounds. Every `training/*` curve has a
@@ -359,6 +403,14 @@ is the mechanism, seen twice.
 - `safe_push`: 1000-step episodes with no early termination, so almost no
   training episode completes per round at small budgets and sampled /
   experienced stay at the initial stage. Expected, not a bug.
+- **The stock `MetricsLogger` drops `episodic/*` for some rounds** (found
+  2026-10-09, not fixed — upstream). Its two `jax.debug.callback`s
+  (`update_env_metrics`, `update_train_metrics`) run on different threads and
+  share unlocked state; when the second flushes while the first is still
+  appending, that round's episodic metrics are lost (seen: 3 of 19 keys
+  logged at one round, the rest carried into the next). Our
+  `training_curriculum/*` metrics are not affected (one callback, host-side
+  completion). Tests must not compare the two paths' outputs.
 
 ## To raise with Tristan
 
@@ -403,6 +455,15 @@ Upstream bugs found, and places where our changes alter the benchmark:
     and `episodic/*` is only ever logged at the common reset. Affects the
     paper's baselines on those suites; the fix is a random initial step offset
     per slot.
+15. `training/logger.py` `MetricsLogger` has a data race: its two
+    `jax.debug.callback`s run concurrently and share unlocked buffers, so
+    `episodic/*` is silently dropped on some rounds (Known defects). A
+    `threading.Lock` around the three `update_*` bodies fixes it.
+16. The compiled training round's only per-round input is `env_state`, so a
+    curriculum's parameters φ travel in `env_state.info` and the context
+    wrapper has to lift them out before the vmapped stack (they have no slot
+    axis). A per-round-parameters argument on `training_step` /
+    `generate_unroll` would make this by construction.
 
 ## Vocabulary
 
@@ -427,7 +488,7 @@ Upstream bugs found, and places where our changes alter the benchmark:
   --measure_performance --skip_rollout --skip_video --store_model false \
   --wandb_group <experiment_group>
 
-# uniform: same, with --context_distribution uniform; fixed level: level:3
+# uniform: same, with --context_distribution uniform; fixed level: level:3; PLR: plr
 ```
 
 Runs in one `--wandb_group` are one experiment and must share every flag but
@@ -435,8 +496,9 @@ the distribution; the first run creates the group's W&B view.
 
 Every context run is evaluated on the deployment distribution
 (`evaluation/deployment/*`, level 3 by default) and on uniform (`evaluation/uniform/*`),
-and logs the sampled and experienced context distribution every round
-(`training_curriculum/*`, as W&B histograms). What is logged and what each key
+and logs the intended, sampled and experienced context distribution and the
+reward critic's error per context every round (`training_curriculum/*`, as W&B
+histograms). What is logged and what each key
 means is `training/dashboard/metrics.py`; the W&B view for an experiment group:
 
 ```bash
@@ -470,8 +532,9 @@ docs/acl/
     *-deep-research.md               the raw outputs as pasted
     split_run.py                     raw output → runs/<model>/ files
     verify_references.py             resolves every paper_id (Semantic Scholar / arXiv / Crossref) and compares titles; fabricated ids and real-but-wrong ids both fail
+  PR_prioritized_level_replay.md     (plan 1) the review walk of the PLR change: a call tree from the CLI flag to the dashboard; the template for PR write-ups (AGENTS.md)
   design/
-    prioritized_level_replay.md      (plan 1) PLR as a ContextDistribution: score, binning of a continuous Ω, replay mix          [to write]
+    prioritized_level_replay.md      (plan 1) PLR as a ContextDistribution: what the paper does, what changes on a continuous Ω with frozen φ, diagnostics
     goal_point_ood.md                (plan 2) the out-of-distribution context space for goal-point, and why those values        [to write]
     constrained_challenges.md        (goal 1, later) TMA's challenges with a constraint, plus the one the constraint adds; each as a distribution over Ω   [to write]
     skill_probes.md                  (goal 2, later) probe subspaces of Ω where one skill is needed; skill-acquisition curves against q̂   [to write]

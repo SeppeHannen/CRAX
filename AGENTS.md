@@ -63,6 +63,47 @@ Every change must raise the average quality of the repository. Concretely:
   on a sentence like "every metric passes the registry", write the sentence
   down and check the whole repository against it before calling the work
   done. Most of our real bugs are a true sentence with one exception.
+- **Label data at the source.** If a consumer needs a fact the producer has
+  (which slot a row came from, which round a value belongs to), the producer
+  writes it into the data. Recovering it downstream from layout, order or
+  arithmetic is an assumption about someone else's code.
 - **One module per concept** (e.g. one file per context distribution); no
   utility grab-bags.
 - Tests are CPU-only and assert behaviour, not implementation.
+
+## Pull-request write-ups
+
+Giuseppe reviews by following the data through the code, not file by file.
+`docs/acl/PR_prioritized_level_replay.md` is the template. Its spine is **the
+walk**: a call tree from the entry point (a CLI flag) to the last effect (a
+point on the dashboard), through changed and unchanged files alike. Rules,
+from program-comprehension and code-review research (Letovsky; Pennington;
+Baum et al.; Knuth's literate programming):
+
+- **Call tree, not file list.** Each entry is `file:line — what the line
+  does`; what it calls is indented beneath it. "Where does this change enter
+  the flow" is always the parent entry.
+- **One sentence, one model.** Control flow ("line N calls X") and meaning
+  ("X is where the score is computed") in separate sentences, never mixed.
+- **Beacon first.** Each phase opens with one sentence saying what the phase
+  does for the flow, before any file name.
+- **Tags on the callee**: `[changed]` (what, in one line), `[new]`,
+  `[unchanged]` (one or two sentences that connect the changed parts; nothing
+  to review). A reader of only the `[changed]` entries must understand the
+  change.
+- **Verified line numbers** (grep them; never from memory), a verification
+  table at the top, per-file detail after the walk, "open, not in this
+  change" at the end.
+- **One logical change per PR.** If the walk has more than one spine, the PR
+  should have been split; say so before letting it grow, not after.
+
+## Experiment write-ups
+
+`docs/acl/experiments/2026-10-08_goal_point_uniform_staged_plr_500M.md` is the
+template: question → setup (one table, the exact command) → results as two or
+three figures, each followed by a few bullets saying what they show → what
+this changes in the plan. About a hundred lines. Figures come from a kept,
+typed script in `scripts/analysis/` and live in `figures/<experiment>/`. The
+document states the result, not how it was arrived at: no superseded runs, no
+narration of the analysis; a bug found on the way goes in the README's *Known
+defects*. Say what a number means (a motionless policy "meets the budget").
