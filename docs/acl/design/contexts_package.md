@@ -17,9 +17,10 @@ training/contexts/
   distributions/prioritized_level_replay.py  PLR (design/prioritized_level_replay.md)
   registry.py                  suite_contexts(env_name) -> SuiteContexts {space, level_contexts, task}
   wrapper.py                   ContextualAutoResetWrapper; wrap_for_context_{training,evaluation} / make_{,evaluation_}wrap_env_fn; attach_parameters, current_*
-  rollout.py                   RoundRollout = Transitions ([slots, steps] per-slot time series) + CompletedEpisodes (per ended episode, whole-episode value loss)
-  episodes.py                  EpisodeTracker: per-slot partial sums carried across rounds -> CompletedEpisodes
-  training_curriculum.py       the training_curriculum/* metrics: intended (q), sampled, experienced (q̂), value_loss, distribution/*
+  rollout.py                   RoundRollout = Transitions ([slots, steps] per-slot time series; signals: Mapping[Signal, array]) + CompletedEpisodes (per ended episode; statistics: Mapping[EpisodeStatistic, array])
+  statistics.py                Fold protocol (associative ufunc combine, map, finalise), MeanAbsolute, EpisodeStatistic(signal, fold) — what a distribution requires (design/learning_signals.md)
+  episodes.py                  EpisodeEnds (geometry of one round's completed episodes; reduces any [slots, steps] array with any associative ufunc) + EpisodeTracker(statistics) (per-slot carry across rounds -> CompletedEpisodes)
+  training_curriculum.py       the training_curriculum/* metrics: intended (q), sampled, experienced (q̂), <objective>_value_loss, distribution/*
   round_hook.py                ContextRoundHook(RoundHook): store rollout + signals, lay out per slot, close episodes, update φ, attach it, return the round's metrics
   setup.py                     '--context_distribution' / '--deployment_distribution' specs -> train(**kwargs)
 tests/test_contexts.py            wrapper mechanics, round layout, episode tracker, PLR unit tests (CPU, ~40 s)
@@ -40,9 +41,12 @@ forwarded by `ppo_lag` (other PPO-family trainers still need the two lines):
   (which `state.info` keys to record per transition), `observe(rollout,
   learning_signals)` (host, called from one `jax.debug.callback` after the
   normaliser update and before SGD; receives every recorded field as NumPy plus
-  `LearningSignals`, today the reward advantage of every transition under the
-  pre-update value function — computed once per round by
-  `ppo/losses.py: compute_reward_advantages`), `on_round_end(round_index, env_state)`
+  the learning signals, `Mapping[Signal, array]`: the reward, cost and Lagrangian
+  advantage of every transition under the pre-update critics and the round's λ —
+  computed once per round by the agent's own `LearningSignalsFunction`
+  (`ppo_lag/losses.py: compute_learning_signals`), which both PPO-Lagrange and
+  PPO-PID hand the trainer next to their `loss_fn`; the trainer checks the hook's
+  `required_signals` against what it `produces` before compiling), `on_round_end(round_index, env_state)`
   (host, after each compiled call; may return an edited env state). When set,
   the trainer runs the same training steps **one per compiled call** instead of
   all inside one call (`epochs_per_evaluation = num_training_steps_per_epoch;
@@ -83,7 +87,7 @@ is the registry in `training/dashboard/metrics.py`):
 | `training_curriculum/experienced/<d>` | `wandb.Histogram`: one count per *transition* — $\hat q_k$ (which contexts the gradient came from) |
 | `training_curriculum/{intended,sampled,experienced}/<d>/mean`, `/std` | the one-line summaries that overlay across arms and seeds |
 | `training_curriculum/episode_length/<d>` | `wandb.Histogram`: mean completed-episode length per bin — the mechanism behind sampled ≠ experienced |
-| `training_curriculum/value_loss/<d>` | `wandb.Histogram`: mean \|reward advantage\| of the round's transitions per bin — PLR's score as a function of the context, on every arm |
+| `training_curriculum/{reward,cost,lagrangian}_value_loss/<d>` | `wandb.Histogram`: mean \|advantage\| under each objective of the round's transitions per bin — the three PLR scores as functions of the context, on every arm |
 | `training_curriculum/distribution/*` | `distribution.summary(φ_k)`: `stage` (staged); `replay_probability`, `buffer_occupancy`, `score/{mean,max}`, `staleness/mean` (PLR) |
 | `training_curriculum/num_transitions`, `num_completed_episodes` | sample sizes behind the two histograms |
 

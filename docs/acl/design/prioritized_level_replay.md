@@ -236,26 +236,38 @@ tracker's per-slot carries — is still open for every distribution
 ## What the trainer has to provide
 
 The score needs the GAE per transition, which the loss computes per shuffled
-minibatch and never returns. The trainer therefore computes, once per round
-after the normaliser update and before SGD, the reward advantage of every
-transition under the current value function and ships it to the hook next to
+minibatch and never returns. The *agent* therefore computes, once per round
+after the normaliser update and before SGD, the advantage of every transition
+under each objective it estimates, and the trainer ships it to the hook next to
 the recorded state fields:
 
 ```
-RoundHook.observe(rollout_fields, learning_signals: LearningSignals)
-LearningSignals.reward_advantage   [rows, unroll_length], same layout as the recorded fields
+RoundHook.observe(rollout_fields, learning_signals: Mapping[Signal, array])
+Signal.REWARD_ADVANTAGE      GAE of the scaled reward under the reward critic
+Signal.COST_ADVANTAGE        GAE of the cost under the cost critic
+Signal.LAGRANGIAN_ADVANTAGE  A_r − λ A_c, as the policy loss combines them
+                             all [rows, unroll_length], same layout as the recorded fields
 ```
 
-`ppo/losses.py: compute_reward_advantages` is the one function; it calls the
-same `compute_gae` with the same $\gamma$, $\lambda$ and reward scaling as the
-loss, under the round's pre-update policy parameters and the *updated*
-observation normaliser — exactly what the loss's first minibatch sees — so the
-score is the L1 value loss PPO is about to see on its first pass. (With pixel
-augmentation the loss additionally sees translated frames; the score does not.)
-Cost: one value-network forward over the batch, next to the 4 × 32 minibatch
-passes SGD already does. Computed whenever a round hook is set (every
-distribution), so there is one path and the `value_loss/<d>` diagnostic below
-exists on every arm.
+The agent owns this because only it knows its objective and where it keeps
+$\lambda$: `ppo_lag/train.py` and `ppo_pid/train.py` each hand the base trainer
+a `LearningSignalsFunction` (what it *produces*, and how) next to their
+`loss_fn`; the trainer checks the hook's required signals against it before
+compiling (`docs/acl/design/learning_signals.md`). Both call
+`ppo_lag/losses.py: compute_learning_signals`.
+It calls the same `compute_gae` with the same $\gamma$, $\lambda$ and reward
+scaling as the loss, under the round's pre-update parameters and the *updated*
+observation normaliser — what the loss's first minibatch sees — and combines the
+two advantages with the round's $\lambda$ by the loss's own rule
+(`lagrangian_advantage`, shared with `compute_ppo_lagrange_loss`). One
+difference: the loss standardises each advantage over a *minibatch*, the
+signals over the whole *batch*. $\lambda$ is read by name — PPO-Lagrange's
+`aux_state` *is* $\lambda$; PPO-PID keeps a typed `PIDLagrangeState` with a
+`lagrange_multiplier` field — never by position. (With pixel augmentation the loss
+additionally sees translated frames; the signals do not.) Cost: two critic
+forwards over the batch, next to the 4 × 32 minibatch passes SGD already does.
+Computed whenever a round hook is set (every distribution), so there is one path
+and the `*_value_loss/<d>` diagnostics below exist on every arm.
 
 One thing PLR forced on the wrapper, for every distribution: φ used to be
 broadcast over the slot axis so that the inner `VmapWrapper` (which vmaps over
@@ -266,10 +278,13 @@ the inner stack and puts it back after; φ is stored once per run.
 
 The feedback a distribution learns from is a `RoundRollout` with two views of
 the round: `Transitions` (every transition, `[slots, steps]` in each slot's
-time order, with context and reward advantage — q̂ and the per-context value
-error read from here) and `CompletedEpisodes` (one row per episode that ended,
-with its whole-episode value loss — the empirical q and PLR's score read from
-here). The protocol has no log-density method: PLR's $q$ is a mixture of point
+time order, with context and the advantage under each objective — q̂ and the
+per-context value error read from here) and `CompletedEpisodes` (one row per
+episode that ended, with its whole-episode value loss under each objective —
+the empirical q and PLR's score read from here). PLR declares the one statistic
+it needs, `EpisodeStatistic(score, MeanAbsolute())`, and reads it back under
+that key; the tracker computes whatever statistics it is asked for and knows
+nothing about PLR (`docs/acl/design/learning_signals.md`). The protocol has no log-density method: PLR's $q$ is a mixture of point
 masses and a density, which has none to report. The intended distribution is
 shown by sampling it (below).
 
@@ -283,21 +298,38 @@ are logged every round, for every distribution, under `training_curriculum/`
 | key | what | why |
 |---|---|---|
 | `intended/<d>` (+ `/mean`, `/std`) | histogram over Ω of 4096 draws from $q_k$ = `sample(φ_k)` — Monte Carlo, the same bins as `sampled` and `experienced` | $q_k$ without the one-episode lag of `sampled`; for PLR the marginals of $P_{replay}$ mixed with $r$ — the paper's Fig. 4 |
-| `value_loss/<d>` | histogram: mean \|reward advantage\| of the round's transitions per bin | the score as a function of the context, on every arm — what PLR *would* prioritise; against `intended/<d>` it answers "did q̂ move where the value loss says" |
+| `{reward,cost,lagrangian}_value_loss/<d>` | histograms: mean \|advantage\| under each objective of the round's transitions per bin | the three candidate scores as functions of the context, on every arm — what `plr`, `plr:cost` and `plr:lagrangian` *would* prioritise; against `intended/<d>` they answer "did q̂ move where the value loss says" |
 | `distribution/*` | the scalars above | buffer health (occupancy, staleness, score spread) and **concentration**: `replay_mass/top_10`, `top_100` — the share of $P_{replay}$ on the most-replayed rows. The marginals over one dimension of Ω cannot show concentration: 1000 points ranked in a 5-D Ω have near-uniform marginals even when a few rows hold most of the mass, so this is the number that says whether the curriculum is doing anything, and what $\beta$ is doing (fact 3) |
 
 The check named in the README — *trains on goal-point at least as fast as
 uniform, and q̂ moves where the value loss says* — reads: `evaluation/uniform`
 and `evaluation/deployment` return curves against the uniform arm; and
-`intended/<d>` tracking the high-value-loss region of `value_loss/<d>` with
-a lag of about one round.
+`intended/<d>` tracking the high-value-loss region of `reward_value_loss/<d>`
+with a lag of about one round.
+
+## The score: which objective's error
+
+`PrioritizedLevelReplay(score: Signal)` picks one of three, each the mean
+\|signal\| over the whole episode (`CompletedEpisodes.statistics[plr.statistic]`):
+
+- `REWARD_ADVANTAGE` (`plr`) — the paper: the reward critic's L1 error.
+- `COST_ADVANTAGE` (`plr:cost`) — the cost critic's L1 error, so replay follows
+  where the *constraint* is least understood: the constrained reading of PLR,
+  and goal 1's question for this method.
+- `LAGRANGIAN_ADVANTAGE` (`plr:lagrangian`) — the error of the objective the policy
+  loss actually optimises, $|A_r - \lambda A_c|$ with both advantages
+  standardised and the round's $\lambda$: where the *update signal* is largest.
+  Two things follow from the standardisation. Its scale is fixed (unit-variance
+  inputs), so unlike the two critics' errors it does not shrink as the critics
+  improve — compare it across contexts within a round, not across rounds. And
+  it depends on $\lambda$: when $\lambda \to 0$ it is the reward score in
+  standardised units; when $\lambda$ is large the cost term dominates. A
+  curriculum driven by it inherits $\lambda$'s dynamics, which the 500 M result
+  showed set every arm's end state; that is the point of trying it, and the
+  thing to read `training/lambda_lagr` against.
 
 ## Not done, with the reason
 
-- **A score on the cost critic** (`cost_value_loss`): the constrained reading
-  of PLR, goal 1's question for this method. One more field in
-  `LearningSignals` (PPO-Lagrange computes the cost GAE already) and a choice
-  of key in the score. After the reward version has a result.
 - **Positive value loss** (Robust PLR, Jiang et al. 2021b): $\max(\text{GAE}, 0)$
   instead of $|\text{GAE}|$. Same place; a variant, not a baseline.
 - **A finite grid of levels** (fact 2): would make $P_{replay}$ a vector to

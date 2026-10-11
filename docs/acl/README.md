@@ -98,42 +98,67 @@ something to push against:
 
 ## The plan
 
-In this order (Giuseppe, 2026-10-08).
+In this order (Giuseppe, 2026-10-09). The three items are **written,
+reviewed 2026-10-11, uncommitted, awaiting Giuseppe's review and a CPU test
+run** — `git diff` against `ffd16fb` is the whole of it. The 2026-10-09
+concerns are resolved as noted; the review walks are in the chat of
+2026-10-11, not in the repository.
 
-1. **Prioritized Level Replay** (Jiang et al. 2021) as the first curriculum
-   method. Chosen because it needs no target distribution, no mastery
-   threshold and no context observation. **Code reviewed and committed
-   2026-10-09** (242f0a6): `design/prioritized_level_replay.md`;
-   `--context_distribution plr`; the trainer ships every transition's reward
-   advantage to the round hook (`LearningSignals`); new
-   `training_curriculum/{intended,value_loss}/<d>` heatmaps and
-   `distribution/*` scalars on every arm. GPU smoke on goal-point passed
-   (zero recompiles, 85 k SPS, buffer dynamics as designed). Check: trains on
-   goal-point at least as fast as uniform, and q̂ moves where the value loss
-   says — being answered by the run below.
-   **Done (2026-10-09):**
-   `experiments/2026-10-08_goal_point_uniform_staged_plr_500M.md`, plan item
-   3's three arms at 500 M (without the OOD target, plan item 2, not built
-   yet); W&B group `goal_point_uniform_staged_plr_500M_v2`. Result in *Results
-   so far*. Consequence for the plan: PPO-PID first — every arm's end state is
-   set by the Lagrange integrator; then PLR with the cost-critic score.
-2. **An out-of-distribution context space for goal-point**
-   (`design/goal_point_ood.md`): contexts outside the training Ω, as values on
-   the existing dimensions (counts above the cap, goal size below the smallest
-   level). Registered as a distribution so it is an evaluation target like any
-   other.
-3. **Uniform vs staged vs PLR, 500 M steps, goal-point**, every arm evaluated
-   on the target (uniform over Ω) and the OOD target (uniform over 2) at
-   `--num_evals` points through training. Both targets go in via
-   `evaluation_wrap_env_fns`, which already exists. Result: the two curves per
-   arm, and when a gap between them opens. Write-up in `experiments/`.
+1. **PPO-PID takes the curriculum hooks.** Why first: in the 500 M result
+   every PPO-Lagrange arm's end state was set by λ's integrator (staged wound
+   up to 40 and froze; uniform's λ hit 0 and was still recovering), so a
+   curriculum comparison under PPO-Lagrange is a comparison of λ
+   trajectories. *Written:* `ppo_pid/train.py` forwards `round_hook`,
+   `learning_signals_fn` and `evaluation_wrap_env_fns` as `ppo_lag` does; its
+   controller state is a typed `PIDLagrangeState` (λ read by name);
+   `training/pid/violation` registered.
+2. **PLR scored by the reward critic, the cost critic, or the Lagrangian
+   objective.** Why: the reward critic's error was flat across contexts in the
+   500 M run (max/mean 1.6) — little to rank. *Written:* the agent hands the
+   trainer a `learning_signals_fn` next to its `loss_fn`
+   (`ppo_lag/losses.py: compute_learning_signals`); `LearningSignals` carries
+   reward, cost and Lagrangian advantage, the last by the loss's own rule
+   (`lagrangian_advantage`, shared with the loss); specs `plr`, `plr:cost`,
+   `plr:lagrangian`; one `<signal>_value_loss/<d>` heatmap per produced signal
+   on every arm. Host side per `design/learning_signals.md` (review
+   2026-10-11): a `Signal` vocabulary in `rounds.py`; agents hand the trainer a
+   `LearningSignalsFunction` declaring what they *produce*; distributions
+   declare the `EpisodeStatistic`s (signal + fold, `contexts/statistics.py`)
+   they *require*; the trainer checks one against the other before compiling;
+   `EpisodeTracker` is a fold engine over any associative ufunc (verified
+   against brute force). The doc states the one limitation (statistics must be
+   associative folds) and the buffer fallback. Score design:
+   `design/prioritized_level_replay.md` §"What the trainer has to provide" and
+   §"The score".
+3. **An out-of-distribution evaluation target Ω₂ for goal-point.** *Written:*
+   `ContextSpace.integer_total_floor`; `SuiteContexts.evaluation_regions`, a
+   tuple of `EvaluationRegion(name, space, label, relation)` — the general
+   concept (Ω₂ today, the skill subspaces of goal 2 tomorrow), each region
+   stating and having checked its relation to Ω; `setup.evaluations_for` maps
+   the tuple to evaluators with no per-region branch (trainer kwargs, W&B
+   config → dashboard, and `tests/test_suites.py` all read it). Levels now come
+   from `difficulty.get_supported_levels`, not a constant here. **The values
+   in `registry.py` are a placeholder.**
+   `design/goal_point_out_of_distribution.md` states the design question —
+   what the Ω→Ω₂ gap measures and against what reference it is readable — as
+   five decisions; it needs a one-paragraph answer from Giuseppe and a CPU
+   measurement (hazard overlap vs. total count) before values are chosen.
 
-Then: PPO-PID on the same arms (λ is calibrated to the stage that just ended,
-seen twice); skill probes as extra evaluation targets on the same runs; the
-cost-critic pre-check for attribution on any of them.
+Then: PID × {uniform, staged, plr, plr:cost, plr:lagrangian} at 500 M on
+the three targets (hypotheses to test separately: PID damps the wind-up after a
+stage switch; PID does *not* change the λ→0 regime when the constraint stops
+binding); skill probes as extra evaluation targets on the same runs; the
+cost-critic pre-check for attribution.
 
 ### Done
 
+- **Prioritized Level Replay** (Jiang et al. 2021) as the first curriculum
+  method (2026-10-09, 242f0a6): `design/prioritized_level_replay.md`;
+  `--context_distribution plr`; the trainer ships the reward advantage to the
+  round hook (`LearningSignals`); `training_curriculum/{intended,value_loss}/<d>`
+  heatmaps and `distribution/*` scalars. Uniform vs staged vs PLR at 500 M on
+  goal-point → `experiments/2026-10-08_goal_point_uniform_staged_plr_500M.md`
+  (group `goal_point_uniform_staged_plr_500M_v2`); result in *Results so far*.
 - Literature pass on the six candidate properties (2026-10-06) →
   `literature/synthesis.md`.
 - Goal-point baseline, uniform vs staged vs level:3 (2026-10-06) →
@@ -362,8 +387,8 @@ is the mechanism, seen twice.
   Residual overlap under the cap ≈ 2 %, the same crowding level 3 has.
 - **Trainer contract.** `training/rounds.py` `RoundHook` (`extra_fields`,
   `observe`, `on_round_end`) and `evaluation_wrap_env_fns` are the only two
-  trainer additions; `ppo_lag` forwards them. Another PPO-family trainer needs
-  the same two lines (plan item 3).
+  trainer additions; `ppo_lag` forwards them, and `ppo_pid` in the uncommitted
+  change (plan item 1). Any other PPO-family trainer needs the same two lines.
 
 ## Known defects
 
@@ -532,8 +557,8 @@ docs/acl/
     split_run.py                     raw output → runs/<model>/ files
     verify_references.py             resolves every paper_id (Semantic Scholar / arXiv / Crossref) and compares titles; fabricated ids and real-but-wrong ids both fail
   design/
-    prioritized_level_replay.md      (plan 1) PLR as a ContextDistribution: what the paper does, what changes on a continuous Ω with frozen φ, diagnostics
-    goal_point_ood.md                (plan 2) the out-of-distribution context space for goal-point, and why those values        [to write]
+    prioritized_level_replay.md      (done) PLR as a ContextDistribution: what the paper does, what changes on a continuous Ω with frozen φ, diagnostics
+    goal_point_out_of_distribution.md (plan 3, draft) Ω₂ for goal-point: a first guess at what it is and how it is wired; the values need a design pass
     constrained_challenges.md        (goal 1, later) TMA's challenges with a constraint, plus the one the constraint adds; each as a distribution over Ω   [to write]
     skill_probes.md                  (goal 2, later) probe subspaces of Ω where one skill is needed; skill-acquisition curves against q̂   [to write]
     data_attribution.md              (goal 3, later) the cost-target attribution: where the gradient is taken, which checkpoint, how records carry their context   [to write]
@@ -549,7 +574,7 @@ docs/acl/
   experiments/                       one file per experiment: question, commands, results
     2026-09-20_uniform_vs_staged_velocity_ant.md      the 50 M / 500 M result
     2026-09-22_velocity_suites_staged_vs_uniform.md   the other five agents (CPU part; deferred)
-    2026-10-06_goal_point_staged_vs_uniform.md        plan item 2: the three arms on goal-point, 100 M
+    2026-10-06_goal_point_staged_vs_uniform.md        the three arms on goal-point, 100 M (baseline)
   measurements/                      dated measurement logs
     2026-09-19_baseline_goal_point.md
     2026-09-20_gpu_trace_walkthrough.md
