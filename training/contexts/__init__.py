@@ -24,16 +24,20 @@ See ``docs/acl/design/`` for the constraints this design follows.
 from training.contexts.distribution import ContextDistribution, DistributionParameters
 from training.contexts.distributions import FixedContext, PrioritizedLevelReplay, StagedContexts, UniformDistribution
 from training.contexts.training_curriculum import training_curriculum_metrics
-from training.contexts.registry import SuiteContexts, registered_environments, suite_contexts
+from training.contexts.registry import EvaluationRegion, SuiteContexts, registered_environments, suite_contexts
 from training.contexts.episodes import EpisodeTracker
 from training.contexts.rollout import SLOT_INDEX_KEY, TRANSITION_CONTEXT_KEY, CompletedEpisodes, RoundRollout, Transitions
+from training.contexts.statistics import EpisodeStatistic, Fold, MeanAbsolute
 from training.contexts.round_hook import ContextRoundHook
 from training.contexts.setup import (
     DEPLOYMENT_EVALUATION,
     NO_DISTRIBUTION,
+    OUT_OF_DISTRIBUTION_EVALUATION,
     UNIFORM_EVALUATION,
     ContextTrainingSetup,
+    Evaluation,
     context_training_setup,
+    evaluations_for,
     parse_distribution,
     spec_label,
 )
@@ -53,6 +57,8 @@ from training.contexts.wrapper import (
 __all__ = [
     "CONTEXT_KEY",
     "DEPLOYMENT_EVALUATION",
+    "Evaluation",
+    "OUT_OF_DISTRIBUTION_EVALUATION",
     "NO_DISTRIBUTION",
     "SLOT_INDEX_KEY",
     "TRANSITION_CONTEXT_KEY",
@@ -66,9 +72,13 @@ __all__ = [
     "ContextualAutoResetWrapper",
     "CompletedEpisodes",
     "Dimension",
+    "EpisodeStatistic",
     "EpisodeTracker",
+    "EvaluationRegion",
     "FixedContext",
+    "Fold",
     "DistributionParameters",
+    "MeanAbsolute",
     "PrioritizedLevelReplay",
     "RoundRollout",
     "StagedContexts",
@@ -80,6 +90,7 @@ __all__ = [
     "context_training_setup",
     "current_contexts",
     "current_parameters",
+    "evaluations_for",
     "make_evaluation_wrap_env_fn",
     "make_wrap_env_fn",
     "parse_distribution",

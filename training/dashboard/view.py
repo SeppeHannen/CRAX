@@ -32,9 +32,9 @@ X_AXIS = "environment_steps"
 # distribution the run trained on), so the legend reads `training_distribution: uniform`.
 GROUP_RUNS_BY = "training_distribution"
 
-# The two evaluation distributions every context run is scored on, as they appear in keys.
-DEPLOYMENT_EVALUATION = "evaluation/deployment"
-UNIFORM_EVALUATION = "evaluation/uniform"
+# Evaluation metrics are keyed `evaluation/<name>/*`; the names and their labels are
+# in the run's config (`evaluations`, written by training/contexts/setup.py).
+EVALUATION_PREFIX = "evaluation/"
 
 # Panel grid: 24 columns wide; a text panel spans the width, plots are half width.
 TEXT_PANEL_HEIGHT = 9
@@ -85,6 +85,8 @@ class RunFacts:
     episode_length: int
     safety_bound: float
     deployment_distribution: str
+    # (name, label) of each distribution the policy is scored on, in panel order
+    evaluations: Tuple[Tuple[str, str], ...]
     task: TaskDescription
     context_space: Tuple[ContextDimension, ...]
     # None, or the most the integer coordinates of ω may sum to (training/contexts/space.py)
@@ -106,6 +108,7 @@ class RunFacts:
             episode_length=int(config["episode_length"]),
             safety_bound=float(config["safety_bound"]),
             deployment_distribution=str(config["deployment_distribution"]),
+            evaluations=tuple((str(name), str(label)) for name, label in config["evaluations"].items()),
             task=TaskDescription(**config["task"]),
             context_space=tuple(_context_dimension(name, bounds) for name, bounds in config["context_space"].items()),
             context_space_integer_total_cap=(
@@ -124,12 +127,9 @@ class RunFacts:
         return tuple(dimension.name for dimension in self.context_space)
 
     @property
-    def evaluations(self) -> Tuple[Tuple[str, str], ...]:
-        """``(key prefix, label)`` of each evaluation distribution; the label says what it is and its value."""
-        return (
-            (DEPLOYMENT_EVALUATION, f"the deployment task ({self.deployment_distribution})"),
-            (UNIFORM_EVALUATION, "all of Ω (uniform)"),
-        )
+    def evaluation_prefixes(self) -> Tuple[Tuple[str, str], ...]:
+        """``(key prefix, label)`` of each evaluation distribution, as the keys are logged."""
+        return tuple((EVALUATION_PREFIX + name, label) for name, label in self.evaluations)
 
     def words(self) -> Dict[str, str]:
         """The values for the registry's :data:`FACT_PLACEHOLDERS`."""
@@ -161,6 +161,7 @@ class RunFacts:
         fields = json.loads(text)
         fields["task"] = TaskDescription(**fields["task"])
         fields["context_space"] = tuple(ContextDimension(**dimension) for dimension in fields["context_space"])
+        fields["evaluations"] = tuple((name, label) for name, label in fields["evaluations"])
         return cls(**fields)
 
 
@@ -201,12 +202,10 @@ def _preamble(group: Group, facts: RunFacts) -> str:
             f"per evaluation; {facts.num_evals} evaluations over the run, at step 0 and then every "
             f"{facts.steps_between_evaluations:,} environment steps. Each panel shows one point per evaluation; the "
             f"segments between points are interpolation, not data.\n\n"
-            f"**Evaluation distributions.** Independently of what it trained on, every policy is evaluated on two "
-            f"distributions over Ω, one panel each:\n"
-            f"- *the deployment task* (`{facts.deployment_distribution}`, set by `--deployment_distribution`): the "
-            f"task the policy is trained for;\n"
-            f"- *all of Ω (uniform)*: contexts drawn uniformly from the whole context space, measuring how the policy "
-            f"generalises beyond the deployment task.\n\n{LEGEND}"
+            f"**Evaluation distributions.** Independently of what it trained on, every policy is evaluated on "
+            f"{len(facts.evaluations)} distributions over contexts, one panel each:\n"
+            + "".join(f"- *{label}* (`{name}`);\n" for name, label in facts.evaluations)
+            + f"The deployment task is set by `--deployment_distribution`; the others are fixed per suite.\n\n{LEGEND}"
         )
     if group is Group.MECHANISM:
         return (
@@ -303,7 +302,7 @@ class Instance:
 
 def _instances(metric: Metric, facts: RunFacts) -> List[Instance]:
     if "{evaluation}" in metric.pattern:
-        return [Instance("evaluation", prefix, label) for prefix, label in facts.evaluations]
+        return [Instance("evaluation", prefix, label) for prefix, label in facts.evaluation_prefixes]
     if "{dimension}" in metric.pattern:
         return [Instance("dimension", name, name) for name in facts.context_dimensions]
     return [Instance.plain()]

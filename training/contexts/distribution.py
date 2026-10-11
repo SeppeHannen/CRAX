@@ -13,20 +13,23 @@ Two halves, matching the two places code can run (see
   ``parameters`` are frozen for the whole round.
 * :meth:`update` runs on the **host between rounds**, with the round's
   transitions as feedback (:class:`~training.contexts.rollout.RoundRollout`:
-  every transition's context, the episode bookkeeping and the learner's reward
-  advantage). It may do anything (Python, NumPy) and returns the parameters for
-  the next round.
+  every transition's context, the episode bookkeeping, and per completed
+  episode the statistics the distribution asked for in
+  :attr:`ContextDistribution.required_statistics`). It may do anything (Python,
+  NumPy) and returns the parameters for the next round.
 
-Uniform sampling is the degenerate case: ``update`` returns ``parameters`` unchanged.
+Uniform sampling is the degenerate case: ``update`` returns ``parameters``
+unchanged and requires no statistics.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Protocol, runtime_checkable
+from typing import Any, Dict, FrozenSet, Protocol, runtime_checkable
 
 import jax
 
 from training.contexts.rollout import RoundRollout
 from training.contexts.space import ContextSpace, Contexts
+from training.contexts.statistics import EpisodeStatistic
 
 DistributionParameters = Any
 """φ: everything a distribution needs to ``sample`` from, as a pytree of JAX arrays.
@@ -50,6 +53,13 @@ class ContextDistribution(Protocol):
     """Interface every curriculum / task-distribution method implements."""
 
     space: ContextSpace
+
+    @property
+    def required_statistics(self) -> FrozenSet[EpisodeStatistic]:
+        """The per-episode numbers ``update`` reads from ``rollout.completed_episodes.statistics``.
+        The trainer refuses an agent whose learning signals cannot supply them
+        (``docs/acl/design/learning_signals.md``). Empty for a distribution that
+        does not learn from the learner."""
 
     def initialise(self) -> DistributionParameters:
         """Parameters φ_0 before any training."""

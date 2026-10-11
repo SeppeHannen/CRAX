@@ -15,12 +15,12 @@ have not ended yet, which must survive from one round to the next.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, FrozenSet, Mapping, Optional, Tuple
 
 import numpy as np
 from crax.envs.base import State
 
-from training.rounds import LearningSignals, RoundHook
+from training.rounds import RoundHook, Signal
 from training.contexts.distribution import ContextDistribution
 from training.contexts.episodes import EpisodeTracker
 from training.contexts.rollout import ROLLOUT_FIELDS, RoundRollout, Transitions
@@ -37,14 +37,18 @@ class ContextRoundHook(RoundHook):
 
     def __init__(self, distribution: ContextDistribution, num_slots: int):
         self.distribution = distribution
-        self.episodes = EpisodeTracker(num_slots)
+        self.episodes = EpisodeTracker(num_slots, distribution.required_statistics)
         self._transitions: Optional[Transitions] = None  # this round's, between observe and on_round_end
 
     @property
     def extra_fields(self) -> Tuple[str, ...]:
         return ROLLOUT_FIELDS
 
-    def observe(self, rollout: Mapping[str, np.ndarray], learning_signals: LearningSignals) -> None:
+    @property
+    def required_signals(self) -> FrozenSet[Signal]:
+        return frozenset(statistic.signal for statistic in self.distribution.required_statistics)
+
+    def observe(self, rollout: Mapping[str, np.ndarray], learning_signals: Mapping[Signal, np.ndarray]) -> None:
         """The trainer's recorded fields become typed, per-slot :class:`Transitions` here,
         at the boundary; nothing downstream sees the recorded layout."""
         self._transitions = Transitions.from_recorded_fields(rollout, learning_signals, self.episodes.num_slots)

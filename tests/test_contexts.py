@@ -5,6 +5,9 @@ Run with: JAX_PLATFORMS=cpu pytest tests/test_contexts.py -v
 """
 from __future__ import annotations
 
+import dataclasses
+from typing import Dict
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -13,29 +16,48 @@ import pytest
 from crax import envs
 from training import contexts as C
 from training.agents.ppo.train import _strip_weak_type
-from training.rounds import LearningSignals
+from training.rounds import Signal
 
 ENV_NAME = "safe_velocity_ant"
 NUM_SLOTS = 8
 EPISODE_LENGTH = 25
 
+REWARD, COST, LAGRANGIAN = Signal.REWARD_ADVANTAGE, Signal.COST_ADVANTAGE, Signal.LAGRANGIAN_ADVANTAGE
+MEAN_ABSOLUTE = {signal: C.EpisodeStatistic(signal, C.MeanAbsolute()) for signal in Signal}
 
-def round_rollout(contexts: np.ndarray, reward_advantage: np.ndarray, round_index: int, steps: int = 5) -> C.RoundRollout:
-    """A round in which slot ``i`` ran ``steps`` transitions in ``contexts[i]`` with advantage
-    ``reward_advantage[i]`` at every step, and its episode ended on the last one — so every
-    context has exactly one completed episode whose value loss is ``|reward_advantage[i]|``."""
+
+def signals(reward, cost=None, lagrangian=None) -> Dict[Signal, np.ndarray]:
+    """The three learning signals, ``reward`` standing in for any not given."""
+    reward = np.asarray(reward, np.float32)
+    return {
+        REWARD: reward,
+        COST: reward if cost is None else np.asarray(cost, np.float32),
+        LAGRANGIAN: reward if lagrangian is None else np.asarray(lagrangian, np.float32),
+    }
+
+
+def round_rollout(
+    contexts: np.ndarray, per_slot_signals: Dict[Signal, np.ndarray], distribution: C.ContextDistribution,
+    round_index: int, steps: int = 5,
+) -> C.RoundRollout:
+    """A round in which slot ``i`` ran ``steps`` transitions in ``contexts[i]`` with
+    ``per_slot_signals[s][i]`` at every step, and its episode ended on the last one — so
+    every context has exactly one completed episode whose mean |signal| is
+    ``|per_slot_signals[s][i]|``. The episodes carry the statistics ``distribution`` asks for."""
     num_slots = contexts.shape[0]
     done = np.zeros((num_slots, steps), bool)
     done[:, -1] = True
+    per_step = lambda per_slot: np.repeat(np.asarray(per_slot, np.float32)[:, None], steps, axis=1)
     transitions = C.Transitions(
         contexts=np.repeat(np.asarray(contexts, np.float32)[:, None, :], steps, axis=1),
         episode_done=done,
         episode_return=np.zeros((num_slots, steps), np.float32),
         episode_cost=np.zeros((num_slots, steps), np.float32),
         episode_length=np.full((num_slots, steps), float(steps), np.float32),
-        reward_advantage=np.repeat(np.asarray(reward_advantage, np.float32)[:, None], steps, axis=1),
+        signals={signal: per_step(values) for signal, values in per_slot_signals.items()},
     )
-    return C.RoundRollout(round_index, transitions, C.EpisodeTracker(num_slots).complete(transitions))
+    tracker = C.EpisodeTracker(num_slots, distribution.required_statistics)
+    return C.RoundRollout(round_index, transitions, tracker.complete(transitions))
 
 
 @pytest.fixture(scope="module")
@@ -72,9 +94,11 @@ def test_space_round_trip(suite):
 def test_levels_match_difficulty_module(suite):
     from crax.envs.safe_velocity import get_threshold_for_level
 
+    assert sorted(suite.level_contexts) == [1, 2, 3]
     for level in (1, 2, 3):
         assert float(suite.level(level)[0]) == pytest.approx(get_threshold_for_level("ant", level))
-    assert suite.levels().shape == (3, 1)
+    with pytest.raises(KeyError, match="no level 4"):
+        suite.level(4)
 
 
 def test_uniform_samples_inside_space(suite):
@@ -109,6 +133,57 @@ def test_a_cap_below_every_integer_total_is_refused():
         C.ContextSpace((C.Dimension("a", 2, 5, "integer"),), integer_total_cap=1)
     with pytest.raises(ValueError, match="no integer dimension"):
         C.ContextSpace((C.Dimension("x", 0.0, 1.0),), integer_total_cap=1)
+
+
+def test_integer_total_floor_mirrors_the_cap():
+    """A floor keeps only tuples whose total is at least the floor; sampling respects it; an
+    impossible floor, or one above the cap, is refused."""
+    dims = (C.Dimension("a", 0, 3, "integer"), C.Dimension("b", 0, 2, "integer"), C.Dimension("x", 0.0, 1.0))
+    space = C.ContextSpace(dims, integer_total_floor=4)
+    assert {tuple(p) for p in space.integer_points} == {(a, b) for a in range(4) for b in range(3) if a + b >= 4}
+    assert not bool(space.contains(space.encode(a=3, b=0, x=0.5)[None])[0])
+    assert bool(space.contains(space.encode(a=3, b=1, x=0.5)[None])[0])
+    samples = space.sample_uniform(jax.random.PRNGKey(0), 2000)
+    assert bool(jnp.all(space.contains(samples))) and bool(jnp.all(samples[:, 0] + samples[:, 1] >= 4))
+    assert "≥ 4" in space.describe()
+    with pytest.raises(ValueError, match="integer_total_floor"):
+        C.ContextSpace(dims, integer_total_floor=6)
+    with pytest.raises(ValueError, match="exceeds"):
+        C.ContextSpace(dims, integer_total_cap=2, integer_total_floor=3)
+
+
+def test_goal_point_out_of_distribution_region_is_disjoint_from_omega():
+    """The region shares Ω's dimensions and no point: denser than the cap and a smaller goal."""
+    suite = C.suite_contexts("safe_goal_point")
+    region = suite.region("out_of_distribution")
+    assert region.relation == "disjoint_from" and region.space.names == suite.space.names
+    draws = region.space.sample_uniform(jax.random.PRNGKey(0), 2000)
+    assert not bool(suite.space.contains(draws).any()) and bool(region.space.contains(draws).all())
+    assert bool(jnp.all(draws[:, :4].sum(axis=1) > suite.space.integer_total_cap))
+    assert float(draws[:, 4].max()) < float(suite.space.low[4])
+    assert C.suite_contexts("safe_velocity_ant").evaluation_regions == ()
+    with pytest.raises(KeyError, match="no evaluation region"):
+        suite.region("skill/navigate")
+
+
+def test_evaluation_regions_state_their_relation_to_omega_and_it_is_checked():
+    """A region declared disjoint must share no point with Ω; one declared within must lie
+    inside it; names must be unique."""
+    suite = C.suite_contexts("safe_goal_point")
+    overlapping = C.ContextSpace(suite.space.dimensions, integer_total_floor=10)  # shares tuples 10..20 with Ω
+    outside = suite.region("out_of_distribution").space
+    make = lambda **fields: C.EvaluationRegion(**{"name": "probe", "space": outside, "label": "", "relation": "disjoint_from", **fields})
+    with pytest.raises(ValueError, match="overlaps"):
+        dataclasses.replace(suite, evaluation_regions=(make(space=overlapping),))
+    with pytest.raises(ValueError, match="not within"):
+        dataclasses.replace(suite, evaluation_regions=(make(space=outside, relation="within"),))
+    dense_corner = C.ContextSpace(suite.space.dimensions, integer_total_cap=20, integer_total_floor=18)  # a slice of Ω
+    within = dataclasses.replace(suite, evaluation_regions=(make(space=dense_corner, relation="within"),))
+    assert within.region("probe").space is dense_corner
+    with pytest.raises(ValueError, match="share a name"):
+        dataclasses.replace(suite, evaluation_regions=(make(), make()))
+    with pytest.raises(ValueError, match="dimensions"):
+        dataclasses.replace(suite, evaluation_regions=(make(space=C.box(x=(0.0, 1.0))),))
 
 
 # --------------------------------------------------------------------------- #
@@ -208,7 +283,7 @@ def test_staged_switches_without_recompiling(suite, env):
     from jax._src import monitoring
     from jax._src.dispatch import BACKEND_COMPILE_EVENT
 
-    staged = C.StagedContexts.equal_split(suite.space, suite.levels(), total_rounds=3)
+    staged = C.parse_distribution("staged:1,2,3", suite, total_rounds=3)
     reset, step = build(env, staged)
     state = _strip_weak_type(reset(jax.random.split(jax.random.PRNGKey(2), NUM_SLOTS)))
     parameters = C.current_parameters(state)
@@ -226,7 +301,7 @@ def test_staged_switches_without_recompiling(suite, env):
         for _ in range(EPISODE_LENGTH + 1):
             state = _strip_weak_type(step(state, actions))
         trained_at.append(float(np.asarray(C.current_contexts(state))[0, 0]))
-        rollout = round_rollout(np.asarray(C.current_contexts(state)), np.zeros(NUM_SLOTS), round_index)
+        rollout = round_rollout(np.asarray(C.current_contexts(state)), signals(np.zeros(NUM_SLOTS)), staged, round_index)
         parameters = staged.update(parameters, rollout)
         state = _strip_weak_type(C.attach_parameters(state, parameters))
 
@@ -256,7 +331,7 @@ def test_transitions_recover_each_slots_time_series_from_the_recorded_slot_label
         fields = {C.TRANSITION_CONTEXT_KEY: contexts, C.SLOT_INDEX_KEY: labels, "episode_done": done,
                   "episode_metrics": {name: rows for name in ("sum_reward", "cost", "length")}}
         permute = lambda x: x[order]
-        return jax.tree_util.tree_map(permute, fields), LearningSignals(reward_advantage=rows[order])
+        return jax.tree_util.tree_map(permute, fields), signals(rows[order])
 
     # the trainer's actual order, and a shuffled one that keeps each slot's unrolls in time order
     trainer_order = np.arange(num_unrolls * num_slots)
@@ -265,29 +340,71 @@ def test_transitions_recover_each_slots_time_series_from_the_recorded_slot_label
         transitions = C.Transitions.from_recorded_fields(*recorded_in(order), num_slots)
         assert (transitions.num_slots, transitions.steps_per_slot) == (num_slots, num_unrolls * unroll_length)
         for slot in range(num_slots):
-            np.testing.assert_array_equal(transitions.reward_advantage[slot], time_index)
+            np.testing.assert_array_equal(transitions.signals[REWARD][slot], time_index)
             np.testing.assert_array_equal(transitions.episode_return[slot], time_index)
 
-    fields, signals = recorded_in(trainer_order)
+    fields, recorded_signals = recorded_in(trainer_order)
     with pytest.raises(ValueError, match="equally many rows"):
-        C.Transitions.from_recorded_fields(fields, signals, num_slots=4)
+        C.Transitions.from_recorded_fields(fields, recorded_signals, num_slots=4)
     with pytest.raises(KeyError, match=C.SLOT_INDEX_KEY):
-        C.Transitions.from_recorded_fields({k: v for k, v in fields.items() if k != C.SLOT_INDEX_KEY}, signals, num_slots)
+        C.Transitions.from_recorded_fields({k: v for k, v in fields.items() if k != C.SLOT_INDEX_KEY}, recorded_signals, num_slots)
     # a context changing mid-episode means the layout is wrong
     with pytest.raises(ValueError, match="layout"):
         C.Transitions(contexts=rows[..., None], episode_done=np.zeros_like(rows, dtype=bool), episode_return=rows,
-                      episode_cost=rows, episode_length=rows, reward_advantage=rows)
+                      episode_cost=rows, episode_length=rows, signals=signals(rows))
+    with pytest.raises(ValueError, match="shape"):
+        C.Transitions(contexts=rows[..., None], episode_done=np.zeros_like(rows, dtype=bool), episode_return=rows,
+                      episode_cost=rows, episode_length=rows, signals={REWARD: rows[:, :2]})
 
 
-def test_episode_tracker_scores_the_whole_episode_across_rounds():
+@dataclasses.dataclass(frozen=True)
+class _Maximum:
+    """A test-only fold with a non-additive monoid: the episode's largest signal."""
+
+    combine = np.maximum
+    identity = -np.inf
+
+    def map(self, signal):
+        return signal
+
+    def finalise(self, combined, count):
+        return combined
+
+
+@dataclasses.dataclass(frozen=True)
+class _WrongIdentityMaximum(_Maximum):
+    """0 is not neutral for max: max(0, -7) = 0."""
+
+    identity = 0.0
+
+
+def test_episode_statistic_is_a_signal_and_a_fold():
+    statistic = C.EpisodeStatistic(COST, C.MeanAbsolute())
+    assert statistic == C.EpisodeStatistic(COST, C.MeanAbsolute()) and hash(statistic) == hash(C.EpisodeStatistic(COST, C.MeanAbsolute()))
+    assert statistic != C.EpisodeStatistic(COST, _Maximum())
+    assert statistic.name == "cost/MeanAbsolute"
+    with pytest.raises(TypeError, match="Signal"):
+        C.EpisodeStatistic("cost", C.MeanAbsolute())
+    with pytest.raises(TypeError, match="Fold"):
+        C.EpisodeStatistic(COST, np.abs)
+    with pytest.raises(ValueError, match="not neutral"):
+        C.EpisodeStatistic(COST, _WrongIdentityMaximum())
+    assert Signal("cost") is COST  # the CLI spelling resolves to the member
+
+
+def test_episode_tracker_computes_every_requested_statistic_over_the_whole_episode_across_rounds():
     """Slot 0's episode spans two rounds and ends in the second; slot 1 ends two episodes in
-    the first round. Each episode's value loss is the mean |advantage| over *all* its steps."""
-    tracker = C.EpisodeTracker(num_slots=2)
+    the first round. Each requested statistic is taken over *all* of the episode's steps:
+    mean |x| for two signals (the cost one twice the reward one) and, through a fold with a
+    non-additive combine, the episode's maximum reward signal."""
+    maximum_reward = C.EpisodeStatistic(REWARD, _Maximum())
+    tracker = C.EpisodeTracker(num_slots=2, statistics=frozenset({MEAN_ABSOLUTE[REWARD], MEAN_ABSOLUTE[COST], maximum_reward}))
 
     def transitions(advantage, done, contexts):
         advantage = np.asarray(advantage, np.float32)
         return C.Transitions(contexts=np.asarray(contexts, np.float32)[..., None], episode_done=np.asarray(done, bool),
-                             episode_return=advantage, episode_cost=advantage, episode_length=advantage, reward_advantage=advantage)
+                             episode_return=advantage, episode_cost=advantage, episode_length=advantage,
+                             signals=signals(advantage, cost=2 * advantage))
 
     first = tracker.complete(transitions(
         advantage=[[1, 1, 1, 1], [2, -4, 6, 6]],
@@ -296,7 +413,10 @@ def test_episode_tracker_scores_the_whole_episode_across_rounds():
     ))
     assert first.count == 2
     np.testing.assert_allclose(first.contexts[:, 0], [20, 21])
-    np.testing.assert_allclose(first.value_loss, [3.0, 6.0])  # (2+4)/2, (6+6)/2
+    np.testing.assert_allclose(first.statistics[MEAN_ABSOLUTE[REWARD]], [3.0, 6.0])  # (2+4)/2, (6+6)/2
+    np.testing.assert_allclose(first.statistics[MEAN_ABSOLUTE[COST]], [6.0, 12.0])
+    np.testing.assert_allclose(first.statistics[maximum_reward], [2.0, 6.0])  # max(2, -4), max(6, 6)
+    assert set(first.statistics) == tracker.statistics  # exactly what was asked for
     np.testing.assert_allclose(first.returns, [-4, 6])  # the recorded totals at the done transition
 
     second = tracker.complete(transitions(
@@ -306,10 +426,21 @@ def test_episode_tracker_scores_the_whole_episode_across_rounds():
     ))
     assert second.count == 1
     assert float(second.contexts[0, 0]) == 10
-    assert float(second.value_loss[0]) == pytest.approx((4 * 1 + 3 + 3) / 6)  # four steps from round 1, two from round 2
+    assert float(second.statistics[MEAN_ABSOLUTE[REWARD]][0]) == pytest.approx((4 * 1 + 3 + 3) / 6)  # four steps from round 1, two from round 2
+    assert float(second.statistics[MEAN_ABSOLUTE[COST]][0]) == pytest.approx(2 * (4 * 1 + 3 + 3) / 6)
+    assert float(second.statistics[maximum_reward][0]) == 3.0  # the carry's 1s and this round's 3s
 
     with pytest.raises(ValueError, match="slots"):
         tracker.complete(transitions(advantage=[[1]], done=[[0]], contexts=[[0]]))
+    # a round whose signals cannot supply a requested statistic is refused
+    only_reward = C.Transitions(contexts=np.zeros((2, 1, 1), np.float32), episode_done=np.ones((2, 1), bool),
+                                episode_return=np.zeros((2, 1)), episode_cost=np.zeros((2, 1)), episode_length=np.zeros((2, 1)),
+                                signals={REWARD: np.zeros((2, 1))})
+    with pytest.raises(KeyError, match="COST_ADVANTAGE"):
+        tracker.complete(only_reward)
+    # a distribution that asks for nothing gets episodes with no statistics, from any signals
+    nothing = C.EpisodeTracker(num_slots=2, statistics=frozenset()).complete(only_reward)
+    assert nothing.count == 2 and nothing.statistics == {}
 
 
 # --------------------------------------------------------------------------- #
@@ -329,12 +460,36 @@ def test_plr_first_round_is_uniform_then_keeps_the_highest_scoring_contexts(suit
     assert bool(jnp.all(suite.space.contains(jnp.asarray(drawn)))) and len({row.tobytes() for row in drawn}) == 10
 
     # ten distinct contexts, slot i with |advantage| i: the buffer (8 rows) keeps the top 8
-    parameters = plr.update(parameters, round_rollout(drawn, np.arange(10.0), round_index=0))
+    parameters = plr.update(parameters, round_rollout(drawn, signals(np.arange(10.0)), plr, round_index=0))
     assert int(parameters.occupied.sum()) == 8
     assert sorted(np.asarray(parameters.scores).tolist()) == [2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
     assert _buffer_rows(parameters) == {row.tobytes() for row in drawn[2:]}
     assert float(parameters.replay_probability) == pytest.approx(0.5)  # the method's p, as soon as there is anything to replay
     assert int(parameters.round_index) == 1 and np.all(np.asarray(parameters.last_round) == 0)
+
+
+def test_plr_scores_by_the_chosen_signal(suite):
+    """`plr` ranks by the reward critic's error, `plr:cost` by the cost critic's,
+    `plr:lagrangian` by the Lagrangian objective's; the other signals are ignored. Here the
+    three orderings keep three different sets of contexts. PLR asks the tracker for exactly
+    one statistic: the mean |score signal|."""
+    drawn = np.asarray(C.UniformDistribution(suite.space).sample(None, jax.random.PRNGKey(3), 6), np.float32)
+    per_slot = signals(np.arange(6.0), cost=np.arange(6.0)[::-1], lagrangian=[0, 9, 1, 8, 2, 7])
+    for score, expected_kept, expected_scores in (
+        (REWARD, drawn[2:], [2.0, 3.0, 4.0, 5.0]),
+        (COST, drawn[:4], [2.0, 3.0, 4.0, 5.0]),
+        (LAGRANGIAN, drawn[[1, 3, 5, 4]], [2.0, 7.0, 8.0, 9.0]),
+    ):
+        plr = C.PrioritizedLevelReplay(suite.space, score=score, buffer_size=4)
+        assert plr.required_statistics == {C.EpisodeStatistic(score, C.MeanAbsolute())}
+        parameters = plr.update(plr.initialise(), round_rollout(drawn, per_slot, plr, round_index=0))
+        assert _buffer_rows(parameters) == {row.tobytes() for row in expected_kept}, score
+        assert sorted(np.asarray(parameters.scores).tolist()) == expected_scores, score
+    with pytest.raises(TypeError, match="Signal"):
+        C.PrioritizedLevelReplay(suite.space, score="cost")
+    assert C.parse_distribution("plr:cost", suite, total_rounds=1).score is COST
+    with pytest.raises(ValueError, match="plr:<signal>"):
+        C.parse_distribution("plr:return", suite, total_rounds=1)
 
 
 def test_plr_replay_weights_are_rank_mixed_with_staleness():
@@ -360,7 +515,7 @@ def test_plr_samples_buffer_rows_exactly_with_the_replay_weights(suite):
     plr = C.PrioritizedLevelReplay(suite.space, buffer_size=8, replay_probability=0.5, temperature=1.0, staleness_coefficient=0.3)
     parameters = plr.initialise()
     drawn = np.asarray(plr.sample(parameters, jax.random.PRNGKey(1), 8), np.float32)
-    parameters = plr.update(parameters, round_rollout(drawn, np.arange(8.0), round_index=0))
+    parameters = plr.update(parameters, round_rollout(drawn, signals(np.arange(8.0)), plr, round_index=0))
 
     samples = np.asarray(plr.sample(parameters, jax.random.PRNGKey(2), 20_000), np.float32)
     rows = np.asarray(parameters.contexts, np.float32)
@@ -376,14 +531,14 @@ def test_plr_rescores_replayed_contexts_and_admits_only_better_newcomers(suite):
     plr = C.PrioritizedLevelReplay(suite.space, buffer_size=4, replay_probability=1.0, temperature=1.0, staleness_coefficient=0.3)
     parameters = plr.initialise()
     first = np.asarray(plr.sample(parameters, jax.random.PRNGKey(1), 4), np.float32)
-    parameters = plr.update(parameters, round_rollout(first, np.asarray([4.0, 3.0, 2.0, 1.0]), round_index=0))
+    parameters = plr.update(parameters, round_rollout(first, signals([4.0, 3.0, 2.0, 1.0]), plr, round_index=0))
     rows = np.asarray(parameters.contexts, np.float32)
 
     # round 1: rows 0 and 1 are trained on again (new, lower scores), plus two newcomers: one
     # that beats the row with the least replay mass, one that beats nothing
     newcomers = np.asarray(suite.space.sample_uniform(jax.random.PRNGKey(7), 2), np.float32)
     contexts = np.concatenate([rows[:2], newcomers])
-    parameters = plr.update(parameters, round_rollout(contexts, np.asarray([0.5, 0.25, 10.0, 0.0]), round_index=1))
+    parameters = plr.update(parameters, round_rollout(contexts, signals([0.5, 0.25, 10.0, 0.0]), plr, round_index=1))
 
     scores = dict(zip((row.tobytes() for row in np.asarray(parameters.contexts, np.float32)), np.asarray(parameters.scores).tolist()))
     assert scores[rows[0].tobytes()] == 0.5  # overwritten, not averaged

@@ -5,10 +5,17 @@ know how to *read* a context (see :func:`training.contexts.wrapper`), and
 distributions know how to *choose* one; neither needs to know the suite.
 
 Adding a suite: write a :class:`SuiteContexts` (Ω and the task in words) and
-register it. The level contexts are not written down: level ``n`` is whatever
+register it. The level contexts are not written down: the levels are those
+``crax/envs/difficulty.py`` supports, and level ``n`` is whatever
 ``get_environment(env, level=n)`` resets into by default (``default_context()``,
 ``crax/envs/context.py``), so ``FixedContext(level(3))`` is the level-3 task by
-construction and cannot drift from ``crax/envs/difficulty.py``.
+construction and cannot drift from the difficulty module.
+
+Besides Ω a suite may name further **regions** of the same dimensions the policy
+is scored on (:class:`EvaluationRegion`): goal-point's Ω₂, later the skill
+subspaces of ``docs/acl/README.md`` goal 2. Each states its relation to Ω
+(disjoint from it, or within it), which is checked here; ``setup.py`` turns the
+list into evaluators without knowing what any region is.
 
 Every suite of the benchmark is registered. Value-typed knobs (a threshold, a
 radius) are read from the context where the constant used to be; count-typed
@@ -18,13 +25,9 @@ levels (``docs/acl/design/hazard_activation.md``).
 from __future__ import annotations
 
 import dataclasses
-from typing import Callable, Dict, Mapping, Tuple
-
-import jax.numpy as jnp
+from typing import Callable, Dict, Literal, Mapping, Tuple
 
 from training.contexts.space import Context, ContextSpace, Dimension
-
-LEVELS = (1, 2, 3)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -46,6 +49,35 @@ class TaskDescription:
     episode_ends_early: bool
 
 
+# The W&B name of the one region defined so far; ``evaluation/<name>/*`` keys.
+OUT_OF_DISTRIBUTION_REGION = "out_of_distribution"
+
+
+@dataclasses.dataclass(frozen=True)
+class EvaluationRegion:
+    """A named region of Ω's dimensions the policy is scored on, next to Ω itself and w.
+
+    ``name`` becomes the metric prefix ``evaluation/<name>/``; ``label`` is what the
+    dashboard calls it. ``relation`` is the region's invariant against Ω, checked
+    when the suite is built: ``"disjoint_from"`` for a generalisation target no
+    training distribution over Ω can reach (goal-point's Ω₂), ``"within"`` for a
+    subspace of Ω where a particular skill is required (README goal 2).
+    """
+
+    name: str
+    space: ContextSpace
+    label: str
+    relation: Literal["disjoint_from", "within"]
+
+    def check_against(self, omega: ContextSpace, env_name: str) -> None:
+        if self.space.names != omega.names:
+            raise ValueError(f"{env_name}: region {self.name!r} must have Ω's dimensions {omega.names}, has {self.space.names}")
+        if self.relation == "disjoint_from" and not _disjoint(omega, self.space):
+            raise ValueError(f"{env_name}: region {self.name!r} overlaps Ω\n{omega.describe()}\n{self.space.describe()}")
+        if self.relation == "within" and not _within(self.space, omega):
+            raise ValueError(f"{env_name}: region {self.name!r} is not within Ω\n{omega.describe()}\n{self.space.describe()}")
+
+
 @dataclasses.dataclass(frozen=True)
 class SuiteContexts:
     """Everything the context machinery needs to know about one environment."""
@@ -54,24 +86,63 @@ class SuiteContexts:
     # Ω. Its dimension names are, in order, the environment's ``CONTEXT_PARAMETERS``
     # (crax/envs/context.py); tests/test_suites.py checks the two agree.
     space: ContextSpace
+    # The difficulty levels as points of Ω, keyed by level; from crax/envs/difficulty.py.
     level_contexts: Mapping[int, Context]
     task: TaskDescription
+    # Further named regions the policy is evaluated on, in panel order; empty for most suites.
+    evaluation_regions: Tuple[EvaluationRegion, ...] = ()
 
     def __post_init__(self) -> None:
+        if not self.level_contexts:
+            raise ValueError(f"{self.env_name}: no difficulty levels; the context machinery needs at least one")
         for level, context in self.level_contexts.items():
             if context.shape != (self.space.size,):
                 raise ValueError(f"{self.env_name}: level {level} context has shape {context.shape}, Ω has {self.space.size} dimensions")
             if not bool(self.space.contains(context[None])[0]):
                 raise ValueError(f"{self.env_name}: level {level} context {self.space.decode(context)} lies outside Ω\n{self.space.describe()}")
+        names = [region.name for region in self.evaluation_regions]
+        if len(set(names)) != len(names):
+            raise ValueError(f"{self.env_name}: evaluation regions share a name: {names}")
+        for region in self.evaluation_regions:
+            region.check_against(self.space, self.env_name)
 
     def level(self, level: int) -> Context:
         if level not in self.level_contexts:
             raise KeyError(f"{self.env_name}: no level {level}; have {sorted(self.level_contexts)}")
         return self.level_contexts[level]
 
-    def levels(self) -> jnp.ndarray:
-        """All difficulty levels as a ``[3, D]`` array (for StagedContexts)."""
-        return jnp.stack([self.level(l) for l in LEVELS])
+    def region(self, name: str) -> EvaluationRegion:
+        for region in self.evaluation_regions:
+            if region.name == name:
+                return region
+        raise KeyError(f"{self.env_name}: no evaluation region {name!r}; have {[r.name for r in self.evaluation_regions]}")
+
+
+def _disjoint(first: ContextSpace, second: ContextSpace) -> bool:
+    """No point of positive measure lies in both: either no admissible integer tuple is shared,
+    or some continuous interval does not overlap (touching endpoints do not count)."""
+    shared_integer_tuples = bool(len(
+        {tuple(p) for p in first.integer_points.tolist()} & {tuple(p) for p in second.integer_points.tolist()}
+    )) if first.integer_dimensions else True
+    continuous_overlap = all(
+        a.low < b.high and b.low < a.high
+        for a, b in zip(first.dimensions, second.dimensions) if a.kind == "continuous"
+    )
+    return not (shared_integer_tuples and continuous_overlap)
+
+
+def _within(inner: ContextSpace, outer: ContextSpace) -> bool:
+    """Every admissible integer tuple of ``inner`` is one of ``outer``'s, and every continuous
+    interval of ``inner`` lies inside ``outer``'s."""
+    integer_inside = (
+        {tuple(p) for p in inner.integer_points.tolist()} <= {tuple(p) for p in outer.integer_points.tolist()}
+        if inner.integer_dimensions else True
+    )
+    continuous_inside = all(
+        o.low <= i.low and i.high <= o.high
+        for i, o in zip(inner.dimensions, outer.dimensions) if i.kind == "continuous"
+    )
+    return integer_inside and continuous_inside
 
 
 _REGISTRY: Dict[str, Callable[[], SuiteContexts]] = {}
@@ -98,10 +169,12 @@ def registered_environments() -> Tuple[str, ...]:
 
 
 def _level_contexts(env_name: str) -> Dict[int, Context]:
-    """The three difficulty levels as contexts: what an environment built at each level resets into by default."""
+    """The difficulty levels ``crax/envs/difficulty.py`` supports, as contexts: what an environment
+    built at each level resets into by default."""
     from crax import envs
+    from crax.envs.difficulty import get_supported_levels
 
-    return {level: envs.get_environment(env_name, level=level).unwrapped.default_context() for level in LEVELS}
+    return {level: envs.get_environment(env_name, level=level).unwrapped.default_context() for level in get_supported_levels(env_name)}
 
 
 # --------------------------------------------------------------------------- #
@@ -376,6 +449,13 @@ _GOAL_MAX_ACTIVE_HAZARDS = 20
 _GOAL_SIZE_LOW = 0.14
 _GOAL_SIZE_HIGH = 0.22
 
+# Ω₂, the out-of-distribution evaluation region (plan item 3). PLACEHOLDER VALUES:
+# the design question is open (docs/acl/design/goal_point_out_of_distribution.md).
+# As it stands: denser than the cap allows — 21 to all 30 hazards — and a goal
+# smaller than Ω's smallest, so every point is outside Ω on both counts at once.
+_GOAL_OUT_OF_DISTRIBUTION_MIN_ACTIVE_HAZARDS = _GOAL_MAX_ACTIVE_HAZARDS + 1
+_GOAL_OUT_OF_DISTRIBUTION_GOAL_SIZE_LOW = 0.10
+
 _HAZARD_KIND_WORDS = {
     ("cylinder", False): "flat discs the robot can drive over",
     ("cylinder", True): "solid cylinders the robot bumps into",
@@ -397,13 +477,23 @@ def _goal_point() -> SuiteContexts:
             description=f"how many of the model's {group.count} {_HAZARD_KIND_WORDS[(group.hazard_type, group.collidable)]} "
             f"are in the arena this episode (the rest are parked out of reach)",
         ))
-    dimensions.append(Dimension(
-        "goal_size", low=_GOAL_SIZE_LOW, high=_GOAL_SIZE_HIGH,
-        description="the radius in metres of the goal disc the robot has to reach; smaller = harder to hit",
-    ))
+    goal_size = "the radius in metres of the goal disc the robot has to reach; smaller = harder to hit"
+    hazard_dimensions = tuple(dimensions)
     return SuiteContexts(
         env_name=env_name,
-        space=ContextSpace(tuple(dimensions), integer_total_cap=_GOAL_MAX_ACTIVE_HAZARDS),
+        space=ContextSpace(
+            hazard_dimensions + (Dimension("goal_size", low=_GOAL_SIZE_LOW, high=_GOAL_SIZE_HIGH, description=goal_size),),
+            integer_total_cap=_GOAL_MAX_ACTIVE_HAZARDS,
+        ),
+        evaluation_regions=(EvaluationRegion(
+            name=OUT_OF_DISTRIBUTION_REGION,
+            space=ContextSpace(
+                hazard_dimensions + (Dimension("goal_size", low=_GOAL_OUT_OF_DISTRIBUTION_GOAL_SIZE_LOW, high=_GOAL_SIZE_LOW, description=goal_size),),
+                integer_total_floor=_GOAL_OUT_OF_DISTRIBUTION_MIN_ACTIVE_HAZARDS,
+            ),
+            label="outside Ω (uniform over Ω₂: denser than the cap, smaller goal)",
+            relation="disjoint_from",
+        ),),
         level_contexts=_level_contexts(env_name),
         task=TaskDescription(
             agent="A wheeled point robot in a 5 m × 5 m arena that has to drive to a goal disc, avoiding hazards "

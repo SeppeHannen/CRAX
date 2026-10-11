@@ -3,13 +3,15 @@
 Thin wrapper around the base PPO trainer with PID-based Lagrangian constraint handling.
 """
 
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
+import flax
 import jax
 import jax.numpy as jnp
 
 from crax import base
 from crax import envs
+from training import rounds
 from training import types
 from training.agents.ppo import train as ppo_train
 from training.agents.ppo import networks as ppo_networks
@@ -17,6 +19,18 @@ from training.agents.ppo_lag import losses as ppo_lag_losses
 
 Metrics = types.Metrics
 TrainingState = ppo_train.TrainingState
+
+
+@flax.struct.dataclass
+class PIDLagrangeState:
+    """The controller's state, kept in ``TrainingState.aux_state``: the multiplier
+    the loss uses and the three terms the controller updates it from. Every
+    array has shape ``[1]``."""
+
+    lagrange_multiplier: jnp.ndarray  # λ, the multiplier on the cost advantage
+    integral: jnp.ndarray  # clipped running sum of the violation
+    previous_violation: jnp.ndarray  # last round's violation, for the derivative
+    violation_derivative_ema: jnp.ndarray  # smoothed change of the violation
 
 
 def train(
@@ -72,6 +86,9 @@ def train(
         restore_value_fn: bool = True,
         pretrained_params: Optional[Any] = None,
         init_cost_value_from: str = 'value',
+        # per-round host hook and named evaluation distributions (see ppo.train)
+        round_hook: Optional[rounds.RoundHook] = None,
+        evaluation_wrap_env_fns: Optional[Mapping[str, Callable[[Any], Any]]] = None,
 ):
     """PPO-PID Lagrange training."""
     per_step_safety_bound = safety_bound / episode_length if episode_length else safety_bound
@@ -81,30 +98,53 @@ def train(
             return ppo_networks.make_ppo_networks(
                 obs_size, action_size, cost_value_hidden_layer_sizes=(256,) * 5, **kwargs)
 
-    def post_step_fn(training_state, metrics):
-        lambda_lagr, integral, prev_v, deriv_ema = training_state.aux_state
+    def post_step_fn(training_state: TrainingState, metrics: Metrics) -> Tuple[TrainingState, Metrics]:
+        controller: PIDLagrangeState = training_state.aux_state
         avg_cost = jnp.mean(metrics["mean_cost"][-1])
-        v = (avg_cost - per_step_safety_bound).reshape((1,))
-        new_integral = jnp.clip(integral + v, -pid_integral_clip, pid_integral_clip)
-        new_deriv_ema = pid_deriv_ema_beta * deriv_ema + (1.0 - pid_deriv_ema_beta) * (v - prev_v)
-        pid_output = pid_kp * v + pid_ki * new_integral + pid_kd * new_deriv_ema
-        updated_lambda = jnp.clip(jax.nn.relu(lambda_lagr + pid_output), 0.0, pid_lambda_clip)
-        new_state = training_state.replace(aux_state=(updated_lambda, new_integral, v, new_deriv_ema))
-        return new_state, {"lambda_lagr": updated_lambda, "pid/violation": v}
+        violation = (avg_cost - per_step_safety_bound).reshape((1,))
+        integral = jnp.clip(controller.integral + violation, -pid_integral_clip, pid_integral_clip)
+        violation_derivative_ema = (
+            pid_deriv_ema_beta * controller.violation_derivative_ema
+            + (1.0 - pid_deriv_ema_beta) * (violation - controller.previous_violation)
+        )
+        pid_output = pid_kp * violation + pid_ki * integral + pid_kd * violation_derivative_ema
+        lagrange_multiplier = jnp.clip(jax.nn.relu(controller.lagrange_multiplier + pid_output), 0.0, pid_lambda_clip)
+        new_state = training_state.replace(aux_state=PIDLagrangeState(
+            lagrange_multiplier=lagrange_multiplier, integral=integral, previous_violation=violation,
+            violation_derivative_ema=violation_derivative_ema,
+        ))
+        # `lambda_lagr` is the upstream metric key every constrained agent logs λ under.
+        return new_state, {"lambda_lagr": lagrange_multiplier, "pid/violation": violation}
 
-    def lagrange_loss_fn(params, normalizer_params, data, rng, aux_state=None,
+    def lagrange_loss_fn(params, normalizer_params, data, rng, aux_state: PIDLagrangeState,
                          ppo_network=None, entropy_cost=1e-4, discounting=0.9,
                          reward_scaling=1.0, gae_lambda=0.95, clipping_epsilon=0.3,
                          normalize_advantage=True):
-        lambda_lagr = aux_state[0] if aux_state else jnp.array([0.0])
         return ppo_lag_losses.compute_ppo_lagrange_loss(
             params=params, normalizer_params=normalizer_params, data=data, rng=rng,
-            ppo_network=ppo_network, lambda_lagr=lambda_lagr, safety_bound=per_step_safety_bound,
+            ppo_network=ppo_network, lambda_lagr=aux_state.lagrange_multiplier, safety_bound=per_step_safety_bound,
             entropy_cost=entropy_cost, discounting=discounting, reward_scaling=reward_scaling,
             gae_lambda=gae_lambda, clipping_epsilon=clipping_epsilon, normalize_advantage=normalize_advantage)
 
-    def init_aux_state_fn():
-        return (jnp.array([initial_lambda_lagr]), jnp.zeros((1,)), jnp.zeros((1,)), jnp.zeros((1,)))
+    # The round hook's view of the rollout: the advantages the loss is about to use, under the λ in force.
+    def compute_learning_signals(params, normalizer_params, data, aux_state: PIDLagrangeState,
+                                 ppo_network, discounting, reward_scaling, gae_lambda, normalize_advantage):
+        return ppo_lag_losses.compute_learning_signals(
+            params=params, normalizer_params=normalizer_params, data=data, lagrange_multiplier=aux_state.lagrange_multiplier,
+            ppo_network=ppo_network, discounting=discounting, reward_scaling=reward_scaling,
+            gae_lambda=gae_lambda, normalize_advantage=normalize_advantage)
+
+    learning_signals_fn = rounds.LearningSignalsFunction(
+        produces=ppo_lag_losses.LEARNING_SIGNALS, compute=compute_learning_signals
+    )
+
+    def init_aux_state_fn() -> PIDLagrangeState:
+        return PIDLagrangeState(
+            lagrange_multiplier=jnp.array([initial_lambda_lagr], dtype=jnp.float32),
+            integral=jnp.zeros((1,), dtype=jnp.float32),
+            previous_violation=jnp.zeros((1,), dtype=jnp.float32),
+            violation_derivative_ema=jnp.zeros((1,), dtype=jnp.float32),
+        )
 
     effective_restore_params = pretrained_params if pretrained_params is not None else restore_params
 
@@ -125,4 +165,7 @@ def train(
         restore_params=effective_restore_params, restore_value_fn=restore_value_fn,
         loss_fn=lagrange_loss_fn, post_step_fn=post_step_fn,
         extra_fields=("truncation", "episode_metrics", "episode_done", "cost"),
-        init_aux_state_fn=init_aux_state_fn)
+        init_aux_state_fn=init_aux_state_fn,
+        round_hook=round_hook,
+        learning_signals_fn=learning_signals_fn,
+        evaluation_wrap_env_fns=evaluation_wrap_env_fns)

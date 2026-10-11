@@ -43,13 +43,14 @@ VELOCITY_ANT_KEYS: List[str] = [
     ],
     *[f"evaluation/{d}/{name}" for d in ("deployment", "uniform") for name in ("avg_episode_length", "std_episode_length", "epoch_eval_time", "sps", "walltime")],
     *[f"training/{name}" for name in ("cost_v_loss", "cost_violation", "entropy_loss", "lambda_lagr", "mean_cost", "policy_loss", "sps", "total_loss", "v_loss", "walltime")],
+    "training/pid/violation",  # PPO-PID
     *[
         f"training_curriculum/{name}/velocity_threshold{suffix}"
         for name in ("intended", "sampled", "experienced")
         for suffix in ("", "/mean", "/std")
     ],
     "training_curriculum/episode_length/velocity_threshold",
-    "training_curriculum/value_loss/velocity_threshold",
+    *[f"training_curriculum/{signal}_value_loss/velocity_threshold" for signal in ("reward", "cost", "lagrangian")],
     "training_curriculum/distribution/stage",  # staged
     *[  # PLR
         f"training_curriculum/distribution/{name}"
@@ -71,6 +72,7 @@ FACTS = dashboard.RunFacts(
     episode_length=1000,
     safety_bound=25.0,
     deployment_distribution="level:3",
+    evaluations=(("deployment", "the deployment task (level:3)"), ("uniform", "all of Ω (uniform)")),
     task=dashboard.view.TaskDescription(
         agent="A MuJoCo ant that has to run forward along the x-axis.",
         reward="Per step: forward velocity + 1 for being upright − a penalty on large torques.",
@@ -196,6 +198,7 @@ def test_run_facts_require_dashboard_config_keys():
     with pytest.raises(KeyError, match="num_rounds"):
         dashboard.RunFacts.from_wandb_config({"num_timesteps": 1, "num_evals": 2, "num_eval_envs": 1,
                                                "episode_length": 1, "safety_bound": 1, "deployment_distribution": "level:3",
+                                               "evaluations": {"deployment": "w", "uniform": "r"},
                                                "task": {"agent": "a", "reward": "r", "cost": "c", "episode_ends_early": True},
                                                "context_space": {"a": {"low": 0, "high": 1, "description": "a"}},
                                                "context_space_integer_total_cap": None})

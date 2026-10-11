@@ -61,6 +61,7 @@ _PMAP_AXIS_NAME = 'i'
 PostStepFn = Callable[['TrainingState', Metrics], Tuple['TrainingState', Metrics]]
 
 
+
 @flax.struct.dataclass
 class TrainingState:
     """Contains training state for the learner."""
@@ -265,6 +266,7 @@ def train(
         init_aux_state_fn: Optional[Callable[[], Any]] = None,
         # curriculum hooks
         round_hook: Optional[rounds.RoundHook] = None,
+        learning_signals_fn: Optional[rounds.LearningSignalsFunction] = None,
         evaluation_wrap_env_fns: Optional[Mapping[str, Callable[[Any], Any]]] = None,
 ):
     """PPO training.
@@ -350,11 +352,17 @@ def train(
       round_hook: optional `training.rounds.RoundHook`. When set, one compiled
         call is one training step (a *round*); the hook's `extra_fields` are
         recorded per transition and handed to `hook.observe` during the round
-        together with the round's `LearningSignals` (the reward advantage of
-        every transition under the pre-update value function), and
-        `hook.on_round_end` runs on the host after every round and may edit
+        together with the round's `LearningSignals` from `learning_signals_fn`,
+        and `hook.on_round_end` runs on the host after every round and may edit
         the environment state for the next one. Evaluations still happen
         `num_evals` times. Incompatible with `num_resets_per_eval > 0`.
+      learning_signals_fn: the agent's `rounds.LearningSignalsFunction`: what
+        signals it `produces` and how to `compute` them from `(params,
+        normalizer_params, data, aux_state, **hyperparameters)`, once per round
+        under the parameters SGD starts from. Required with `round_hook`, whose
+        `required_signals` must be a subset of `produces`; checked here, before
+        anything compiles. Only the agent knows its objectives and where its
+        multiplier lives (docs/acl/design/learning_signals.md).
       evaluation_wrap_env_fns: optional `name -> wrap_env_fn`. One evaluator per
         entry, all on the same eval environment, reported under
         `evaluation/<name>/...`. Default: one evaluator using `wrap_env_fn`,
@@ -414,6 +422,15 @@ def train(
         # one per call instead of all inside one call.
         if num_resets_per_eval > 0:
             raise ValueError('round_hook is incompatible with num_resets_per_eval > 0')
+        if learning_signals_fn is None:
+            raise ValueError('round_hook needs the agent\'s learning_signals_fn (see ppo_lag/train.py)')
+        missing_signals = round_hook.required_signals - learning_signals_fn.produces
+        if missing_signals:
+            raise ValueError(
+                f'the round hook needs learning signals this agent does not produce: '
+                f'{sorted(signal.name for signal in missing_signals)}; it produces '
+                f'{sorted(signal.name for signal in learning_signals_fn.produces)}'
+            )
         epochs_per_evaluation = int(num_training_steps_per_epoch)
         num_training_steps_per_epoch = 1
         extra_fields = tuple(dict.fromkeys(extra_fields + tuple(round_hook.extra_fields)))
@@ -660,15 +677,19 @@ def train(
             )
 
         if round_hook is not None:
-            # Every transition's recorded `extra_fields` and the learner's view of it
-            # (the reward advantage under the parameters SGD starts from), to the host.
+            # Every transition's recorded `extra_fields` and the agent's view of it
+            # (its advantages under the parameters SGD starts from), to the host.
             with tracker.scope("learning_signals"):
-                learning_signals = rounds.LearningSignals(
-                    reward_advantage=ppo_losses.compute_reward_advantages(
-                        training_state.params, normalizer_params, data, ppo_network,
-                        discounting=discounting, reward_scaling=reward_scaling, gae_lambda=gae_lambda,
-                    )
+                learning_signals = learning_signals_fn.compute(
+                    training_state.params, normalizer_params, data, training_state.aux_state,
+                    ppo_network=ppo_network, discounting=discounting, reward_scaling=reward_scaling,
+                    gae_lambda=gae_lambda, normalize_advantage=normalize_advantage,
                 )
+                if frozenset(learning_signals) != learning_signals_fn.produces:
+                    raise ValueError(
+                        f'learning_signals_fn.compute returned {sorted(s.name for s in learning_signals)}, '
+                        f'not the declared {sorted(s.name for s in learning_signals_fn.produces)}'
+                    )
             with tracker.scope("round_hook_callback"):
                 jax.debug.callback(round_hook.observe, data.extras['state_extras'], learning_signals)
 

@@ -109,15 +109,18 @@ def add_shared_training_args(parser: argparse.ArgumentParser) -> argparse.Argume
     # With a training distribution other than 'none', every parallel slot gets
     # its own context per episode, one compiled call is one training round, and
     # the policy is evaluated on the deployment distribution w and on Uniform(Ω).
-    # Spec grammar (both flags): 'uniform' | 'level:<n>' | 'staged:<n>,<n>,...' | 'plr'
+    # Spec grammar (both flags): 'uniform' | 'level:<n>' | 'staged:<n>,<n>,...' | 'plr' | 'plr:<signal>'
     parser.add_argument("--context_distribution", type=str, default="none",
                         help="Distribution the student trains on. 'none' (default) = stock CRAX at --difficulty. "
                              "'uniform' = Uniform(Ω); 'level:3' = that difficulty level only; "
                              "'staged:1,2,3' = manual curriculum, equal split of the rounds; "
-                             "'plr' = Prioritized Level Replay (docs/acl/design/prioritized_level_replay.md).")
+                             "'plr' = Prioritized Level Replay scored by the reward critic's error; 'plr:cost' / "
+                             "'plr:lagrangian' = scored by the cost critic's error / by the error of the Lagrangian "
+                             "objective A_r - λ A_c the policy loss optimises (docs/acl/design/prioritized_level_replay.md).")
     parser.add_argument("--deployment_distribution", type=str, default="level:3",
-                        help="Distribution w the policy is for; evaluated on it (eval/deployment/*) next to "
-                             "Uniform(Ω) (eval/uniform/*). Same grammar as --context_distribution.")
+                        help="Distribution w the policy is for; evaluated on it (evaluation/deployment/*) next to "
+                             "Uniform(Ω) (evaluation/uniform/*) and, on suites that define one, Uniform(Ω₂) "
+                             "(evaluation/out_of_distribution/*). Same grammar as --context_distribution.")
 
     # --- Algorithm ---
     parser.add_argument("--alg", type=str, default="ppo_lag", help="Algorithm name (e.g., ppo, ppo_lag)")

@@ -16,10 +16,12 @@ distributions over contexts for a round and asks for all of them side by side:
   realised curriculum.
 
 The gap between sampled and experienced is explained by the mean episode
-length per bin, reported alongside. **value_loss** is the mean |reward
-advantage| of the round's transitions per bin — PLR's score as a function of
-the context, logged on every arm so that where a curriculum put its mass can be
-read against where the value error was. **distribution/** carries the scalars
+length per bin, reported alongside. **<signal>_value_loss** is the mean
+|signal| of the round's transitions per bin, for every signal the agent
+produces (reward, cost and Lagrangian advantage for the constrained agents) —
+PLR's candidate scores as functions of the context, logged on every arm so that
+where a curriculum put its mass can be read against where the value error was.
+**distribution/** carries the scalars
 a distribution states about φ_k (``summary``: a staged curriculum's stage,
 PLR's buffer health).
 
@@ -61,7 +63,7 @@ def training_curriculum_metrics(
     ``.../<d>/mean``, ``.../<d>/std``                        the one-line summaries that overlay across arms
     ``episode_length/<d>``                                   wandb.Histogram: mean length of the completed
                                                              episodes per bin — why sampled ≠ experienced
-    ``value_loss/<d>``                                       wandb.Histogram: mean |reward advantage| per bin
+    ``<signal>_value_loss/<d>``                              wandb.Histogram: mean |signal| per bin, per produced signal
     ``distribution/<key>``                                   ``distribution.summary(parameters)``
     ``num_transitions``, ``num_completed_episodes``          the sample sizes behind sampled and experienced
     """
@@ -86,9 +88,10 @@ def training_curriculum_metrics(
         metrics[f"episode_length/{dimension}"] = wandb.Histogram(
             np_histogram=(_mean_per_bin(sampled, episodes.lengths, edges), edges)
         )
-        metrics[f"value_loss/{dimension}"] = wandb.Histogram(
-            np_histogram=(_mean_per_bin(experienced, np.abs(transitions.flat_reward_advantage), edges), edges)
-        )
+        for signal, values in transitions.flat_signals.items():
+            metrics[f"{signal.value}_value_loss/{dimension}"] = wandb.Histogram(
+                np_histogram=(_mean_per_bin(experienced, np.abs(values), edges), edges)
+            )
     return {SECTION + key: value for key, value in metrics.items()}
 
 

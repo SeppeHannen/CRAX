@@ -15,7 +15,8 @@ Run with: JAX_PLATFORMS=cpu pytest tests/test_context_training.py -v
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+import dataclasses
+from typing import Any, Callable, Dict, List, Tuple
 
 import jax
 import numpy as np
@@ -24,12 +25,16 @@ import pytest
 from crax import envs
 from training import contexts as C
 from training.contexts.training_curriculum import NUM_BINS, SECTION as CURRICULUM
+from training import dashboard
 from training.agents.ppo_lag.train import train as train_ppo_lag
+from training.agents.ppo_pid.train import train as train_ppo_pid
+from training.agents.ppo import train as ppo_train
 from training.contexts.distributions import PrioritizedLevelReplayParameters
-from training.rounds import LearningSignals
+from training.rounds import LearningSignalsFunction, Signal
 from crax.envs.base import State
 
 ENV_NAME = "safe_velocity_ant"
+REWARD, COST, LAGRANGIAN = Signal.REWARD_ADVANTAGE, Signal.COST_ADVANTAGE, Signal.LAGRANGIAN_ADVANTAGE
 
 
 # --------------------------------------------------------------------------- #
@@ -44,11 +49,32 @@ def test_distribution_specs_parse_and_reject_garbage():
     assert isinstance(fixed, C.FixedContext) and float(fixed.context[0]) == float(suite.level(2)[0])
     staged = C.parse_distribution("staged:1,3", suite, 10)
     assert isinstance(staged, C.StagedContexts) and list(staged.switch_rounds) == [5]
-    assert isinstance(C.parse_distribution("plr", suite, 10), C.PrioritizedLevelReplay)
-    for bad in ("level", "uniform:2", "staged:", "gaussian", "plr:0.5"):
+    assert C.parse_distribution("plr", suite, 10).score is REWARD
+    assert C.parse_distribution("plr:cost", suite, 10).score is COST
+    assert C.parse_distribution("plr:lagrangian", suite, 10).score is LAGRANGIAN
+    for bad in ("level", "uniform:2", "staged:", "gaussian", "plr:0.5", "plr:return", "plr:REWARD_ADVANTAGE"):
         with pytest.raises(ValueError):
             C.parse_distribution(bad, suite, 10)
     assert C.spec_label("staged:1,2,3") == "staged123"
+
+
+def test_setup_evaluates_on_every_region_the_suite_registers():
+    """w and r always; then one evaluator per `EvaluationRegion`, named and labelled by the
+    region itself. A suite with no regions gets exactly two."""
+    common = dict(num_timesteps=1000, num_envs=4, batch_size=4, unroll_length=5, num_minibatches=2)
+    velocity = C.context_training_setup(ENV_NAME, "uniform", "level:3", **common)
+    goal = C.context_training_setup("safe_goal_point", "uniform", "level:3", **common)
+    assert [e.name for e in velocity.evaluations] == [C.DEPLOYMENT_EVALUATION, C.UNIFORM_EVALUATION]
+    assert [e.name for e in goal.evaluations] == [C.DEPLOYMENT_EVALUATION, C.UNIFORM_EVALUATION, C.OUT_OF_DISTRIBUTION_EVALUATION]
+    assert set(goal.train_kwargs()["evaluation_wrap_env_fns"]) == {e.name for e in goal.evaluations}
+    region = goal.suite.region(C.OUT_OF_DISTRIBUTION_EVALUATION)
+    assert goal.wandb_config()["evaluations"][C.OUT_OF_DISTRIBUTION_EVALUATION] == region.label
+    out_of_distribution = goal.evaluations[2].distribution
+    assert isinstance(out_of_distribution, C.UniformDistribution) and out_of_distribution.space == region.space
+    # a region may not shadow the two built-in evaluations
+    clashing = dataclasses.replace(region, name=C.UNIFORM_EVALUATION)
+    with pytest.raises(ValueError, match="collides"):
+        C.evaluations_for(dataclasses.replace(goal.suite, evaluation_regions=(clashing,)), "level:3", total_rounds=1)
 
 
 def _synthetic_round() -> C.RoundRollout:
@@ -67,9 +93,11 @@ def _synthetic_round() -> C.RoundRollout:
             "length": np.full((2, 5), 25.0, np.float32),
         },
     }
-    signals = LearningSignals(reward_advantage=np.where(contexts[..., 0] < 1.5, -1.0, 2.0).astype(np.float32))
+    reward_advantage = np.where(contexts[..., 0] < 1.5, -1.0, 2.0).astype(np.float32)
+    signals = {REWARD: reward_advantage, COST: -reward_advantage, LAGRANGIAN: 3 * reward_advantage}
     transitions = C.Transitions.from_recorded_fields(recorded, signals, num_slots=2)
-    return C.RoundRollout(4, transitions, C.EpisodeTracker(num_slots=2).complete(transitions))
+    statistics = frozenset(C.EpisodeStatistic(signal, C.MeanAbsolute()) for signal in Signal)
+    return C.RoundRollout(4, transitions, C.EpisodeTracker(num_slots=2, statistics=statistics).complete(transitions))
 
 
 def test_rollout_has_the_transitions_per_slot_and_the_episodes_that_ended():
@@ -77,16 +105,20 @@ def test_rollout_has_the_transitions_per_slot_and_the_episodes_that_ended():
     assert data.round_index == 4
     transitions, episodes = data.transitions, data.completed_episodes
     assert (transitions.num_slots, transitions.steps_per_slot, transitions.num_transitions) == (2, 5, 10)
-    np.testing.assert_allclose(transitions.reward_advantage, [[-1.0] * 5, [2.0] * 5])
+    np.testing.assert_allclose(transitions.signals[REWARD], [[-1.0] * 5, [2.0] * 5])
+    np.testing.assert_allclose(transitions.signals[LAGRANGIAN], [[-3.0] * 5, [6.0] * 5])
     assert episodes.count == 2
     np.testing.assert_allclose(episodes.contexts[:, 0], [1.28, 1.72])
     np.testing.assert_allclose(episodes.returns, [2.0, 7.0])  # the recorded totals at the done transitions
     np.testing.assert_allclose(episodes.costs, [3.0, 3.0])
     np.testing.assert_allclose(episodes.lengths, [25.0, 25.0])
-    np.testing.assert_allclose(episodes.value_loss, [1.0, 2.0])  # mean |advantage| over the episode's three steps
-    with pytest.raises(ValueError, match="reward_advantage"):
+    mean_absolute = lambda signal: episodes.statistics[C.EpisodeStatistic(signal, C.MeanAbsolute())]
+    np.testing.assert_allclose(mean_absolute(REWARD), [1.0, 2.0])  # mean |advantage| over the episode's three steps
+    np.testing.assert_allclose(mean_absolute(COST), [1.0, 2.0])
+    np.testing.assert_allclose(mean_absolute(LAGRANGIAN), [3.0, 6.0])
+    with pytest.raises(ValueError, match="signals"):
         C.Transitions(transitions.contexts, transitions.episode_done, transitions.episode_return, transitions.episode_cost,
-                      transitions.episode_length, transitions.reward_advantage[:, :3])
+                      transitions.episode_length, {REWARD: transitions.signals[REWARD][:, :3]})
 
 
 def _histogram_masses(histogram) -> np.ndarray:
@@ -117,15 +149,42 @@ def test_training_curriculum_metrics_give_intended_sampled_experienced_and_value
     assert metrics[CURRICULUM + "sampled/velocity_threshold/mean"] == pytest.approx(1.5)  # episodes at 1.28 and 1.72
     lengths = _histogram_masses(metrics[CURRICULUM + "episode_length/velocity_threshold"])
     assert sorted(lengths[lengths > 0]) == [25.0, 25.0]  # 0 where no episode ended
-    # value_loss: mean |advantage| of the transitions in each bin (|−1| below 1.5, 2 above), 0 in empty bins
-    value_loss = _histogram_masses(metrics[CURRICULUM + "value_loss/velocity_threshold"])
+    # value loss: mean |advantage| of the transitions in each bin (|−1| below 1.5, 2 above), 0 in empty bins
+    value_loss = _histogram_masses(metrics[CURRICULUM + "reward_value_loss/velocity_threshold"])
+    np.testing.assert_allclose(_histogram_masses(metrics[CURRICULUM + "cost_value_loss/velocity_threshold"]), value_loss)
+    np.testing.assert_allclose(_histogram_masses(metrics[CURRICULUM + "lagrangian_value_loss/velocity_threshold"]), 3 * value_loss)
     edges = np.linspace(float(suite.space.low[0]), float(suite.space.high[0]), NUM_BINS + 1)
-    flat_contexts, flat_advantage = data.transitions.flat_contexts[:, 0], data.transitions.flat_reward_advantage
+    flat_contexts, flat_advantage = data.transitions.flat_contexts[:, 0], data.transitions.flat_signals[REWARD]
     bins = np.digitize(flat_contexts, edges) - 1
     expected = [np.abs(flat_advantage[bins == b]).mean() if np.any(bins == b) else 0.0 for b in range(NUM_BINS)]
     np.testing.assert_allclose(value_loss, expected)
     assert 0.0 in value_loss and 1.0 in value_loss and 2.0 in value_loss
     assert not any("bin_" in key or "completed_episodes/" in key for key in metrics)
+
+
+def test_trainer_refuses_a_teacher_whose_signals_the_agent_does_not_produce_before_compiling():
+    """`plr:cost` needs the cost advantage; an agent that only produces the reward advantage
+    is refused in argument validation — no environment is reset, nothing is compiled."""
+    suite = C.suite_contexts(ENV_NAME)
+    hook = C.ContextRoundHook(C.parse_distribution("plr:cost", suite, total_rounds=1), num_slots=4)
+    assert hook.required_signals == {COST}
+    never_called = lambda *args, **kwargs: pytest.fail("compute ran: validation did not happen first")
+    reward_only = LearningSignalsFunction(produces=frozenset({REWARD}), compute=never_called)
+
+    from jax._src import monitoring
+    from jax._src.dispatch import BACKEND_COMPILE_EVENT
+    compiles: List[float] = []
+    monitoring.register_event_duration_secs_listener(
+        lambda event, seconds, **_: compiles.append(seconds) if event == BACKEND_COMPILE_EVENT else None
+    )
+    with pytest.raises(ValueError, match="COST_ADVANTAGE.*produces.*REWARD_ADVANTAGE"):
+        ppo_train.train(environment=envs.get_environment(ENV_NAME, level=1), num_timesteps=80, episode_length=20,
+                        num_envs=4, batch_size=4, num_minibatches=1, unroll_length=5,
+                        round_hook=hook, learning_signals_fn=reward_only)
+    assert compiles == [], f"the refusal came after compiling: {compiles}"
+    with pytest.raises(ValueError, match="learning_signals_fn"):
+        ppo_train.train(environment=envs.get_environment(ENV_NAME, level=1), num_timesteps=80, episode_length=20,
+                        num_envs=4, batch_size=4, num_minibatches=1, unroll_length=5, round_hook=hook)
 
 
 # --------------------------------------------------------------------------- #
@@ -160,7 +219,9 @@ class _RecordingHook(C.ContextRoundHook):
         return self.final_env_state, metrics
 
 
-def _run(training_spec: str) -> Tuple[C.ContextTrainingSetup, List[Tuple[int, Dict[str, Any]]], List[float], _RecordingHook]:
+def _run(
+    training_spec: str, train_fn: Callable[..., Any] = train_ppo_lag
+) -> Tuple[C.ContextTrainingSetup, List[Tuple[int, Dict[str, Any]]], List[float], _RecordingHook]:
     setup = C.context_training_setup(
         ENV_NAME,
         training_spec,
@@ -187,7 +248,7 @@ def _run(training_spec: str) -> Tuple[C.ContextTrainingSetup, List[Tuple[int, Di
     train_kwargs = setup.train_kwargs()
     hook = _RecordingHook(setup.distribution, num_slots=setup.num_envs)
     train_kwargs["round_hook"] = hook
-    train_ppo_lag(
+    train_fn(
         environment=env,
         num_timesteps=NUM_TIMESTEPS,
         seed=0,
@@ -231,6 +292,19 @@ def test_end_to_end_one_round_per_call_with_both_evaluations(training_spec):
         assert f"evaluation/{C.UNIFORM_EVALUATION}/episode_reward" in metrics
         assert f"evaluation/{C.DEPLOYMENT_EVALUATION}/episode_cost" in metrics
         assert not any(key.startswith("eval/") for key in metrics), "unnamed eval metrics leaked"
+
+
+def test_end_to_end_ppo_pid_runs_the_curriculum_and_logs_only_registered_keys():
+    """PPO-PID forwards the two curriculum hooks like PPO-Lagrange; every `training/*` key
+    it emits (its controller's `pid/violation` included) is known to the dashboard."""
+    _, history, _, _ = _run("uniform", train_fn=train_ppo_pid)
+    round_entries = _round_entries(history)
+    assert len(round_entries) == TOTAL_ROUNDS
+    assert any(f"evaluation/{C.UNIFORM_EVALUATION}/episode_reward" in m for _, m in history)
+    training_keys = {key for _, m in history for key in m if key.startswith("training/")}
+    assert {"training/lambda_lagr", "training/pid/violation"} <= training_keys
+    for key in training_keys:
+        dashboard.registered(key)  # raises UnregisteredMetric otherwise
 
 
 def test_end_to_end_staged_switches_levels_on_schedule_without_recompiling():
@@ -301,10 +375,12 @@ def test_end_to_end_uniform_realised_is_not_a_point_mass():
 def test_end_to_end_plr_fills_its_buffer_from_the_trainers_advantages_and_replays():
     """PLR on the real trainer: the first round draws from Uniform(Ω) only; a context enters
     the buffer only once an episode in it has *ended*, scored by the advantage the trainer
-    shipped over that whole episode; the intended distribution is then the replay mixture."""
-    setup, history, _, hook = _run("plr")
+    shipped over that whole episode; the intended distribution is then the replay mixture.
+    Scored by the Lagrangian objective, so the λ the agent keeps in its state reaches the score
+    (the reward-scored variant runs in the parametrised test above)."""
+    setup, history, _, hook = _run("plr:lagrangian")
     plr = setup.distribution
-    assert isinstance(plr, C.PrioritizedLevelReplay)
+    assert isinstance(plr, C.PrioritizedLevelReplay) and plr.score == "lagrangian"
     round_entries = _round_entries(history)
     DISTRIBUTION = CURRICULUM + "distribution/"
 
@@ -322,13 +398,14 @@ def test_end_to_end_plr_fills_its_buffer_from_the_trainers_advantages_and_replay
     assert scored
     assert all(np.isfinite(m[DISTRIBUTION + "score/mean"]) and m[DISTRIBUTION + "score/mean"] > 0 for m in scored)
     assert all(m[DISTRIBUTION + "score/max"] >= m[DISTRIBUTION + "score/mean"] for m in scored)
-    # value_loss/<d>: mean |advantage| per bin -- only bins the round had transitions in can be
+    # *_value_loss/<d>: mean |advantage| per bin -- only bins the round had transitions in can be
     # non-zero (a bin whose transitions all had advantage exactly 0 is legitimately 0)
     for _, m in round_entries:
-        value_loss = _histogram_masses(m[CURRICULUM + "value_loss/velocity_threshold"])
         experienced = _histogram_masses(m[EXPERIENCED])
-        assert np.all(experienced[value_loss > 0] > 0)
-        assert np.any(value_loss > 0)
+        for signal in Signal:  # one heatmap per signal the agent produces, whatever PLR ranks by
+            value_loss = _histogram_masses(m[f"{CURRICULUM}{signal.value}_value_loss/velocity_threshold"])
+            assert np.all(experienced[value_loss > 0] > 0), signal
+            assert np.any(value_loss > 0), signal
     # intended is a spread-out mixture, never a point mass
     assert all(m[CURRICULUM + "intended/velocity_threshold/std"] > 0.05 for _, m in round_entries)
 

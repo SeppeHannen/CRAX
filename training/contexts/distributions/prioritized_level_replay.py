@@ -4,10 +4,10 @@ continuous context space Ω.
 The design, and every departure from the paper, is in
 ``docs/acl/design/prioritized_level_replay.md``. In one paragraph: a buffer of
 ``buffer_size`` contexts, each an exact point of Ω that was once drawn from
-Uniform(Ω), carries a *score* (the mean |reward advantage| over the last
-complete episode run in that context — PLR's L1 value loss) and the round that
-score was set in. Each new episode replays a buffer row with probability
-``replay_probability × occupancy``, drawn by rank of score mixed with
+Uniform(Ω), carries a *score* (the mean |advantage| of the chosen signal —
+reward, cost or Lagrangian advantage — over the last complete episode run in
+that context: PLR's L1 value loss) and the round that score was set in. Each new episode replays a
+buffer row with probability ``replay_probability``, drawn by rank of score mixed with
 staleness, and otherwise draws a fresh context from Uniform(Ω). After each
 round every context whose episode ended is re-scored; new contexts enter the
 buffer while there is room, and afterwards only by displacing the row with the
@@ -21,7 +21,7 @@ that ``sample`` has nothing to derive.
 from __future__ import annotations
 
 import dataclasses
-from typing import Dict, Tuple
+from typing import Dict, FrozenSet, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -30,6 +30,8 @@ from flax import struct
 
 from training.contexts.rollout import CompletedEpisodes, RoundRollout
 from training.contexts.space import Contexts, ContextSpace
+from training.contexts.statistics import EpisodeStatistic, MeanAbsolute
+from training.rounds import Signal
 
 
 @struct.dataclass
@@ -38,7 +40,7 @@ class PrioritizedLevelReplayParameters:
 
     round_index: jax.Array  # scalar int32: the round these parameters are in force
     contexts: jax.Array  # [M, D] float32: buffer rows (exact points of Ω); rows of zeros where unoccupied
-    scores: jax.Array  # [M] float32: mean |reward advantage| when the row was last trained on; 0 where unoccupied
+    scores: jax.Array  # [M] float32: mean |chosen signal| when the row was last trained on; 0 where unoccupied
     last_round: jax.Array  # [M] int32: the round the score was set in; -1 where unoccupied
     occupied: jax.Array  # [M] bool
     replay_weights: jax.Array  # [M] float32: P_replay over rows for round `round_index` (0 where unoccupied)
@@ -49,21 +51,31 @@ class PrioritizedLevelReplayParameters:
 class PrioritizedLevelReplay:
     """PLR as a context distribution.
 
-    ``replay_probability`` is the paper's P_D, a constant as in its Appendix B.3
-    (0 only while the buffer is empty, i.e. in round 0, when there is nothing to
-    replay). ``temperature`` is β: P_S ∝ rank(score)^(-1/β), β = 1 is Zipf over ranks
-    (the paper's 0.1 puts all mass on the top rank, which is a point mass when
-    hundreds of episodes start from one frozen φ). ``staleness_coefficient`` is
-    ρ: the weight of the staleness distribution in P_replay.
+    ``score`` is which signal's magnitude scores a context: ``REWARD_ADVANTAGE`` is
+    the paper's L1 value loss of the reward critic; ``COST_ADVANTAGE`` the same for
+    the cost critic, so that in a constrained task replay follows where the
+    *constraint* is least understood; ``LAGRANGIAN_ADVANTAGE`` the error of the
+    objective the policy loss actually optimises, both critics and λ together. The
+    statistic the tracker is asked for is :attr:`statistic` — the mean |signal|
+    over the whole episode. ``replay_probability`` is the paper's P_D, a constant as
+    in its Appendix B.3 (0 only while the buffer is empty, i.e. in round 0, when
+    there is nothing to replay). ``temperature`` is β: P_S ∝ rank(score)^(-1/β),
+    β = 1 is Zipf over ranks (the paper's 0.1 puts all mass on the top rank, which
+    is a point mass when hundreds of episodes start from one frozen φ).
+    ``staleness_coefficient`` is ρ: the weight of the staleness distribution in
+    P_replay.
     """
 
     space: ContextSpace
+    score: Signal = Signal.REWARD_ADVANTAGE
     buffer_size: int = 1000
     replay_probability: float = 0.5
     temperature: float = 1.0
     staleness_coefficient: float = 0.3
 
     def __post_init__(self) -> None:
+        if not isinstance(self.score, Signal):
+            raise TypeError(f"score must be a Signal, got {self.score!r}")
         if self.buffer_size < 1:
             raise ValueError(f"buffer_size must be ≥ 1, got {self.buffer_size}")
         if not 0.0 <= self.replay_probability <= 1.0:
@@ -72,6 +84,15 @@ class PrioritizedLevelReplay:
             raise ValueError(f"temperature must be > 0, got {self.temperature}")
         if not 0.0 <= self.staleness_coefficient <= 1.0:
             raise ValueError(f"staleness_coefficient must be in [0, 1], got {self.staleness_coefficient}")
+
+    @property
+    def statistic(self) -> EpisodeStatistic:
+        """The one per-episode number PLR ranks by: mean |score signal| over the episode."""
+        return EpisodeStatistic(self.score, MeanAbsolute())
+
+    @property
+    def required_statistics(self) -> FrozenSet[EpisodeStatistic]:
+        return frozenset({self.statistic})
 
     # ---- JAX half ---------------------------------------------------------- #
 
@@ -105,7 +126,7 @@ class PrioritizedLevelReplay:
         buffer = _Buffer.from_params(self, parameters)
         next_round = rollout.round_index + 1
 
-        round_contexts, round_scores = _score_per_context(rollout.completed_episodes)
+        round_contexts, round_scores = _score_per_context(rollout.completed_episodes, self.statistic)
         in_buffer = buffer.rows_of(round_contexts)  # -1 where the context is not a buffer row
         seen = in_buffer >= 0
         buffer.set_scores(in_buffer[seen], round_scores[seen], rollout.round_index)
@@ -163,13 +184,14 @@ class PrioritizedLevelReplay:
         return self.replay_probability if occupied.any() else 0.0
 
 
-def _score_per_context(episodes: CompletedEpisodes) -> Tuple[np.ndarray, np.ndarray]:
+def _score_per_context(episodes: CompletedEpisodes, statistic: EpisodeStatistic) -> Tuple[np.ndarray, np.ndarray]:
     """The distinct contexts whose episodes ended this round, ``[K, D]``, and each one's
-    score: its episodes' L1 value loss (``CompletedEpisodes.value_loss``), averaged when
-    several episodes of the same context ended in the round."""
+    score: its episodes' ``statistic``, averaged when several episodes of the same
+    context ended in the round."""
+    value_loss = episodes.statistics[statistic]
     keys = _row_keys(episodes.contexts)
     unique_keys, first_index, inverse = np.unique(keys, return_index=True, return_inverse=True)
-    total = np.bincount(inverse, weights=episodes.value_loss.astype(np.float64), minlength=unique_keys.size)
+    total = np.bincount(inverse, weights=value_loss.astype(np.float64), minlength=unique_keys.size)
     count = np.bincount(inverse, minlength=unique_keys.size)
     return episodes.contexts[first_index], total / count
 

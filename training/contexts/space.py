@@ -53,15 +53,17 @@ class Dimension:
 
 @dataclasses.dataclass(frozen=True)
 class ContextSpace:
-    """A box-shaped Ω with named coordinates, optionally capped in its integer total.
+    """A box-shaped Ω with named coordinates, optionally bounded in its integer total.
 
-    ``integer_total_cap``: if set, only points whose integer coordinates sum to at
-    most this value belong to Ω. Instances are immutable and hashable, so they can
-    be static arguments to jitted functions.
+    ``integer_total_cap`` / ``integer_total_floor``: if set, only points whose
+    integer coordinates sum to at most / at least this value belong to Ω.
+    Instances are immutable and hashable, so they can be static arguments to
+    jitted functions.
     """
 
     dimensions: Tuple[Dimension, ...]
     integer_total_cap: Optional[int] = None
+    integer_total_floor: Optional[int] = None
 
     def __post_init__(self) -> None:
         names = [d.name for d in self.dimensions]
@@ -69,12 +71,18 @@ class ContextSpace:
             raise ValueError(f"Duplicate dimension names: {names}")
         if not self.dimensions:
             raise ValueError("A context space needs at least one dimension")
+        if (self.integer_total_cap is not None or self.integer_total_floor is not None) and not self.integer_dimensions:
+            raise ValueError("an integer total bound was given but Ω has no integer dimension")
         if self.integer_total_cap is not None:
-            if not self.integer_dimensions:
-                raise ValueError("integer_total_cap given but Ω has no integer dimension")
             least = sum(int(d.low) for d in self.integer_dimensions)
             if self.integer_total_cap < least:
                 raise ValueError(f"integer_total_cap {self.integer_total_cap} is below the smallest possible total {least}")
+        if self.integer_total_floor is not None:
+            most = sum(int(d.high) for d in self.integer_dimensions)
+            if self.integer_total_floor > most:
+                raise ValueError(f"integer_total_floor {self.integer_total_floor} is above the largest possible total {most}")
+            if self.integer_total_cap is not None and self.integer_total_floor > self.integer_total_cap:
+                raise ValueError(f"integer_total_floor {self.integer_total_floor} exceeds integer_total_cap {self.integer_total_cap}")
 
     # ---- introspection --------------------------------------------------- #
 
@@ -93,11 +101,13 @@ class ContextSpace:
     @property
     def integer_points(self) -> np.ndarray:
         """Every admissible value of the integer coordinates, ``[K, I]`` (``I`` = number of
-        integer dimensions), in lexicographic order. The cap, when set, is applied here."""
+        integer dimensions), in lexicographic order. The total bounds, when set, are applied here."""
         ranges = [range(int(d.low), int(d.high) + 1) for d in self.integer_dimensions]
         points = np.asarray(list(itertools.product(*ranges)), dtype=np.int32).reshape(-1, len(ranges))
         if self.integer_total_cap is not None:
             points = points[points.sum(axis=1) <= self.integer_total_cap]
+        if self.integer_total_floor is not None:
+            points = points[points.sum(axis=1) >= self.integer_total_floor]
         return points
 
     @property
@@ -154,22 +164,28 @@ class ContextSpace:
         return contexts.at[:, jnp.asarray(integer_indices)].set(chosen)
 
     def contains(self, contexts: Contexts, atol: float = 1e-6) -> jax.Array:
-        """Boolean ``[N]``: inside the box (with tolerance) and under the cap."""
+        """Boolean ``[N]``: inside the box (with tolerance) and within the integer total bounds."""
         inside = jnp.all((contexts >= self.low - atol) & (contexts <= self.high + atol), axis=-1)
-        if self.integer_total_cap is None:
+        if self.integer_total_cap is None and self.integer_total_floor is None:
             return inside
         integer_mask = jnp.asarray([d.kind == "integer" for d in self.dimensions])
         total = jnp.sum(jnp.where(integer_mask, contexts, 0.0), axis=-1)
-        return inside & (total <= self.integer_total_cap + atol)
+        if self.integer_total_cap is not None:
+            inside = inside & (total <= self.integer_total_cap + atol)
+        if self.integer_total_floor is not None:
+            inside = inside & (total >= self.integer_total_floor - atol)
+        return inside
 
     # ---- convenience ----------------------------------------------------- #
 
     def describe(self) -> str:
         rows = [f"  {d.name:<24} [{d.low:g}, {d.high:g}] {d.kind}" + (f"  — {d.description}" if d.description else "")
                 for d in self.dimensions]
+        names = " + ".join(d.name for d in self.integer_dimensions)
         if self.integer_total_cap is not None:
-            names = " + ".join(d.name for d in self.integer_dimensions)
             rows.append(f"  with {names} ≤ {self.integer_total_cap}")
+        if self.integer_total_floor is not None:
+            rows.append(f"  with {names} ≥ {self.integer_total_floor}")
         return "ContextSpace(\n" + "\n".join(rows) + "\n)"
 
 

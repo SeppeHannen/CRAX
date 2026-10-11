@@ -3,7 +3,7 @@ deployment target w when w is a single task."""
 from __future__ import annotations
 
 import dataclasses
-from typing import Dict
+from typing import Dict, FrozenSet
 
 import jax
 import jax.numpy as jnp
@@ -11,6 +11,7 @@ from flax import struct
 
 from training.contexts.rollout import RoundRollout
 from training.contexts.space import Context, Contexts, ContextSpace
+from training.contexts.statistics import EpisodeStatistic
 
 
 @struct.dataclass
@@ -26,6 +27,10 @@ class FixedContext:
     def __post_init__(self) -> None:
         if self.context.shape != (self.space.size,):
             raise ValueError(f"context has shape {self.context.shape}, expected ({self.space.size},)")
+
+    @property
+    def required_statistics(self) -> FrozenSet[EpisodeStatistic]:
+        return frozenset()
 
     def initialise(self) -> FixedParameters:
         return FixedParameters(context=jnp.asarray(self.context, jnp.float32))

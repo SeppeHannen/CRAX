@@ -7,7 +7,7 @@ array, so advancing a stage changes data, not the compiled program.
 from __future__ import annotations
 
 import dataclasses
-from typing import Dict, Sequence
+from typing import Dict, FrozenSet, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -15,6 +15,7 @@ from flax import struct
 
 from training.contexts.rollout import RoundRollout
 from training.contexts.space import Contexts, ContextSpace
+from training.contexts.statistics import EpisodeStatistic
 
 
 @struct.dataclass
@@ -44,6 +45,10 @@ class StagedContexts:
         num_stages = int(stages.shape[0])
         switch_rounds = [round(total_rounds * (i + 1) / num_stages) for i in range(num_stages - 1)]
         return cls(space=space, stages=stages, switch_rounds=switch_rounds)
+
+    @property
+    def required_statistics(self) -> FrozenSet[EpisodeStatistic]:
+        return frozenset()
 
     def initialise(self) -> StagedParameters:
         return StagedParameters(stage=jnp.asarray(0, jnp.int32), round_index=jnp.asarray(0, jnp.int32))

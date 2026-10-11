@@ -28,7 +28,7 @@ from training import contexts as C
 from training import dashboard
 from training.acting import Evaluator
 from training.agents.ppo.train import _evaluation_metric_name
-from training.contexts.registry import LEVELS
+from crax.envs.difficulty import get_supported_levels
 
 SUITES = C.registered_environments()
 NUM_SLOTS = 2
@@ -63,11 +63,14 @@ def _logged_keys(env_name: str) -> List[str]:
     def zero_policy(_params):
         return lambda observation, key: (jnp.zeros((observation.shape[0], env.action_size)), {})
 
-    evaluation_env = C.wrap_for_context_evaluation(env, C.UniformDistribution(C.suite_contexts(env_name).space), episode_length=EPISODE_LENGTH)
-    evaluator = Evaluator(evaluation_env, zero_policy, num_eval_envs=NUM_SLOTS, episode_length=EPISODE_LENGTH,
-                          action_repeat=1, key=jax.random.PRNGKey(1))
-    for distribution in (C.DEPLOYMENT_EVALUATION, C.UNIFORM_EVALUATION):
-        keys += [_evaluation_metric_name(key, distribution) for key in evaluator.run_evaluation(None, training_metrics={})]
+    # One evaluator per target the run would be scored on, each on its own evaluation stack --
+    # the targets come from the same function `context_training_setup` uses.
+    suite = C.suite_contexts(env_name)
+    for evaluation in C.evaluations_for(suite, deployment_spec="level:3", total_rounds=1):
+        evaluation_env = C.wrap_for_context_evaluation(env, evaluation.distribution, episode_length=EPISODE_LENGTH)
+        evaluator = Evaluator(evaluation_env, zero_policy, num_eval_envs=NUM_SLOTS, episode_length=EPISODE_LENGTH,
+                              action_repeat=1, key=jax.random.PRNGKey(1))
+        keys += [_evaluation_metric_name(key, evaluation.name) for key in evaluator.run_evaluation(None, training_metrics={})]
     return keys
 
 
@@ -93,12 +96,15 @@ def test_omega_names_the_environments_context_parameters(env_name):
 
 @pytest.mark.parametrize("env_name", SUITES)
 def test_levels_differ_and_a_plain_reset_lands_in_the_levels_context(env_name):
-    """The three levels are three distinct points of Ω, and a level-``n`` environment's plain
-    ``reset`` writes exactly ``level(n)`` into the state — the stock run is a context run."""
+    """The suite's levels are exactly the difficulty module's, distinct points of Ω, and a
+    level-``n`` environment's plain ``reset`` writes exactly ``level(n)`` into the state — the
+    stock run is a context run."""
     suite = C.suite_contexts(env_name)
-    points = [np.asarray(suite.level(level)) for level in LEVELS]
-    assert len({tuple(np.round(point, 6)) for point in points}) == len(LEVELS), points
-    for level in LEVELS:
+    levels = get_supported_levels(env_name)
+    assert sorted(suite.level_contexts) == levels == [1, 2, 3]
+    points = [np.asarray(suite.level(level)) for level in levels]
+    assert len({tuple(np.round(point, 6)) for point in points}) == len(levels), points
+    for level in levels:
         env = envs.get_environment(env_name, level=level).unwrapped
         state = env.reset(jax.random.PRNGKey(0))
         np.testing.assert_allclose(np.asarray(state.info[CONTEXT_KEY]), np.asarray(suite.level(level)), err_msg=f"{env_name} level {level}")

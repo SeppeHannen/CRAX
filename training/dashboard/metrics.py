@@ -155,10 +155,19 @@ KEPT: Tuple[Metric, ...] = (
            "heatmap over rounds: the share of the round's *transitions* whose episode ran at each value of {dimension} (q̂, the realised curriculum).", histogram=True),
     Metric("training_curriculum/sampled/{dimension}", "Contexts sampled (per completed episode)", "share of the round's completed episodes per bin", Group.MECHANISM,
            "heatmap over rounds: the share of the round's *completed episodes* that ran at each value of {dimension} (the empirical q).", histogram=True),
-    Metric("training_curriculum/value_loss/{dimension}", "Value error per value of {dimension}", "mean |reward advantage|", Group.MECHANISM,
-           "heatmap over rounds: the mean |reward advantage| (the L1 error of the reward critic, PLR's score) of the round's "
-           "transitions per value of {dimension} (0 = no transition there). Where the learner's value estimate is most wrong — "
+    Metric("training_curriculum/reward_value_loss/{dimension}", "Reward critic's error per value of {dimension}", "mean |reward advantage|", Group.MECHANISM,
+           "heatmap over rounds: the mean |reward advantage| (the L1 error of the reward critic, `plr`'s score) of the round's "
+           "transitions per value of {dimension} (0 = no transition there). Where the reward estimate is most wrong — "
            "read against *intended* to see whether the curriculum went there.", histogram=True),
+    Metric("training_curriculum/cost_value_loss/{dimension}", "Cost critic's error per value of {dimension}", "mean |cost advantage|", Group.MECHANISM,
+           "heatmap over rounds: the mean |cost advantage| (the L1 error of the cost critic, `plr:cost`'s score) of the round's "
+           "transitions per value of {dimension} (0 = no transition there). Where the cost estimate is most wrong.", histogram=True),
+    Metric("training_curriculum/lagrangian_value_loss/{dimension}", "Lagrangian objective's error per value of {dimension}",
+           "mean |A_r − λ A_c|, advantages standardised", Group.MECHANISM,
+           "heatmap over rounds: the mean magnitude of the advantage the policy loss actually weights each transition by — the reward "
+           "and cost advantages standardised over the round and combined with the round's λ (`plr:lagrangian`'s score) — per value of "
+           "{dimension} (0 = no transition there). Where the update signal is largest; unlike the two critics' errors this is in "
+           "standardised units, so compare across values of {dimension}, not across rounds.", histogram=True),
     Metric("training_curriculum/experienced/{dimension}/mean", "experienced", "{dimension}", Group.MECHANISM,
            "**experienced** = mean {dimension} over the round's transitions: every step counts once, so contexts with long episodes weigh more — the data the gradient came from.", panel=MEAN_CONTEXT_PANEL),
     Metric("training_curriculum/sampled/{dimension}/mean", "sampled", "{dimension}", Group.MECHANISM,
@@ -184,7 +193,11 @@ KEPT: Tuple[Metric, ...] = (
            "the share of the replay distribution on its 100 most-replayed contexts. 0.1 would be uniform over the buffer.",
            panel="PLR: concentration of the replay distribution"),
     Metric("training/lambda_lagr", "Lagrange multiplier λ", "λ", Group.MECHANISM,
-           "PPO-Lagrange's multiplier after the round's update; it grows while the batch's cost per step exceeds the budget per step and shrinks otherwise."),
+           "the multiplier on the cost advantage after the round's update, by the agent's own rule (PPO-Lagrange: an integrator; "
+           "PPO-PID: a PID controller). It grows while the batch's cost per step exceeds the budget per step and shrinks otherwise."),
+    Metric("training/pid/violation", "Constraint violation the controller sees", "cost per step above the budget", Group.MECHANISM,
+           "the batch's mean cost per step minus the budget per step — the error signal PPO-PID's controller drives to zero; "
+           "positive = over budget."),
     Metric("episodic/cost", "Training cost per episode", "cost per episode", Group.MECHANISM,
            f"the cost (defined in the Verdict section) summed over one episode, mean over {TRAINING_EPISODES}. Not "
            f"comparable to Verdict's cost."),

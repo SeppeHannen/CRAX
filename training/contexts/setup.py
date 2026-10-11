@@ -6,31 +6,47 @@ A distribution is written as a short spec, the same grammar for both flags:
     uniform            r, Uniform(Ω)
     level:3            point mass on the suite's difficulty level 3
     staged:1,2,3       CRAX's manual curriculum: level 1, then 2, then 3, equal split of the rounds
-    plr                Prioritized Level Replay with the defaults of its class (an adaptive
-                       curriculum; docs/acl/design/prioritized_level_replay.md)
+    plr                Prioritized Level Replay scored by the reward critic's error (the paper's;
+                       docs/acl/design/prioritized_level_replay.md)
+    plr:<signal>       the same, scored by that signal's magnitude: reward, cost, or lagrangian
+                       (the advantage the policy loss optimises, A_r − λ A_c)
 
 The training distribution is what the student learns on. The deployment
-distribution w is what it is *for*; the policy is evaluated on w and, always,
-on r as well (metrics ``evaluation/deployment/...`` and ``evaluation/uniform/...``).
-Nothing here is suite-specific: levels are resolved through the registry, and a
-suite without levels simply rejects ``level:``/``staged:`` specs.
+distribution w is what it is *for*; the policy is evaluated on w, on r, and on
+Uniform(region) for every :class:`~training.contexts.registry.EvaluationRegion`
+the suite registers (metrics ``evaluation/<name>/...``). Nothing here is
+suite-specific: levels and regions are resolved through the registry.
 """
 from __future__ import annotations
 
 import dataclasses
 import math
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from training.contexts.distribution import ContextDistribution
 from training.contexts.distributions import FixedContext, PrioritizedLevelReplay, StagedContexts, UniformDistribution
-from training.contexts.registry import SuiteContexts, suite_contexts
+from training.contexts.registry import OUT_OF_DISTRIBUTION_REGION, SuiteContexts, suite_contexts
 from training.contexts.round_hook import ContextRoundHook
 from training.contexts.wrapper import make_evaluation_wrap_env_fn, make_wrap_env_fn
+from training.rounds import Signal
 
 NO_DISTRIBUTION = "none"
+# The two evaluations every context run has; a suite's regions add theirs under their own names.
 DEPLOYMENT_EVALUATION = "deployment"
 UNIFORM_EVALUATION = "uniform"
-SPEC_HELP = "'uniform', 'level:<n>', 'staged:<n>,<n>,...', or 'plr'"
+OUT_OF_DISTRIBUTION_EVALUATION = OUT_OF_DISTRIBUTION_REGION
+SIGNAL_NAMES = tuple(signal.value for signal in Signal)
+SPEC_HELP = f"'uniform', 'level:<n>', 'staged:<n>,<n>,...', 'plr', or 'plr:<signal>' with signal in {SIGNAL_NAMES}"
+
+
+@dataclasses.dataclass(frozen=True)
+class Evaluation:
+    """One distribution the policy is scored on: its W&B name (``evaluation/<name>/*``),
+    the distribution, and the words the dashboard uses for it."""
+
+    name: str
+    distribution: ContextDistribution
+    label: str
 
 
 def parse_distribution(spec: str, suite: SuiteContexts, total_rounds: int) -> ContextDistribution:
@@ -40,6 +56,8 @@ def parse_distribution(spec: str, suite: SuiteContexts, total_rounds: int) -> Co
         return UniformDistribution(suite.space)
     if kind == "plr" and not argument:
         return PrioritizedLevelReplay(suite.space)
+    if kind == "plr" and argument in SIGNAL_NAMES:
+        return PrioritizedLevelReplay(suite.space, score=Signal(argument))
     if kind == "level" and argument:
         return FixedContext(suite.space, suite.level(int(argument)))
     if kind == "staged" and argument:
@@ -64,7 +82,7 @@ class ContextTrainingSetup:
     training_spec: str
     deployment_spec: str
     distribution: ContextDistribution
-    deployment: ContextDistribution
+    evaluations: Tuple[Evaluation, ...]
     num_envs: int
     steps_per_round: int
     total_rounds: int
@@ -80,8 +98,7 @@ class ContextTrainingSetup:
             "wrap_env_fn": make_wrap_env_fn(self.distribution),
             "round_hook": ContextRoundHook(self.distribution, num_slots=self.num_envs),
             "evaluation_wrap_env_fns": {
-                DEPLOYMENT_EVALUATION: make_evaluation_wrap_env_fn(self.deployment),
-                UNIFORM_EVALUATION: make_evaluation_wrap_env_fn(UniformDistribution(self.suite.space)),
+                evaluation.name: make_evaluation_wrap_env_fn(evaluation.distribution) for evaluation in self.evaluations
             },
             "training_metrics_steps": self.steps_per_round,
         }
@@ -97,6 +114,7 @@ class ContextTrainingSetup:
             "context_space_integer_total_cap": self.suite.space.integer_total_cap,
             "training_distribution": self.training_spec,
             "deployment_distribution": self.deployment_spec,
+            "evaluations": {evaluation.name: evaluation.label for evaluation in self.evaluations},
             "num_rounds": self.total_rounds,
             "environment_steps_per_round": self.steps_per_round,
         }
@@ -107,8 +125,22 @@ class ContextTrainingSetup:
         return (
             f"training on {self.training_spec}{staged_note}, deployment {self.deployment_spec}; "
             f"{self.total_rounds} rounds of {self.steps_per_round:,} env steps; "
-            f"evaluated on [{DEPLOYMENT_EVALUATION}, {UNIFORM_EVALUATION}]\n{self.suite.space.describe()}"
+            f"evaluated on {[evaluation.name for evaluation in self.evaluations]}\n{self.suite.space.describe()}"
         )
+
+
+def evaluations_for(suite: SuiteContexts, deployment_spec: str, total_rounds: int) -> Tuple[Evaluation, ...]:
+    """The distributions every run of ``suite`` is scored on: w (``deployment_spec``), r,
+    then Uniform(region) for each of the suite's evaluation regions. The one place that
+    rule is written; ``train_kwargs``, the W&B config and the dashboard all read the result."""
+    for region in suite.evaluation_regions:
+        if region.name in (DEPLOYMENT_EVALUATION, UNIFORM_EVALUATION):
+            raise ValueError(f"{suite.env_name}: evaluation region {region.name!r} collides with a built-in evaluation")
+    return (
+        Evaluation(DEPLOYMENT_EVALUATION, parse_distribution(deployment_spec, suite, total_rounds), f"the deployment task ({deployment_spec})"),
+        Evaluation(UNIFORM_EVALUATION, UniformDistribution(suite.space), "all of Ω (uniform)"),
+        *(Evaluation(region.name, UniformDistribution(region.space), region.label) for region in suite.evaluation_regions),
+    )
 
 
 def context_training_setup(
@@ -134,7 +166,7 @@ def context_training_setup(
         training_spec=training_spec,
         deployment_spec=deployment_spec,
         distribution=parse_distribution(training_spec, suite, total_rounds),
-        deployment=parse_distribution(deployment_spec, suite, total_rounds),
+        evaluations=evaluations_for(suite, deployment_spec, total_rounds),
         num_envs=num_envs,
         steps_per_round=steps_per_round,
         total_rounds=total_rounds,

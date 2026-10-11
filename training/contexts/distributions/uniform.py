@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import dataclasses
-from typing import Dict
+from typing import Dict, FrozenSet
 
 import jax
 import jax.numpy as jnp
@@ -10,6 +10,7 @@ from flax import struct
 
 from training.contexts.rollout import RoundRollout
 from training.contexts.space import Contexts, ContextSpace
+from training.contexts.statistics import EpisodeStatistic
 
 
 @struct.dataclass
@@ -22,6 +23,10 @@ class UniformParameters:
 @dataclasses.dataclass(frozen=True)
 class UniformDistribution:
     space: ContextSpace
+
+    @property
+    def required_statistics(self) -> FrozenSet[EpisodeStatistic]:
+        return frozenset()
 
     def initialise(self) -> UniformParameters:
         return UniformParameters(round_index=jnp.asarray(0, jnp.int32))

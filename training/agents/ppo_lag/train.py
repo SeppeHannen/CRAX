@@ -168,6 +168,19 @@ def train(
             entropy_cost=entropy_cost, discounting=discounting, reward_scaling=reward_scaling,
             gae_lambda=gae_lambda, clipping_epsilon=clipping_epsilon, normalize_advantage=normalize_advantage)
 
+    # The round hook's view of the rollout: the same advantages the loss is about to
+    # use, under the λ in force. aux_state *is* λ for this agent.
+    def compute_learning_signals(params, normalizer_params, data, aux_state,
+                                 ppo_network, discounting, reward_scaling, gae_lambda, normalize_advantage):
+        return ppo_lag_losses.compute_learning_signals(
+            params=params, normalizer_params=normalizer_params, data=data, lagrange_multiplier=aux_state,
+            ppo_network=ppo_network, discounting=discounting, reward_scaling=reward_scaling,
+            gae_lambda=gae_lambda, normalize_advantage=normalize_advantage)
+
+    learning_signals_fn = rounds.LearningSignalsFunction(
+        produces=ppo_lag_losses.LEARNING_SIGNALS, compute=compute_learning_signals
+    )
+
     # Initialize aux_state with the initial Lagrange multiplier
     def init_aux_state_fn():
         return jnp.array([initial_lambda_lagr], dtype=jnp.float32)
@@ -226,5 +239,6 @@ def train(
         extra_fields=extra_fields,
         init_aux_state_fn=init_aux_state_fn,
         round_hook=round_hook,
+        learning_signals_fn=learning_signals_fn,
         evaluation_wrap_env_fns=evaluation_wrap_env_fns,
     )

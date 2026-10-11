@@ -3,18 +3,23 @@
 The trainer records, for every transition, the context it was generated in and
 EpisodeWrapper's bookkeeping (``episode_done`` marks the transitions that ended
 an episode; ``episode_metrics`` then holds that episode's totals), and hands
-over the learner's view of the same transitions (``LearningSignals``: the reward
-advantage under the pre-update value function). On the host this becomes a
-:class:`RoundRollout` with two views of the same data:
+over the learner's view of the same transitions: one array per
+:class:`~training.rounds.Signal` the agent produces, pre-update critics. On the
+host this becomes a :class:`RoundRollout` with two views of the same data:
 
 * :class:`Transitions` — every transition of the round, laid out as
   ``[num_slots, steps_per_slot]`` in the order each slot experienced them. The
   realised curriculum q̂ and the per-context value error are read from here.
 * :class:`CompletedEpisodes` — one row per episode that *ended* in the round,
-  with its context, totals and the mean |reward advantage| over the **whole**
+  with its context, totals and every requested
+  :class:`~training.contexts.statistics.EpisodeStatistic` over the **whole**
   episode, including the part that ran in earlier rounds
   (:class:`training.contexts.episodes.EpisodeTracker` carries it over). The
   empirical q and PLR's score are read from here.
+
+Nothing here knows what a signal or a statistic means: both are mappings keyed
+by the vocabulary in ``training/rounds.py`` and ``training/contexts/statistics.py``
+(``docs/acl/design/learning_signals.md``).
 """
 from __future__ import annotations
 
@@ -23,7 +28,8 @@ from typing import Mapping
 
 import numpy as np
 
-from training.rounds import LearningSignals
+from training.contexts.statistics import EpisodeStatistic
+from training.rounds import Signal
 
 # The state.info keys the context wrapper writes per slot (training/contexts/wrapper.py):
 # the context the *last transition* was generated in (it differs from the running
@@ -44,11 +50,11 @@ class Transitions:
     episode_return: np.ndarray  # [S, L]  total reward of the episode ending there (else partial sum)
     episode_cost: np.ndarray  # [S, L]
     episode_length: np.ndarray  # [S, L]
-    reward_advantage: np.ndarray  # [S, L]  GAE of the reward at that transition, pre-update value function
+    signals: Mapping[Signal, np.ndarray]  # [S, L] each  the learner's signals at that transition, pre-update critics
 
     @classmethod
     def from_recorded_fields(
-        cls, recorded: Mapping[str, np.ndarray], learning_signals: LearningSignals, num_slots: int
+        cls, recorded: Mapping[str, np.ndarray], learning_signals: Mapping[Signal, np.ndarray], num_slots: int
     ) -> "Transitions":
         """From the trainer's layout to per-slot time series.
 
@@ -70,14 +76,19 @@ class Transitions:
             episode_return=per_slot(metrics["sum_reward"]),
             episode_cost=per_slot(metrics["cost"]),
             episode_length=per_slot(metrics["length"]),
-            reward_advantage=per_slot(learning_signals.reward_advantage),
+            signals={Signal(signal): per_slot(values) for signal, values in learning_signals.items()},
         )
 
     def __post_init__(self) -> None:
         shape = self.contexts.shape[:2]
-        for name in ("episode_done", "episode_return", "episode_cost", "episode_length", "reward_advantage"):
+        for name in ("episode_done", "episode_return", "episode_cost", "episode_length"):
             if getattr(self, name).shape != shape:
                 raise ValueError(f"Transitions.{name} has shape {getattr(self, name).shape}, expected {shape}")
+        for signal, values in self.signals.items():
+            if not isinstance(signal, Signal):
+                raise TypeError(f"Transitions.signals is keyed by {signal!r}; keys must be Signal members")
+            if values.shape != shape:
+                raise ValueError(f"Transitions.signals[{signal.name}] has shape {values.shape}, expected {shape}")
         # The layout invariant: within a slot the context changes only on the step after
         # an episode ended. A wrong slot/time layout breaks this at once.
         changed = np.any(self.contexts[:, 1:] != self.contexts[:, :-1], axis=-1)
@@ -102,25 +113,29 @@ class Transitions:
         return self.contexts.reshape(-1, self.contexts.shape[-1])
 
     @property
-    def flat_reward_advantage(self) -> np.ndarray:
-        return self.reward_advantage.reshape(-1)
+    def flat_signals(self) -> Mapping[Signal, np.ndarray]:
+        """``[S × L]`` per signal: one value per transition, in the order of :attr:`flat_contexts`."""
+        return {signal: values.reshape(-1) for signal, values in self.signals.items()}
 
 
 @dataclasses.dataclass(frozen=True)
 class CompletedEpisodes:
-    """One row per episode that ended in the round; ``value_loss`` spans the whole episode."""
+    """One row per episode that ended in the round; the statistics span the whole episode."""
 
     contexts: np.ndarray  # [N, D]
     returns: np.ndarray  # [N]  undiscounted episodic return
     costs: np.ndarray  # [N]  undiscounted episodic cost
     lengths: np.ndarray  # [N]  steps from the episode's first observed transition to its last
-    value_loss: np.ndarray  # [N]  mean |reward advantage| over all of the episode's transitions (PLR's L1 value loss)
+    statistics: Mapping[EpisodeStatistic, np.ndarray]  # [N] each  the requested statistics over all of the episode's transitions
 
     def __post_init__(self) -> None:
         count = self.contexts.shape[0]
-        for name in ("returns", "costs", "lengths", "value_loss"):
+        for name in ("returns", "costs", "lengths"):
             if getattr(self, name).shape != (count,):
                 raise ValueError(f"CompletedEpisodes.{name} has shape {getattr(self, name).shape}, expected ({count},)")
+        for statistic, values in self.statistics.items():
+            if values.shape != (count,):
+                raise ValueError(f"CompletedEpisodes.statistics[{statistic.name}] has shape {values.shape}, expected ({count},)")
 
     @property
     def count(self) -> int:
