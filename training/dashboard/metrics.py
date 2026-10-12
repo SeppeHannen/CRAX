@@ -55,9 +55,6 @@ PLACEHOLDERS = {
 # this suite (whether the environment can end an episode early).
 FACT_PLACEHOLDERS = ("episode_length", "num_eval_envs", "budget", "episode_length_reading")
 
-# Logged next to every per-episode cost so the budget is a line on the same panel.
-BUDGET_SUFFIX = "_budget"
-
 
 class Group(enum.Enum):
     """The review question a metric answers; the order is the order on the page."""
@@ -95,22 +92,41 @@ class Metric:
     description: str
     panel: str = ""
     histogram: bool = False  # logged as wandb.Histogram; W&B renders the sequence over rounds as a heatmap
+    # A series the panel computes from logged keys instead of one the trainer logs: a W&B
+    # expression over `${key}` references, with the same placeholders as `pattern`, and the
+    # logged keys it reads. The metric's `pattern` names the derived series and is never logged.
+    expression: str = ""
+    reads: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if bool(self.expression) != bool(self.reads):
+            raise ValueError(f"{self.pattern}: a derived metric needs both `expression` and the keys it `reads`")
 
     @property
     def panel_title(self) -> str:
         return self.panel or self.title
 
-    def matches(self, key: str) -> bool:
-        return _pattern_to_regex(self.pattern).match(key) is not None
+    @property
+    def is_derived(self) -> bool:
+        return bool(self.expression)
 
     def key(self, **fills: str) -> str:
         """The concrete key for one suite/evaluation, e.g. ``key(evaluation="evaluation/deployment")``."""
-        key = self.pattern
+        return self.fill(self.pattern, **fills)
+
+    @staticmethod
+    def fill(text: str, **fills: str) -> str:
+        """``text`` with the given placeholders filled; raises if a registry placeholder is left.
+        (W&B expressions contain ``${key}``, which is not a placeholder.)"""
         for placeholder, value in fills.items():
-            key = key.replace("{" + placeholder + "}", value)
-        if "{" in key:
-            raise ValueError(f"unfilled placeholder in {key!r}")
-        return key
+            text = text.replace("{" + placeholder + "}", value)
+        unfilled = [placeholder for placeholder in PLACEHOLDERS if placeholder in text]
+        if unfilled:
+            raise ValueError(f"unfilled placeholder {unfilled} in {text!r}")
+        return text
+
+    def matches(self, key: str) -> bool:
+        return _pattern_to_regex(self.pattern).match(key) is not None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -168,13 +184,10 @@ KEPT: Tuple[Metric, ...] = (
            "and cost advantages standardised over the round and combined with the round's λ (`plr:lagrangian`'s score) — per value of "
            "{dimension} (0 = no transition there). Where the update signal is largest; unlike the two critics' errors this is in "
            "standardised units, so compare across values of {dimension}, not across rounds.", histogram=True),
-    Metric("training_curriculum/experienced/{dimension}/mean", "experienced", "{dimension}", Group.MECHANISM,
-           "**experienced** = mean {dimension} over the round's transitions: every step counts once, so contexts with long episodes weigh more — the data the gradient came from.", panel=MEAN_CONTEXT_PANEL),
-    Metric("training_curriculum/sampled/{dimension}/mean", "sampled", "{dimension}", Group.MECHANISM,
-           "**sampled** = mean {dimension} over the round's completed episodes: every episode counts once — what the training distribution chose. Sampled and experienced are the same contexts counted per episode vs per step; they differ when episode length depends on the context.", panel=MEAN_CONTEXT_PANEL),
-    Metric("training_curriculum/intended/{dimension}/mean", "intended", "{dimension}", Group.MECHANISM,
-           f"**intended** = mean {{dimension}} over {NUM_INTENDED_DRAWS} draws from the distribution in force during the round — what it "
-           f"would choose, before the lag of episodes ending. Sampled follows intended about one episode later.", panel=MEAN_CONTEXT_PANEL),
+    Metric("training_curriculum/sampled/{dimension}/mean", "{dimension}: mean over the round's completed episodes", "{dimension}", Group.MECHANISM,
+           "**sampled** = mean {dimension} over the round's completed episodes: every episode counts once — what the training "
+           "distribution chose. The Detail section has the same mean per *transition* (experienced, q̂) and per *draw* from the "
+           "distribution (intended, q); the three differ only when episode length depends on the context or at a switch."),
     Metric("training_curriculum/distribution/stage", "Stage of the staged curriculum", "stage index", Group.MECHANISM,
            "which stage of a staged curriculum the round sampled from."),
     Metric("training_curriculum/distribution/replay_probability", "PLR: probability of replaying a buffered context", "probability", Group.MECHANISM,
@@ -207,9 +220,21 @@ KEPT: Tuple[Metric, ...] = (
     Metric("episodic/length", "Training episode length", "steps", Group.TRUST,
            f"steps per episode, mean over {TRAINING_EPISODES}. {EPISODE_LENGTH_READING}"),
     Metric("{evaluation}/episode_reward_std", "Return spread over evaluation episodes", "std of return", Group.TRUST,
-           f"standard deviation of the return over the {EVALUATION_POPULATION} — how noisy the Verdict return is."),
+           f"standard deviation of the return over the {EVALUATION_POPULATION} — how noisy the Verdict return is. A policy "
+           f"with a lower return also spreads less, so compare arms on the relative spread below."),
+    Metric("{evaluation}/episode_reward_relative_spread", "Return spread relative to its mean", "std ÷ mean (coefficient of variation)", Group.TRUST,
+           f"the return's standard deviation divided by its mean over the {EVALUATION_POPULATION}: the spread as a fraction of the "
+           f"level, so arms with different returns compare fairly. Blows up as the mean approaches 0 — a policy that reaches almost "
+           f"no goals reads as very noisy here when it is really doing nothing; read it next to the Verdict return.",
+           expression="${{evaluation}/episode_reward_std} / ${{evaluation}/episode_reward}",
+           reads=("{evaluation}/episode_reward_std", "{evaluation}/episode_reward")),
     Metric("{evaluation}/episode_cost_std", "Cost spread over evaluation episodes", "std of cost per episode", Group.TRUST,
            f"standard deviation of the cost over the {EVALUATION_POPULATION} — how noisy the Verdict cost is."),
+    Metric("{evaluation}/episode_cost_relative_spread", "Cost spread relative to its mean", "std ÷ mean (coefficient of variation)", Group.TRUST,
+           f"the cost's standard deviation divided by its mean over the {EVALUATION_POPULATION}. Same reading as the return's: "
+           f"undefined in spirit when the mean cost is near 0.",
+           expression="${{evaluation}/episode_cost_std} / ${{evaluation}/episode_cost}",
+           reads=("{evaluation}/episode_cost_std", "{evaluation}/episode_cost")),
     Metric("{evaluation}/avg_episode_length", "Evaluation episode length", "steps", Group.TRUST,
            f"steps per episode, mean over {EVALUATION_POPULATION}. {EPISODE_LENGTH_READING}"),
     Metric("training_curriculum/num_completed_episodes", "Completed training episodes per round", "episodes", Group.TRUST,
@@ -232,6 +257,13 @@ KEPT: Tuple[Metric, ...] = (
            "seconds spent compiling anything during the round, helpers included; ~0.1 s per round is the normal cost of "
            "the host-side glue. Seconds, not tenths, means a program was rebuilt."),
     # Detail: kept for when the above raise a question.
+    Metric("training_curriculum/experienced/{dimension}/mean", "experienced", "{dimension}", Group.DETAIL,
+           "**experienced** = mean {dimension} over the round's transitions: every step counts once, so contexts with long episodes "
+           "weigh more — the data the gradient came from (q̂).", panel=MEAN_CONTEXT_PANEL),
+    Metric("training_curriculum/intended/{dimension}/mean", "intended", "{dimension}", Group.DETAIL,
+           f"**intended** = mean {{dimension}} over {NUM_INTENDED_DRAWS} draws from the distribution in force during the round — what it "
+           f"would choose, before the lag of episodes ending (q). Sampled (Mechanism) follows intended about one episode later.",
+           panel=MEAN_CONTEXT_PANEL),
     Metric("training/cost_violation", "Batch cost per transition minus budget per step", "cost per transition", Group.DETAIL,
            "mean cost per *transition* in the round's PPO batch minus the budget per step ({budget} / {episode_length}); this is the signal that moves λ. × {episode_length} gives per-episode units."),
     Metric("training/mean_cost", "Batch cost per transition", "cost per transition", Group.DETAIL,
@@ -399,6 +431,8 @@ DROPPED: Tuple[Dropped, ...] = (
     Dropped("{evaluation}/epoch_eval_time", "evaluation wall-clock is not a research quantity"),
     Dropped("{evaluation}/sps", "evaluation throughput is not a research quantity"),
     Dropped("{evaluation}/walltime", "evaluation wall-clock is not a research quantity"),
+    Dropped("episodic/cost_budget", "the budget is a fact of the run, drawn by the view; runs before 2026-10-12 logged it as a series"),
+    Dropped("{evaluation}/episode_cost_budget", "the budget is a fact of the run, drawn by the view; runs before 2026-10-12 logged it as a series"),
     Dropped("training/sps", "performance/epoch_steps_per_second, from the performance tracker, is the same number"),
     Dropped("training/walltime", "performance/ has wall-clock per round"),
     Dropped("training/final_step", "only emitted when no evaluation ran; equals num_timesteps"),
@@ -426,29 +460,29 @@ def registered(key: str) -> Optional[Metric]:
     raise UnregisteredMetric(key)
 
 
-# Per-episode costs whose panel carries the budget as a second line.
+# Per-episode costs whose panel draws the budget as a reference line. The budget is a
+# fact of the run (`--safety_bound`, one value per experiment group), not a metric: the
+# view draws it from the group's facts, nothing logs it.
 COSTS_WITH_BUDGET: Tuple[str, ...] = ("episodic/cost", "{evaluation}/episode_cost")
 
 
-def budget_key(cost_key: str) -> str:
-    return cost_key + BUDGET_SUFFIX
-
-
 def has_budget(key: str) -> bool:
-    """Whether this per-episode cost is logged with the budget as a second series."""
+    """Whether this per-episode cost's panel shows the budget."""
     return any(_pattern_to_regex(pattern).match(key) for pattern in COSTS_WITH_BUDGET)
 
 
-def select_for_logging(metrics: Mapping[str, Any], safety_bound: float) -> Dict[str, Any]:
-    """The subset of ``metrics`` that goes to W&B, plus a budget line next to each per-episode cost.
+def select_for_logging(metrics: Mapping[str, Any]) -> Dict[str, Any]:
+    """The subset of ``metrics`` that goes to W&B.
 
-    Raises :class:`UnregisteredMetric` for a key the registry does not know.
+    Raises :class:`UnregisteredMetric` for a key the registry does not know;
+    derived metrics (``expression``) are the view's and are refused if logged.
     """
     selected: Dict[str, Any] = {}
     for key, value in metrics.items():
-        if registered(key) is None:
+        metric = registered(key)
+        if metric is None:
             continue
+        if metric.is_derived:
+            raise UnregisteredMetric(f"{key} is a derived series the dashboard computes; the trainer must not log it")
         selected[key] = value
-        if has_budget(key):
-            selected[budget_key(key)] = safety_bound
     return selected

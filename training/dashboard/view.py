@@ -25,12 +25,25 @@ import wandb_workspaces.reports.v2 as panels
 import wandb_workspaces.workspaces as workspaces
 from wandb_workspaces import expr
 
-from training.dashboard.metrics import FACT_PLACEHOLDERS, KEPT, Group, Metric, budget_key, has_budget
+from training.dashboard.metrics import FACT_PLACEHOLDERS, KEPT, Group, Metric, has_budget
 
 X_AXIS = "environment_steps"
 # The arm of the experiment. This config key names what a line *is* (the
 # distribution the run trained on), so the legend reads `training_distribution: uniform`.
 GROUP_RUNS_BY = "training_distribution"
+
+# One colour per arm, the same on every panel. W&B otherwise cycles its palette and
+# falls back to dashed lines after a few arms, which reads as a different kind of
+# series. Arms not listed here get W&B's default.
+ARM_COLOURS: Mapping[str, str] = {
+    "uniform": "#e377c2",
+    "staged:1,2,3": "#2ca02c",
+    "plr": "#1f77b4",
+    "plr:cost": "#d62728",
+    "plr:lagrangian": "#ff7f0e",
+    "level:3": "#7f7f7f",
+    "level:1": "#bcbd22",
+}
 
 # Evaluation metrics are keyed `evaluation/<name>/*`; the names and their labels are
 # in the run's config (`evaluations`, written by training/contexts/setup.py).
@@ -256,11 +269,19 @@ def section_text(group: Group, facts: RunFacts) -> str:
 
 @dataclasses.dataclass(frozen=True)
 class Plot:
-    """One line panel: several series on one y-axis, each with the sentence that says what it is."""
+    """One line panel: several series on one y-axis, each with the sentence that says what it is.
+
+    ``described_series`` are what the panel shows (logged keys, or a derived metric's
+    name); ``logged`` are the keys W&B must load; ``expressions`` are series it
+    computes from them (a derived metric, or a constant reference such as the budget).
+    For a plain panel ``logged == series`` and ``expressions`` is empty.
+    """
 
     title: str
     described_series: Tuple[Tuple[str, str], ...]  # (key, description)
     unit: str
+    logged: Tuple[str, ...]
+    expressions: Tuple[str, ...] = ()
 
     @property
     def series(self) -> Tuple[str, ...]:
@@ -286,7 +307,11 @@ class Instance:
         return cls(placeholder="", in_keys="", in_words="")
 
     def key(self, metric: Metric) -> str:
-        return metric.key(**{self.placeholder: self.in_keys}) if self.placeholder else metric.pattern
+        return self.fill(metric.pattern)
+
+    def fill(self, text: str) -> str:
+        """``text`` with this instance's key fragment filled in (a pattern, an expression, a key it reads)."""
+        return Metric.fill(text, **{self.placeholder: self.in_keys}) if self.placeholder else text
 
     def words(self, text: str, facts: RunFacts) -> str:
         """``text`` with the run's facts and this instance's words filled in."""
@@ -315,6 +340,8 @@ def plots_for(group: Group, facts: RunFacts) -> List[Plot]:
     auto-generated `training_curriculum` section.
     """
     series_by_title: Dict[str, List[Tuple[str, str]]] = {}
+    logged_by_title: Dict[str, List[str]] = {}
+    expressions_by_title: Dict[str, List[str]] = {}
     unit_by_title: Dict[str, str] = {}
     for metric in KEPT:
         if metric.group is not group or metric.histogram:
@@ -322,25 +349,36 @@ def plots_for(group: Group, facts: RunFacts) -> List[Plot]:
         for instance in _instances(metric, facts):
             title = instance.title(metric, facts)
             key = instance.key(metric)
-            series = series_by_title.setdefault(title, [])
-            series.append((key, instance.words(metric.description, facts)))
+            series_by_title.setdefault(title, []).append((key, instance.words(metric.description, facts)))
+            logged = logged_by_title.setdefault(title, [])
+            expressions = expressions_by_title.setdefault(title, [])
+            if metric.is_derived:
+                logged.extend(instance.fill(read) for read in metric.reads)
+                expressions.append(instance.fill(metric.expression))
+            else:
+                logged.append(key)
             if has_budget(key):
-                series.append((budget_key(key), f"the budget, {facts.safety_bound:g} per episode."))
+                # A constant expression: one reference line, not one series per run.
+                expressions.append(f"{facts.safety_bound:g}")
             unit_by_title[title] = instance.words(metric.unit, facts)
-    return [Plot(title, tuple(series), unit_by_title[title]) for title, series in series_by_title.items()]
+    return [
+        Plot(title, tuple(series), unit_by_title[title], tuple(dict.fromkeys(logged_by_title[title])), tuple(expressions_by_title[title]))
+        for title, series in series_by_title.items()
+    ]
 
 
 def _line_panel(plot: Plot, layout: panels.Layout) -> panels.LinePlot:
     return panels.LinePlot(
         title=plot.title,
         x=X_AXIS,
-        y=list(plot.series),
+        y=list(plot.logged),
         title_x="environment steps",
         title_y=plot.unit,
         smoothing_type="none",
         groupby=panels.Config(GROUP_RUNS_BY),
         groupby_aggfunc="mean",
         groupby_rangefunc="minmax",
+        custom_expressions=list(plot.expressions) or None,
         layout=layout,
     )
 
@@ -382,5 +420,6 @@ def build_view(entity: str, project: str, group_name: str, facts: RunFacts) -> w
         runset_settings=workspaces.RunsetSettings(
             filters=f"Group = '{group_name}'",
             groupby=[expr.Config(GROUP_RUNS_BY)],
+            group_colors=dict(ARM_COLOURS),
         ),
     )

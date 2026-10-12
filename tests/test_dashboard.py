@@ -12,6 +12,7 @@ Run with: JAX_PLATFORMS=cpu pytest tests/test_dashboard.py -v
 from __future__ import annotations
 
 import dataclasses
+import json
 from typing import Dict, List
 
 import pytest
@@ -113,23 +114,35 @@ def test_every_panel_is_described_with_no_placeholder_left():
                 assert description in text
 
 
-def test_select_for_logging_drops_duplicates_and_adds_budgets():
+def test_select_for_logging_drops_duplicates_and_logs_no_budget():
     metrics: Dict[str, object] = {key: 1.0 for key in VELOCITY_ANT_KEYS}
     metrics["training_curriculum/experienced/velocity_threshold"] = wandb.Histogram([1.0, 2.0])
-    selected = dashboard.select_for_logging(metrics, safety_bound=25.0)
+    selected = dashboard.select_for_logging(metrics)
 
     kept = [key for key in VELOCITY_ANT_KEYS if dashboard.registered(key) is not None]
-    assert set(selected) == set(kept) | {"episodic/cost_budget", "evaluation/deployment/episode_cost_budget", "evaluation/uniform/episode_cost_budget"}
-    assert selected["episodic/cost_budget"] == 25.0
+    assert set(selected) == set(kept)
+    assert not any(key.endswith("_budget") for key in selected), "the budget is a fact of the run, not a logged series"
     assert isinstance(selected["training_curriculum/experienced/velocity_threshold"], wandb.Histogram)
     for duplicate in ("episodic/velocity_cost", "episodic/reward_survive", "evaluation/deployment/episode_reward_unscaled", "training/sps"):
         assert duplicate not in selected
     assert len(selected) < len(metrics) / 2, "the dashboard should remove most of what the environment logs"
+    # a run from before 2026-10-12 that still logs the budget series is dropped, not refused
+    assert dashboard.registered("evaluation/deployment/episode_cost_budget") is None
+    # the view's derived series must never be logged by a trainer
+    with pytest.raises(dashboard.UnregisteredMetric, match="derived"):
+        dashboard.select_for_logging({"evaluation/deployment/episode_reward_relative_spread": 0.3})
 
 
 def test_budget_only_on_per_episode_costs():
     assert has_budget("episodic/cost") and has_budget("evaluation/deployment/episode_cost") and has_budget("eval/episode_cost")
     assert not has_budget("training/mean_cost") and not has_budget("evaluation/deployment/episode_cost_std")
+
+
+def test_derived_metrics_declare_what_they_read():
+    with pytest.raises(ValueError, match="reads"):
+        dashboard.Metric("x/y", "t", "u", Group.TRUST, "d", expression="${x/a} / ${x/b}")
+    with pytest.raises(ValueError, match="reads"):
+        dashboard.Metric("x/y", "t", "u", Group.TRUST, "d", reads=("x/a",))
 
 
 def test_view_has_the_four_review_sections_with_text_first_and_no_smoothing():
@@ -158,17 +171,36 @@ def test_text_panels_state_population_unit_cadence_and_budget():
                  "**Environment.** A MuJoCo ant", "**Reward.** Per step: forward velocity", "**Cost.** Per step, 1 if",
                  "budget is 25", "128 episodes of the frozen policy on the deployment task (level:3)", "training_distribution"):
         assert fact in verdict, fact
-    for fact in ("One point per round", "655,360", "763 rounds", "**sampled**", "**experienced**"):
+    for fact in ("One point per round", "655,360", "763 rounds", "**sampled**"):
         assert fact in mechanism, fact
+    detail = dashboard.build_view("e", "p", "g", FACTS)._spec["spec"]["section"]["panelBankConfig"]["sections"][3]["panels"][0]["config"]["value"]
+    assert "**experienced**" in detail and "**intended**" in detail
 
 
-def test_verdict_panels_are_return_and_cost_with_budget_on_both_evaluations():
+def test_verdict_panels_are_return_and_cost_with_the_budget_as_one_reference_line():
     plots = plots_for(Group.VERDICT, FACTS)
     assert [plot.title for plot in plots] == [
         "Return per episode on the deployment task (level:3)", "Return per episode on all of Ω (uniform)",
         "Cost per episode on the deployment task (level:3)", "Cost per episode on all of Ω (uniform)",
     ]
-    assert plots[2].series == ("evaluation/deployment/episode_cost", "evaluation/deployment/episode_cost_budget")
+    cost = plots[2]
+    assert cost.series == cost.logged == ("evaluation/deployment/episode_cost",)
+    assert cost.expressions == ("25",), "the budget is one constant expression, not a series per run"
+    assert plots[0].expressions == ()
+
+
+def test_trust_has_relative_spread_as_a_derived_series_over_the_logged_std_and_mean():
+    plots = {plot.title: plot for plot in plots_for(Group.TRUST, FACTS)}
+    relative = plots["Return spread relative to its mean on the deployment task (level:3)"]
+    assert relative.series == ("evaluation/deployment/episode_reward_relative_spread",)
+    assert relative.logged == ("evaluation/deployment/episode_reward_std", "evaluation/deployment/episode_reward")
+    assert relative.expressions == ("${evaluation/deployment/episode_reward_std} / ${evaluation/deployment/episode_reward}",)
+    assert "Cost spread relative to its mean on all of Ω (uniform)" in plots
+    view = dashboard.build_view("e", "p", "g", FACTS)
+    trust = view._spec["spec"]["section"]["panelBankConfig"]["sections"][2]
+    panel = next(p for p in trust["panels"] if p.get("config", {}).get("chartTitle") == relative.title)
+    assert panel["config"]["expressions"] == list(relative.expressions)
+    assert set(panel["config"]["metrics"]) == set(relative.logged)
 
 
 def test_trust_shows_throughput_and_compiles():
@@ -176,16 +208,31 @@ def test_trust_shows_throughput_and_compiles():
     assert "Throughput" in titles and "Substantial compiles per round" in titles and "Compile time per round" in titles
 
 
-def test_mechanism_merges_sampled_experienced_intended_means_into_one_panel():
-    plots = plots_for(Group.MECHANISM, FACTS)
-    mean_context = plots[0]
-    assert mean_context.title == "velocity_threshold: mean over the round's training data"
-    assert mean_context.series == (
+def test_mechanism_shows_only_the_sampled_mean_and_detail_the_other_two():
+    mechanism = plots_for(Group.MECHANISM, FACTS)
+    assert mechanism[0].title == "velocity_threshold: mean over the round's completed episodes"
+    assert mechanism[0].series == ("training_curriculum/sampled/velocity_threshold/mean",)
+    assert not any("training_curriculum/experienced/velocity_threshold" == key for plot in mechanism for key in plot.series), "histograms are heatmaps, not line panels"
+    detail = {plot.title: plot for plot in plots_for(Group.DETAIL, FACTS)}
+    assert detail["velocity_threshold: mean over the round's training data"].series == (
         "training_curriculum/experienced/velocity_threshold/mean",
-        "training_curriculum/sampled/velocity_threshold/mean",
         "training_curriculum/intended/velocity_threshold/mean",
     )
-    assert not any("training_curriculum/experienced/velocity_threshold" == key for plot in plots for key in plot.series), "histograms are heatmaps, not line panels"
+
+
+def test_runs_are_coloured_by_arm_not_by_palette_order():
+    """Each known arm has a fixed colour keyed by its training_distribution value, so the same
+    arm is the same colour on every panel and W&B never falls back to dashed lines."""
+    from urllib.parse import unquote
+
+    colours = dashboard.build_view("e", "p", "g", FACTS)._spec["spec"]["section"]["customRunColors"]
+    by_arm = {}
+    for encoded_key, colour in colours.items():
+        path = json.loads(unquote(encoded_key.split(":", 2)[2]))
+        assert path[0]["key"] == "config:training_distribution.value"
+        by_arm[path[0]["value"]] = colour
+    assert by_arm == dict(dashboard.view.ARM_COLOURS)
+    assert {"uniform", "staged:1,2,3", "plr", "plr:cost", "plr:lagrangian"} <= set(by_arm)
 
 
 def test_run_facts_round_trip_through_json():

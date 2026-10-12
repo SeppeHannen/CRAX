@@ -59,13 +59,13 @@ def _scalar(value: Any) -> float:
     return float(np.asarray(value).reshape(-1).mean())
 
 
-def wandb_progress_fn(safety_bound: float, verbose: bool) -> ProgressFn:
+def wandb_progress_fn(verbose: bool) -> ProgressFn:
     """The trainer's progress callback: the registered metrics to the active W&B run.
 
     Every key passes through the dashboard registry
     (:func:`training.dashboard.metrics.select_for_logging`): unregistered keys
-    raise, dropped keys never reach W&B, and each per-episode cost is logged
-    with its budget so the panel can show both. Rows are logged at
+    raise, dropped keys never reach W&B. The budget is a fact of the run that
+    the dashboard draws from its config; nothing logs it. Rows are logged at
     ``step=environment_steps`` and carry it as a key, so it is the x-axis of
     the default workspace and of the saved view (:mod:`training.dashboard`).
     """
@@ -75,7 +75,7 @@ def wandb_progress_fn(safety_bound: float, verbose: bool) -> ProgressFn:
             raise RuntimeError("wandb_progress_fn called without an active W&B run; call wandb.init first")
         payload: Dict[str, Any] = {
             key: value if isinstance(value, wandb.Histogram) else _scalar(value)
-            for key, value in select_for_logging(metrics, safety_bound).items()
+            for key, value in select_for_logging(metrics).items()
         }
         if not payload:
             return

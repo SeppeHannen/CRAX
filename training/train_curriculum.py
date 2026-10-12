@@ -80,7 +80,7 @@ def main():
             os.makedirs(ckpt_root, exist_ok=True)
             cfg["save_checkpoint_path"] = ckpt_root
 
-        progress_fn = wandb_progress_fn(safety_bound=config.safety_bound, verbose=not config.quiet)
+        progress_fn = wandb_progress_fn(verbose=not config.quiet)
 
         # Get the appropriate training function
         train_fn_base = get_algorithm_train_fn(alg_name)
