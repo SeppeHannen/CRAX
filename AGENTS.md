@@ -67,6 +67,13 @@ Every change must raise the average quality of the repository. Concretely:
   (which slot a row came from, which round a value belongs to), the producer
   writes it into the data. Recovering it downstream from layout, order or
   arithmetic is an assumption about someone else's code.
+- **Review a design by stepping back, not by patching.** Before accepting
+  one, ask in order: does it remove the root cause or the symptom? Seen from
+  the whole system, is this the shape the system wants or the shape the first
+  instance needed? Will the next instance slot in without changing this code?
+  Is there a limitation I can already name? Is there bookkeeping a missing
+  concept would dissolve? A weak answer is not a caveat; it is the next
+  iteration.
 - **One module per concept** (e.g. one file per context distribution); no
   utility grab-bags.
 - Tests are CPU-only and assert behaviour, not implementation.
@@ -108,3 +115,11 @@ typed script in `scripts/analysis/` and live in `figures/<experiment>/`. The
 document states the result, not how it was arrived at: no superseded runs, no
 narration of the analysis; a bug found on the way goes in the README's *Known
 defects*. Say what a number means (a motionless policy "meets the budget").
+
+Two rules for the analysis behind it. **Before attributing an effect to a
+change, show the change happened in that window** — "the curriculum fed harder
+contexts" is a claim about the intended/experienced series at those rounds,
+not about the method's name; read them first. **Normalise before comparing
+populations that differ in level** — a spread, a loss, a count scales with its
+mean; divide it out (coefficient of variation, relative error) or the
+comparison is a restatement of the means.
