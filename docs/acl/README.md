@@ -152,13 +152,20 @@ cost-critic pre-check for attribution.
 
 ### Done
 
+- **PLR scored by the cost critic and by the Lagrangian objective**
+  (2026-10-12; code 0ce7d35): `plr:cost`, `plr:lagrangian`; the learning-signals
+  contract (`design/learning_signals.md`); evaluation regions. Two new arms
+  against the three 2026-10-08 arms at 500 M on goal-point →
+  `experiments/2026-10-11_goal_point_plr_scores_500M.md` (group
+  `goal_point_plr_scores_500M`, which now holds all five runs; the v2 group is
+  empty); result in *Results so far*.
 - **Prioritized Level Replay** (Jiang et al. 2021) as the first curriculum
   method (2026-10-09, 242f0a6): `design/prioritized_level_replay.md`;
   `--context_distribution plr`; the trainer ships the reward advantage to the
   round hook (`LearningSignals`); `training_curriculum/{intended,value_loss}/<d>`
   heatmaps and `distribution/*` scalars. Uniform vs staged vs PLR at 500 M on
   goal-point → `experiments/2026-10-08_goal_point_uniform_staged_plr_500M.md`
-  (group `goal_point_uniform_staged_plr_500M_v2`); result in *Results so far*.
+  (runs moved to group `goal_point_plr_scores_500M`); result in *Results so far*.
 - Literature pass on the six candidate properties (2026-10-06) →
   `literature/synthesis.md`.
 - Goal-point baseline, uniform vs staged vs level:3 (2026-10-06) →
@@ -291,6 +298,23 @@ program costs ~50 s; a per-slot value costs nothing. Throughput at 8192 envs
 every step — both stock).
 
 ## Results so far
+
+**Goal point, the three PLR scores, 500 M steps, one seed**
+(`experiments/2026-10-11_goal_point_plr_scores_500M.md`). **PLR Lagrangian
+ends where PLR reward ends** (level 3: 15.2 / 68 vs 15.3 / 73; Ω: 21.1 / 19 vs
+21.3 / 17) and had the lowest λ peak of any arm (5.8). **PLR cost was the best
+policy of the five at 300 M** (level 3: 16.5 return / 46 cost) **and then
+collapsed** — the staged failure with no stage switch and no curriculum
+motion: its distribution (16.2 hazards) was fixed from 50 M, but on it the
+policy's cost sat 5 % *over* budget where the other PLR arms sat 30 % under;
+the leak-free integrator wound λ 0.35 → 2.3 over 160 rounds on that excess, the
+update tipped (cost 27 → 47 in 15 rounds, critic error up uniformly across Ω),
+λ 2 → 16, the policy gave up its return (end: 4.4 / 30; recovering). **The Lagrangian score is λ in
+disguise**: its spread is 10× while λ > 1 and the reward score's 1.6× while λ =
+0, so `plr:lagrangian` is a λ-gated switch between the other two scores — which
+is why it did not collapse. The cost score has 9× to rank, the reward score
+1.5×, throughout. Consequence: PPO-PID first, with PLR cost the arm to rerun; β
+< 1 on the cost score the first hyperparameter worth a run.
 
 **Goal point, uniform vs staged vs PLR, 500 M steps, one seed**
 (`experiments/2026-10-08_goal_point_uniform_staged_plr_500M.md`). PLR ends
