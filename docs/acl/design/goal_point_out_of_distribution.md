@@ -5,6 +5,11 @@ evaluation, on a third target besides $w$ (the deployment task) and $r$
 (Uniform(Ω)): **Uniform(Ω₂)**, where Ω₂ is a set of contexts the environment
 can run but Ω never contains.
 
+**Superseded (2026-10-13) by `../research_design.md` §5.3**: both placeholder
+directions fail its admissibility rules (`goal_size` never reaches the
+observation; density ≥ 21 is confounded by silent overcrowding). The wiring
+below stays; the region is to be replaced by the test sets defined there.
+
 **Status: the wiring is done; the values are a placeholder.** The Ω₂ in
 `registry.py` (total ≥ 21 hazards, goal radius [0.10, 0.14]) was chosen in an
 evening so that the pipeline could be built and tested end to end. It should
