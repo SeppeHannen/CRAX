@@ -7,6 +7,10 @@ facts**: it stores the :class:`RunFacts` it was built from in its description.
 :func:`ensure_view` runs at the start of every run with a named group, before
 any compute, and raises when the run's facts differ from the group's.
 
+The group has one more shared object, created with the view: the budget
+reference run that draws the budget line on the cost panels
+(:mod:`training.dashboard.budget_run`).
+
 The workspaces SDK creates a new view on every ``save()`` and cannot write a
 description, so the two GraphQL calls a view needs — find by name, upsert —
 live here, and nowhere else.
@@ -21,6 +25,7 @@ import wandb_workspaces.workspaces as workspaces
 from wandb_workspaces._graphql import execute_graphql
 from wandb_workspaces.workspaces.internal import _generate_view_name, _internal_name_to_url_query_str
 
+from training.dashboard.budget_run import budget_run_exists, create_budget_run
 from training.dashboard.view import RunFacts, build_view
 
 
@@ -98,7 +103,8 @@ def _differences(expected: RunFacts, actual: RunFacts) -> str:
 
 
 def ensure_view(entity: str, project: str, group: str, facts: RunFacts) -> None:
-    """Create the group's view from ``facts`` if the group is new; otherwise require the facts to match.
+    """Create the group's view and budget run from ``facts`` if the group is new; otherwise
+    require the facts to match.
 
     Raises :class:`FactsMismatch` for a run whose flags differ from the
     experiment's: fix the flags, or use another ``--wandb_group``.
@@ -108,6 +114,7 @@ def ensure_view(entity: str, project: str, group: str, facts: RunFacts) -> None:
     if existing is None:
         url = _upsert(api, build_view(entity, project, group, facts), facts, None)
         print(f"dashboard: created view {group!r}: {url}")
+        print(f"dashboard: created budget run: {create_budget_run(entity, project, group, facts)}")
     elif existing.facts != facts:
         raise FactsMismatch(
             f"group {group!r} is one experiment and this run's flags differ from it:\n{_differences(existing.facts, facts)}\n"
@@ -118,8 +125,11 @@ def ensure_view(entity: str, project: str, group: str, facts: RunFacts) -> None:
 
 
 def rebuild_view(entity: str, project: str, group: str, facts: RunFacts) -> None:
-    """Overwrite the group's view (or create it) from ``facts`` — the deliberate path after dashboard code changed."""
+    """Overwrite the group's view (or create it) from ``facts`` — the deliberate path after
+    dashboard code changed. Creates the budget run for a group that predates it."""
     api = wandb.Api()
     existing = find_view(api, entity, project, group)
     url = _upsert(api, build_view(entity, project, group, facts), facts, existing)
     print(f"dashboard: {'updated' if existing else 'created'} view {group!r}: {url}")
+    if not budget_run_exists(api, entity, project, group):
+        print(f"dashboard: created budget run: {create_budget_run(entity, project, group, facts)}")

@@ -177,18 +177,34 @@ def test_text_panels_state_population_unit_cadence_and_budget():
     assert "**experienced**" in detail and "**intended**" in detail
 
 
-def test_verdict_panels_are_return_and_cost_with_the_budget_named_on_the_cost_panels():
-    """W&B cannot draw a reference line, so the budget is in the cost panels' title and unit;
-    the panel itself is a plain metric panel (an expression would hide the logged series)."""
+def test_verdict_panels_are_return_and_cost_as_plain_metric_panels():
+    """A cost panel is a plain metric panel: the budget line comes from the group's budget run
+    (below), not from an expression — W&B draws only the expressions once a panel has any."""
     plots = plots_for(Group.VERDICT, FACTS)
     assert [plot.title for plot in plots] == [
         "Return per episode on the deployment task (level:3)", "Return per episode on all of Ω (uniform)",
-        "Cost per episode on the deployment task (level:3) — budget 25", "Cost per episode on all of Ω (uniform) — budget 25",
+        "Cost per episode on the deployment task (level:3)", "Cost per episode on all of Ω (uniform)",
     ]
-    cost = plots[2]
-    assert cost.series == cost.logged == ("evaluation/deployment/episode_cost",)
-    assert cost.expressions == () and cost.unit.endswith("(budget 25)")
-    assert plots[0].expressions == () and "budget" not in plots[0].unit
+    for plot in plots:
+        assert plot.series == plot.logged and plot.expressions == ()
+
+
+def test_budget_run_logs_the_budget_under_every_cost_key_of_the_group():
+    """The budget run is the one place the budget becomes data: the budget at the first and last
+    environment step under `episodic/cost` and every evaluation's `episode_cost`, and nothing else."""
+    from training.dashboard import budget_run
+
+    costs = budget_run._cost_keys(FACTS)
+    assert costs == {
+        "episodic/cost": 25.0,
+        "evaluation/deployment/episode_cost": 25.0,
+        "evaluation/uniform/episode_cost": 25.0,
+    }
+    assert all(has_budget(key) for key in costs)
+    assert budget_run.budget_run_id("some_group") == "some_group__budget"
+    assert dashboard.view.BUDGET_ARM in dashboard.view.ARM_COLOURS
+    # the budget run is grouped with the arms under the same config key, so it is one legend entry
+    assert budget_run.GROUP_RUNS_BY == "training_distribution"
 
 
 def test_trust_has_relative_spread_as_a_derived_series_over_the_logged_std_and_mean():

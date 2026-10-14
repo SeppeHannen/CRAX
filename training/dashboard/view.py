@@ -25,12 +25,17 @@ import wandb_workspaces.reports.v2 as panels
 import wandb_workspaces.workspaces as workspaces
 from wandb_workspaces import expr
 
-from training.dashboard.metrics import FACT_PLACEHOLDERS, KEPT, Group, Metric, has_budget
+from training.dashboard.metrics import FACT_PLACEHOLDERS, KEPT, Group, Metric
 
 X_AXIS = "environment_steps"
 # The arm of the experiment. This config key names what a line *is* (the
 # distribution the run trained on), so the legend reads `training_distribution: uniform`.
 GROUP_RUNS_BY = "training_distribution"
+
+# The budget is drawn by a reference run in the group whose only history is the budget
+# value at the first and last environment step (training/dashboard/budget_run.py); its
+# `training_distribution` is this, so it is one grey line in the legend.
+BUDGET_ARM = "budget"
 
 # One colour per arm, the same on every panel. W&B otherwise cycles its palette and
 # falls back to dashed lines after a few arms, which reads as a different kind of
@@ -43,6 +48,7 @@ ARM_COLOURS: Mapping[str, str] = {
     "plr:lagrangian": "#ff7f0e",
     "level:3": "#7f7f7f",
     "level:1": "#bcbd22",
+    BUDGET_ARM: "#c7c7c7",
 }
 
 # Evaluation metrics are keyed `evaluation/<name>/*`; the names and their labels are
@@ -350,11 +356,6 @@ def plots_for(group: Group, facts: RunFacts) -> List[Plot]:
             key = instance.key(metric)
             title = instance.title(metric, facts)
             unit = instance.words(metric.unit, facts)
-            if has_budget(key):
-                # W&B line panels cannot draw a reference line (a constant expression renders
-                # nothing), so the budget is stated in the title and on the y-axis instead.
-                title = f"{title} — budget {facts.safety_bound:g}"
-                unit = f"{unit} (budget {facts.safety_bound:g})"
             series_by_title.setdefault(title, []).append((key, instance.words(metric.description, facts)))
             logged = logged_by_title.setdefault(title, [])
             expressions = expressions_by_title.setdefault(title, [])

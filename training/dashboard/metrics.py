@@ -460,14 +460,14 @@ def registered(key: str) -> Optional[Metric]:
     raise UnregisteredMetric(key)
 
 
-# Per-episode costs whose panel names the budget (in its title and y-axis label). The
-# budget is a fact of the run (`--safety_bound`, one value per experiment group), not a
-# metric: the view takes it from the group's facts, nothing logs it.
+# Per-episode costs whose panel shows the budget line. The budget is a fact of the group
+# (`--safety_bound`), not something a training run logs: the group's budget reference run
+# (training/dashboard/budget_run.py) logs it once under each of these keys.
 COSTS_WITH_BUDGET: Tuple[str, ...] = ("episodic/cost", "{evaluation}/episode_cost")
 
 
 def has_budget(key: str) -> bool:
-    """Whether this per-episode cost's panel states the budget."""
+    """Whether this per-episode cost's panel shows the budget line."""
     return any(_pattern_to_regex(pattern).match(key) for pattern in COSTS_WITH_BUDGET)
 
 
