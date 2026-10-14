@@ -177,16 +177,18 @@ def test_text_panels_state_population_unit_cadence_and_budget():
     assert "**experienced**" in detail and "**intended**" in detail
 
 
-def test_verdict_panels_are_return_and_cost_with_the_budget_as_one_reference_line():
+def test_verdict_panels_are_return_and_cost_with_the_budget_named_on_the_cost_panels():
+    """W&B cannot draw a reference line, so the budget is in the cost panels' title and unit;
+    the panel itself is a plain metric panel (an expression would hide the logged series)."""
     plots = plots_for(Group.VERDICT, FACTS)
     assert [plot.title for plot in plots] == [
         "Return per episode on the deployment task (level:3)", "Return per episode on all of Ω (uniform)",
-        "Cost per episode on the deployment task (level:3)", "Cost per episode on all of Ω (uniform)",
+        "Cost per episode on the deployment task (level:3) — budget 25", "Cost per episode on all of Ω (uniform) — budget 25",
     ]
     cost = plots[2]
     assert cost.series == cost.logged == ("evaluation/deployment/episode_cost",)
-    assert cost.expressions == ("25",), "the budget is one constant expression, not a series per run"
-    assert plots[0].expressions == ()
+    assert cost.expressions == () and cost.unit.endswith("(budget 25)")
+    assert plots[0].expressions == () and "budget" not in plots[0].unit
 
 
 def test_trust_has_relative_spread_as_a_derived_series_over_the_logged_std_and_mean():

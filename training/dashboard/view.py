@@ -347,8 +347,14 @@ def plots_for(group: Group, facts: RunFacts) -> List[Plot]:
         if metric.group is not group or metric.histogram:
             continue
         for instance in _instances(metric, facts):
-            title = instance.title(metric, facts)
             key = instance.key(metric)
+            title = instance.title(metric, facts)
+            unit = instance.words(metric.unit, facts)
+            if has_budget(key):
+                # W&B line panels cannot draw a reference line (a constant expression renders
+                # nothing), so the budget is stated in the title and on the y-axis instead.
+                title = f"{title} — budget {facts.safety_bound:g}"
+                unit = f"{unit} (budget {facts.safety_bound:g})"
             series_by_title.setdefault(title, []).append((key, instance.words(metric.description, facts)))
             logged = logged_by_title.setdefault(title, [])
             expressions = expressions_by_title.setdefault(title, [])
@@ -357,10 +363,7 @@ def plots_for(group: Group, facts: RunFacts) -> List[Plot]:
                 expressions.append(instance.fill(metric.expression))
             else:
                 logged.append(key)
-            if has_budget(key):
-                # A constant expression: one reference line, not one series per run.
-                expressions.append(f"{facts.safety_bound:g}")
-            unit_by_title[title] = instance.words(metric.unit, facts)
+            unit_by_title[title] = unit
     return [
         Plot(title, tuple(series), unit_by_title[title], tuple(dict.fromkeys(logged_by_title[title])), tuple(expressions_by_title[title]))
         for title, series in series_by_title.items()
