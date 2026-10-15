@@ -31,10 +31,28 @@ from flax.training import orbax_utils
 from ml_collections import config_dict
 from orbax import checkpoint as ocp
 
+import wandb
+
 from training import types
 from training.acme import running_statistics
 from training.agents.ppo import networks as ppo_networks
 from training.agents.sac import networks as sac_networks
+
+RUN_CHECKPOINTS_DIRECTORY = 'checkpoints'
+
+
+def run_checkpoint_directory() -> epath.Path:
+    """Where the active W&B run saves its checkpoints.
+
+    Inside the run's directory, so W&B uploads them with the run's other files
+    and any machine can fetch them through the API — the one door for every
+    artefact of a run, wherever it trained. Requires an initialised run.
+    """
+    if wandb.run is None:
+        raise RuntimeError('checkpoints are saved under the W&B run directory; initialise the run first')
+    path = epath.Path(wandb.run.dir) / RUN_CHECKPOINTS_DIRECTORY
+    path.mkdir(exist_ok=True)
+    return path
 
 
 def _get_function_kwargs(func: Any) -> Dict[str, Any]:

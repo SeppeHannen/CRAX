@@ -79,7 +79,6 @@ def add_shared_training_args(parser: argparse.ArgumentParser) -> argparse.Argume
     parser.add_argument("--quiet", action="store_true", help="Reduce verbosity")
     parser.add_argument("--skip_rollout", action="store_true", help="Skip rollout evaluation after training")
     parser.add_argument("--skip_video", action="store_true", help="Skip video recording after training")
-    parser.add_argument("--model_dir", type=str, default="models", help="Directory to save model parameters")
     parser.add_argument(
         "--out_dir", type=str, default="runs/experimental_results", help="Directory for metrics/outputs"
     )
