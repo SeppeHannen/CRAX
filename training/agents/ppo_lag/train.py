@@ -13,6 +13,7 @@ from crax import base
 from crax import envs
 from training import rounds
 from training import types
+from training.evaluation import EpisodeRecorder, LearnerViewFunction
 from training.agents.ppo_lag import losses as ppo_lag_losses
 from training.agents.ppo import networks as ppo_networks
 from training.agents.ppo import train as ppo_train
@@ -77,6 +78,8 @@ def train(
         # per-round host hook and named evaluation distributions (see ppo.train)
         round_hook: Optional[rounds.RoundHook] = None,
         evaluation_wrap_env_fns: Optional[Mapping[str, Callable[[Any], Any]]] = None,
+        # episode records of the evaluations (see ppo.train)
+        episode_recorder: Optional[EpisodeRecorder] = None,
 ):
     """PPO-Lagrange training.
 
@@ -181,6 +184,10 @@ def train(
         produces=ppo_lag_losses.LEARNING_SIGNALS, compute=compute_learning_signals
     )
 
+    # The episode records' view of an evaluation episode (docs/acl/design/episode_review.md §2).
+    # The trainer passes aux_state as the fourth argument; for this agent that *is* λ.
+    learner_view_fn = LearnerViewFunction(compute=ppo_lag_losses.compute_learner_view)
+
     # Initialize aux_state with the initial Lagrange multiplier
     def init_aux_state_fn():
         return jnp.array([initial_lambda_lagr], dtype=jnp.float32)
@@ -241,4 +248,6 @@ def train(
         round_hook=round_hook,
         learning_signals_fn=learning_signals_fn,
         evaluation_wrap_env_fns=evaluation_wrap_env_fns,
+        learner_view_fn=learner_view_fn,
+        episode_recorder=episode_recorder,
     )

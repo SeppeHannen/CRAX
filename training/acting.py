@@ -15,9 +15,11 @@
 """Brax training acting functions."""
 
 import time
-from typing import Callable, Sequence, Tuple
+from typing import Callable, Optional, Sequence, Tuple
 
 from crax import envs
+from training.evaluation.recorder import EvaluationRecording
+from training.evaluation.scene import SceneWrapper
 from training.types import Metrics
 from training.types import Policy
 from training.types import PolicyParams
@@ -91,6 +93,7 @@ class Evaluator:
       episode_length: int,
       action_repeat: int,
       key: PRNGKey,
+      recording: Optional[EvaluationRecording] = None,
   ):
     """Init.
 
@@ -101,24 +104,41 @@ class Evaluator:
       episode_length: Maximum length of an episode.
       action_repeat: Number of physics steps per env step.
       key: RNG key.
+      recording: if given, the unroll of the first `recording.num_episodes`
+        environments is kept whole, with the `state.info` fields it names
+        recorded per step, and returned by `run_recorded_evaluation`
+        (docs/acl/design/episode_review.md). The scene the renderer needs is
+        written into the state by `SceneWrapper`, so it can be one of them.
     """
     self._key = key
     self._eval_walltime = 0.0
+    if recording is not None and recording.num_episodes > num_eval_envs:
+      raise ValueError(f'cannot record {recording.num_episodes} episodes from {num_eval_envs} evaluation environments')
+    num_recorded = recording.num_episodes if recording is not None else 0
+    extra_fields = recording.extra_fields if recording is not None else ()
 
     eval_env = envs.training.EvalWrapper(eval_env)
+    if recording is not None:
+      # Writes the scene into the state for the record; only an MJX suite has one.
+      eval_env = SceneWrapper(eval_env)
 
     def generate_eval_unroll(
         policy_params: PolicyParams, key: PRNGKey
-    ) -> State:
+    ) -> Tuple[State, Transition]:
       reset_keys = jax.random.split(key, num_eval_envs)
       eval_first_state = eval_env.reset(reset_keys)
-      return generate_unroll(
+      final_state, data = generate_unroll(
           eval_env,
           eval_first_state,
           eval_policy_fn(policy_params),
           key,
           unroll_length=episode_length // action_repeat,
-      )[0]
+          extra_fields=extra_fields,
+      )
+      # The first `num_recorded` environments' transitions, [T, K, ...]; nothing
+      # of the rest leaves the device.
+      recorded = jax.tree_util.tree_map(lambda x: x[:, :num_recorded], data)
+      return final_state, recorded
 
     self._generate_eval_unroll = jax.jit(generate_eval_unroll)
     self._steps_per_unroll = episode_length * num_eval_envs
@@ -130,10 +150,20 @@ class Evaluator:
       aggregate_episodes: bool = True,
   ) -> Metrics:
     """Run one epoch of evaluation."""
+    return self.run_recorded_evaluation(policy_params, training_metrics, aggregate_episodes)[0]
+
+  def run_recorded_evaluation(
+      self,
+      policy_params: PolicyParams,
+      training_metrics: Metrics,
+      aggregate_episodes: bool = True,
+  ) -> Tuple[Metrics, Transition]:
+    """Run one epoch of evaluation; also return the recorded environments' unroll
+    (`[T, K, ...]`, `K` = `recording.num_episodes`, 0 without a recording)."""
     self._key, unroll_key = jax.random.split(self._key)
 
     t = time.time()
-    eval_state = self._generate_eval_unroll(policy_params, unroll_key)
+    eval_state, recorded = self._generate_eval_unroll(policy_params, unroll_key)
     eval_metrics = eval_state.info['eval_metrics']
     eval_metrics.active_episodes.block_until_ready()
     epoch_eval_time = time.time() - t
@@ -157,4 +187,4 @@ class Evaluator:
         **metrics,
     }
 
-    return metrics  # pytype: disable=bad-return-type  # jax-ndarray
+    return metrics, recorded  # pytype: disable=bad-return-type  # jax-ndarray

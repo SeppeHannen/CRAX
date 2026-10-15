@@ -103,6 +103,11 @@ class ContextTrainingSetup:
             "training_metrics_steps": self.steps_per_round,
         }
 
+    @property
+    def arm(self) -> str:
+        """The label the dashboard groups this run's lines by, and its episode records carry."""
+        return self.training_spec
+
     def wandb_config(self) -> Dict[str, Any]:
         """What the dashboard's text panels need to describe this run (see training/dashboard)."""
         return {
