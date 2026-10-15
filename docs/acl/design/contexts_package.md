@@ -24,7 +24,10 @@ training/contexts/
   round_hook.py                ContextRoundHook(RoundHook): store rollout + signals, lay out per slot, close episodes, update φ, attach it, return the round's metrics
   observation.py               ContextObservationWrapper: obs = {"sensors": o, "context": ω}, outermost in both stacks (design/contextual_learner.md §2)
   networks.py                  make_contextual_ppo_networks: policy over sensors (+ context when told), critics over sensors + context
-  constraint.py                PerContextConstraint: λ(ω) over space.integer_points, a ppo_lag LagrangeConstraint (design/contextual_learner.md §1)
+  constraints/                 λ(ω) as a function of the context, two classes behind one ppo_lag LagrangeConstraint (design/contextual_learner.md §1):
+    fitted.py                  the integrator's targets and the metrics both share
+    network.py                 NetworkConstraint: softplus(MLP(ω̃))
+    additive.py                AdditiveConstraint: f(Σ h_i(ω_i)), monotone per factor, additive difficulty
   learner.py                   Learner(constraint, policy_context) -> train(network_factory=, constraint=); the arm label
   setup.py                     '--context_distribution' / '--deployment_distribution' specs + the Learner -> train(**kwargs); arm_label
 tests/test_contexts.py            wrapper mechanics, round layout, episode tracker, PLR unit tests (CPU, ~40 s)
@@ -69,7 +72,7 @@ grammar, no suite-specific arguments:
 ```
 --context_distribution    none | uniform | level:<n> | staged:<n>,<n>,... | plr    what the student trains on (default none = stock CRAX)
 --deployment_distribution uniform | level:<n> | staged:...                         w, what the policy is for (default level:3)
---constraint              scalar | per_context                                     one λ, or one per context λ(ω) (ppo_lag only)
+--constraint              scalar | network | additive                              one λ, or λ(ω) in one of two function classes (ppo_lag only)
 --policy_context          blind | told                                             whether the policy observes ω (the critics always do)
 ```
 

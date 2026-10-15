@@ -132,22 +132,27 @@ it cannot tell apart and collapses to one trade-off; Tristan predicts this,
 and it is run once as a control.
 
 **The switches** are two CLI choices, so that every later arm can run under
-any combination: `--constraint scalar|per_context` and
+any combination: `--constraint scalar|network|additive` and
 `--policy_context blind|told`. The published methods all use a scalar
 constraint, which stays as their baseline. An *arm* is now the training
 distribution under a learner (`uniform scalar blind`, `staged:1,2,3
-per_context told`); the dashboard groups lines by it.
+additive told`); the dashboard groups lines by it.
 
-**Status (2026-10-14): built, CPU-tested, uncommitted, awaiting review.**
-Design and what is logged: `design/contextual_learner.md`. λ(ω) is a small
-network λ_ψ(ω) = softplus(f_ψ(ω̃)), fitted each round to the targets
-PPO-Lagrange's integrator names for every transition, so an unseen context's
-multiplier is inherited from its neighbours (a table over the integer points
-was built first and replaced the same day: it left each new stage to start
-from λ = 0). A per-context run needs `--initial_lambda_lagr > 0`. The
-observation of every context run is `{sensors, context}` and the critics read
-both. **Smoke (2026-10-14, group `smoke_contextual_learner_v2`): three arms
-at 100 M, `staged:1,2,3` / `uniform` / `plr`, all `per_context told`, rate 1,
+**Status (2026-10-15): built, CPU-tested, on branch `contextual-learner`,
+uncommitted additions awaiting review.** Design and what is logged:
+`design/contextual_learner.md`. λ(ω) is a function of the context fitted each
+round to the targets PPO-Lagrange's integrator names for every transition, in
+one of two classes: `network`, a small MLP, and `additive`, f(Σ h_i(ω_i)) with
+monotone per-factor difficulties and a monotone price — Giuseppe's "classical
+statistical" form, which makes an unseen context's multiplier a bound from its
+neighbours rather than a seed's output (a table over the integer points was
+built first and replaced the same day: it left each new stage at λ = 0). The
+`network` form needs `--initial_lambda_lagr > 0`. The observation of every
+context run is `{sensors, context}` and the critics read both. **Running
+(2026-10-15, group `goal_point_lambda_forms_200M`): staged and uniform under
+each form, 200 M, `told`.** **Smoke (2026-10-14, group
+`smoke_contextual_learner_v2`): three arms at 100 M, `staged:1,2,3` /
+`uniform` / `plr`, all `network told` (then named `per_context`), rate 1,
 initial λ 0.1; 0 recompiles, 85 k SPS (no throughput cost).** λ_ψ spreads
 across Ω as designed: under uniform λ runs 0 at the sparse end to 8–9 at the
 dense end (fit error 0.16 against a target spread of 1.75), and the told
@@ -656,7 +661,7 @@ Upstream bugs found, and places where our changes alter the benchmark:
   --wandb_group <experiment_group>
 
 # uniform: same, with --context_distribution uniform; fixed level: level:3; PLR: plr
-# the contextual learner (design/contextual_learner.md): add --constraint per_context --policy_context told
+# the contextual learner (design/contextual_learner.md): add --constraint additive --policy_context told (or network)
 # (defaults scalar, blind = the published method; a context run needs --skip_rollout --skip_video)
 ```
 
