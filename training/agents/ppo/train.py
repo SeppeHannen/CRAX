@@ -373,11 +373,15 @@ def train(
         reported under `eval/...` as before.
       learner_view_fn: the agent's `LearnerViewFunction`: its critics' values, its
         multiplier and the advantages its loss forms, for a batch of whole
-        episodes. Required with `episode_recorder`.
+        episodes. Supplied by the agent (ppo_lag/train.py), unconditionally,
+        like `learning_signals_fn`; an agent without one (plain PPO: no cost
+        critic, no multiplier) cannot record episodes.
       episode_recorder: if given, every evaluator keeps the first
         `episode_recorder.num_episodes` of its episodes whole and the recorder
         writes them, with the learner's view of every step, as episode records
-        (docs/acl/design/episode_review.md).
+        (docs/acl/design/episode_review.md). Supplied by the entry point from
+        `--record_episodes`, like `round_hook`; refused before anything compiles
+        when the agent has no `learner_view_fn`.
 
     Returns:
       Tuple of (make_policy function, network params, metrics)
