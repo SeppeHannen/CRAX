@@ -210,7 +210,7 @@ KEPT: Tuple[Metric, ...] = (
     Metric("training/lambda_lagr", "Lagrange multiplier λ", "λ", Group.MECHANISM,
            "the multiplier on the cost advantage after the round's update, by the agent's own rule (PPO-Lagrange: an integrator; "
            "PPO-PID: a PID controller). It grows while the batch's cost per step exceeds the budget per step and shrinks otherwise. "
-           "Under a per-context constraint (`per_context` arms) the multiplier is a function λ(ω) of the context and this is its "
+           "Under a per-context constraint (`network` / `additive` arms) the multiplier is a function λ(ω) of the context and this is its "
            "mean over the round's transitions — the λ the batch was weighted by on average; the spread is below."),
     Metric("training/lambda_lagr/std", "std", "λ", Group.MECHANISM,
            "per-context constraint only: the standard deviation, over the round's transitions, of λ(ω) at each transition's "
@@ -229,6 +229,13 @@ KEPT: Tuple[Metric, ...] = (
     Metric("training/lambda_lagr/target_spread", "spread of the targets", "λ", Group.TRUST,
            "per-context constraint only: the standard deviation of the integrator's targets over the round's transitions — "
            "between contexts (their multipliers differ) plus within a context (one transition's cost).", panel=LAMBDA_FIT_PANEL),
+    Metric("training/lambda_lagr/baseline", "λ of the easiest context", "λ", Group.MECHANISM,
+           "`additive` constraint only: λ at the easiest corner of Ω (every count at its minimum, the goal at its largest) — "
+           "the price of the budget where the task is easiest; 0 when the constraint is slack there."),
+    Metric("training/lambda_lagr/difficulty_share/{dimension}", "{dimension}", "share of the difficulty range", Group.MECHANISM,
+           "`additive` constraint only: the share of the learnt difficulty index D(ω) = Σ h_i(ω_i) that {dimension} accounts for "
+           "over its whole range — which factors the multiplier has learnt to price. Shares sum to 1; equal shares at the start.",
+           panel="Which factors the multiplier prices: share of the difficulty range per factor"),
     Metric("training/pid/violation", "Constraint violation the controller sees", "cost per step above the budget", Group.MECHANISM,
            "the batch's mean cost per step minus the budget per step — the error signal PPO-PID's controller drives to zero; "
            "positive = over budget."),

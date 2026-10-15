@@ -15,6 +15,7 @@ import pytest
 
 from crax import envs
 from training import contexts as C
+from training.contexts.constraints.additive import CONTINUOUS_BINS
 from training.agents.ppo.train import _strip_weak_type
 from training.rounds import Signal
 
@@ -618,18 +619,24 @@ def test_networks_read_the_context_where_the_learner_allows_it():
             assert not np.allclose(value(observation), value(other_context)), "a critic must see the context"
 
 
-def test_per_context_constraint_starts_as_the_scalar_and_moves_by_the_integrator():
-    """λ_ψ(ω) = softplus(f_ψ(ω̃)): the constant `initial_lambda` everywhere at the start; one
-    update with every transition in one context moves λ there by rate·(mean cost − budget),
-    the scalar's step; the function is positive everywhere; the metrics describe the batch."""
+PER_CONTEXT_FORMS = ("network", "additive")
+
+
+def _per_context_constraint(form: str, space: C.ContextSpace):
+    return C.Learner(constraint=form, policy_context="told").per_context_constraint(space)
+
+
+@pytest.mark.parametrize("form", PER_CONTEXT_FORMS)
+def test_per_context_constraint_starts_as_the_scalar_and_moves_by_the_integrator(form):
+    """Either function class: the constant `initial_lambda` everywhere at the start; one update
+    with every transition in one context moves λ there by rate·(mean cost − budget), the
+    scalar's step; λ never drops below 0; the metrics describe the batch."""
     space = C.suite_contexts(LIFT).space
-    constraint = C.PerContextConstraint(space)
+    constraint = _per_context_constraint(form, space)
     assert constraint.extra_fields == (C.TRANSITION_CONTEXT_KEY,)
     multipliers = constraint.initial_multipliers(0.5)
     everywhere = jnp.asarray(space.integer_points, jnp.float32)  # the 16 contexts of {0,1}^4
     np.testing.assert_allclose(np.asarray(constraint.multipliers_at(multipliers, everywhere)), 0.5, atol=1e-6)
-    with pytest.raises(ValueError, match="cannot start at 0"):
-        constraint.initial_multipliers(0.0)
     # one context over budget by 1 per step at rate 0.25: its λ should land near 0.5 + 0.25 = 0.75
     context = jnp.ones((64, 8, 4))
     state_extras = {C.TRANSITION_CONTEXT_KEY: context}
@@ -640,22 +647,20 @@ def test_per_context_constraint_starts_as_the_scalar_and_moves_by_the_integrator
     assert per_transition.mean() == pytest.approx(0.75, abs=0.05)
     assert metrics["lambda_lagr"] == pytest.approx(per_transition.mean()) and metrics["lambda_lagr/std"] == pytest.approx(0.0, abs=1e-4)
     assert metrics["lambda_lagr/fit_error"] < 0.05 and metrics["lambda_lagr/target_spread"] == pytest.approx(0.0)  # one cost: no scatter
-    # a context the round never visited moved less than the visited one did, and stays positive
-    far = jnp.zeros((1, 4))
-    assert 0.0 < float(constraint.multipliers_at(updated, far)[0]) < float(per_transition.mean())
     # under budget for many rounds: λ falls towards 0 and never below
     for _ in range(30):
         updated, metrics = constraint.update(updated, jnp.zeros((64, 8)), state_extras, budget_per_step=1.0, rate=0.25)
     assert 0.0 <= float(metrics["lambda_lagr/min"]) and float(metrics["lambda_lagr"]) < 0.05
 
 
-def test_per_context_constraint_tracks_a_scalar_and_separates_contexts():
-    """Forty rounds of one context over budget: λ_ψ there follows the scalar integrator to within
+@pytest.mark.parametrize("form", PER_CONTEXT_FORMS)
+def test_per_context_constraint_tracks_a_scalar_and_separates_contexts(form):
+    """Forty rounds of one context over budget: λ there follows the scalar integrator to within
     a tenth; then two contexts with opposite violations in one round move in opposite directions."""
     from training.agents.ppo_lag.constraint import ScalarConstraint
 
     space = C.suite_contexts(LIFT).space
-    constraint, scalar = C.PerContextConstraint(space), ScalarConstraint()
+    constraint, scalar = _per_context_constraint(form, space), ScalarConstraint()
     function, value = constraint.initial_multipliers(0.1), scalar.initial_multipliers(0.1)
     first, second = jnp.zeros((32, 8, 4)), jnp.ones((32, 8, 4))
     costs = jnp.full((32, 8), 0.085)  # over a budget of 0.025 by 0.06 per step
@@ -665,13 +670,76 @@ def test_per_context_constraint_tracks_a_scalar_and_separates_contexts():
         value, _ = scalar.update(value, costs, {}, 0.025, 1.0)
     assert float(metrics["lambda_lagr"]) == pytest.approx(float(value[0]), abs=0.1)
     at_first, at_second = (float(constraint.multipliers_at(function, ctx[0, :1])[0]) for ctx in (first, second))
-    assert at_second < at_first, "the unvisited context should not have risen as far as the visited one"
     both = jnp.concatenate([first, second])
     opposite = jnp.concatenate([jnp.full((32, 8), 0.01), jnp.full((32, 8), 0.065)])  # first under, second over
     function, metrics = update(function, opposite, both)
     now_first, now_second = (float(constraint.multipliers_at(function, ctx[0, :1])[0]) for ctx in (first, second))
     assert now_first < at_first and now_second > at_second
     assert float(metrics["lambda_lagr/std"]) > 0.0
+
+
+def test_network_constraint_needs_a_positive_start_and_keeps_unseen_contexts_between():
+    """softplus never reaches 0, so the network form refuses λ₀ = 0; an unvisited context's λ
+    after one round lies between its start and the visited context's new value."""
+    space = C.suite_contexts(LIFT).space
+    constraint = C.NetworkConstraint(space)
+    with pytest.raises(ValueError, match="cannot start at 0"):
+        constraint.initial_multipliers(0.0)
+    multipliers = constraint.initial_multipliers(0.5)
+    state_extras = {C.TRANSITION_CONTEXT_KEY: jnp.ones((64, 8, 4))}
+    updated, _ = constraint.update(multipliers, jnp.full((64, 8), 2.0), state_extras, budget_per_step=1.0, rate=0.25)
+    visited = float(constraint.multipliers_at(updated, jnp.ones((1, 4)))[0])
+    unvisited = float(constraint.multipliers_at(updated, jnp.zeros((1, 4)))[0])
+    assert 0.0 < unvisited < visited
+
+
+def test_additive_constraint_is_monotone_in_difficulty_and_transfers_across_factors():
+    """λ = f(Σ_i h_i(ω_i)), h_i nondecreasing in the factor's difficulty direction, f nondecreasing.
+
+    On goal-point: training on contexts that differ only in the cylinder count, with cost rising
+    with it, makes λ nondecreasing in cylinders and 0 on the slack contexts; the difficulty learnt
+    then carries to contexts with other factors set (no interactions), monotonically; goal_size is
+    harder when *lower*, so cost at small goals raises λ at small goals, not large ones; λ₀ = 0 is
+    allowed; and the fit reports which factors carry the difficulty."""
+    suite = C.suite_contexts("safe_goal_point")
+    space = suite.space
+    constraint = C.AdditiveConstraint(space)
+    steps_per_count = sum(int(d.high) - int(d.low) for d in space.integer_dimensions)  # one increment per value past the easiest
+    assert constraint.num_difficulty_features == steps_per_count + (CONTINUOUS_BINS - 1)  # counts + goal-size inner bin edges
+    multipliers = constraint.initial_multipliers(0.0)
+    at = lambda m, **values: float(constraint.multipliers_at(m, space.encode(**values)[None])[0])
+    base = dict(active_cylinders=0, active_collidable_cylinders=0, active_cubes=0, active_collidable_cubes=0, goal_size=0.2)
+    assert at(multipliers, **base) == 0.0
+    easiest = space.encode(**{**base, "goal_size": 0.3})
+    hardest = space.encode(active_cylinders=12, active_collidable_cylinders=12, active_cubes=12, active_collidable_cubes=12, goal_size=0.1)
+    np.testing.assert_allclose(np.asarray(constraint.difficulty_at(multipliers, jnp.stack([easiest, hardest]))), [0.0, 1.0], atol=1e-6)
+
+    # cost rises with cylinders, everything else fixed: 0, 4, 8 cylinders at per-step cost 0.02, 0.05, 0.08 vs budget 0.025
+    contexts = jnp.stack([space.encode(**{**base, "active_cylinders": d}) for d in (0.0, 4.0, 8.0)])  # [3, 5]
+    contexts = jnp.repeat(contexts[:, None, :], 16, axis=1)  # [3, 16, 5]
+    costs = jnp.repeat(jnp.asarray([[0.02], [0.05], [0.08]]), 16, axis=1)
+    update = jax.jit(lambda m, c, ctx: constraint.update(m, c, {C.TRANSITION_CONTEXT_KEY: ctx}, 0.025, 1.0))
+    for _ in range(20):
+        multipliers, metrics = update(multipliers, costs, contexts)
+    at_0, at_4, at_8 = (at(multipliers, **{**base, "active_cylinders": d}) for d in (0, 4, 8))
+    assert at_0 == pytest.approx(0.0, abs=0.02) and at_0 <= at_4 < at_8  # slack context at 0; monotone
+    assert at_8 == pytest.approx(20 * (0.08 - 0.025), rel=0.1)  # the integrator's value after 20 rounds
+    assert metrics["lambda_lagr/fit_error"] < 0.05
+    # monotone across the whole factor, visited values or not
+    along = [at(multipliers, **{**base, "active_cylinders": d}) for d in range(13)]
+    assert all(a <= b + 1e-5 for a, b in zip(along, along[1:]))
+    # the cylinder difficulty carries into contexts with other factors set, never lowering λ
+    assert at(multipliers, **{**base, "active_cylinders": 8, "active_collidable_cylinders": 3}) >= at_8 - 1e-5
+    # the fit says the cylinders carry the difficulty it has seen
+    shares = constraint.factor_shares(multipliers)
+    assert max(shares, key=lambda name: float(shares[name])) == "active_cylinders"
+    # goal_size is harder when lower: cost at a small goal raises λ at small goals, not at large ones
+    small, large = space.encode(**{**base, "goal_size": 0.11}), space.encode(**{**base, "goal_size": 0.29})
+    both = jnp.stack([jnp.repeat(small[None], 16, 0), jnp.repeat(large[None], 16, 0)])
+    for _ in range(5):
+        multipliers, metrics = update(multipliers, jnp.asarray([[0.1] * 16, [0.0] * 16]), both)
+    assert at(multipliers, **{**base, "goal_size": 0.11}) > at(multipliers, **{**base, "goal_size": 0.29}) + 0.1
+    assert float(metrics["lambda_lagr/baseline"]) == pytest.approx(0.0, abs=0.02)
 
 
 def test_scalar_constraint_is_the_published_rule_and_broadcasts():
@@ -697,15 +765,18 @@ def test_lagrangian_advantage_takes_lambda_per_transition_in_the_datas_layout():
 
 
 def test_learner_names_the_arm_and_hands_the_trainer_what_realises_it():
-    told = C.Learner(constraint="per_context", policy_context="told")
-    assert C.arm_label("staged:1,2,3", told) == "staged:1,2,3 per_context told"
-    assert C.run_name_fragment("staged:1,2,3", told) == "staged123_per_context_told"
+    told = C.Learner(constraint="additive", policy_context="told")
+    assert C.arm_label("staged:1,2,3", told) == "staged:1,2,3 additive told"
+    assert C.run_name_fragment("staged:1,2,3", told) == "staged123_additive_told"
     assert C.arm_label("uniform", C.DEFAULT_LEARNER) == "uniform scalar blind"
     kwargs = told.train_kwargs(C.suite_contexts(LIFT).space)
-    assert isinstance(kwargs["constraint"], C.PerContextConstraint)
+    assert isinstance(kwargs["constraint"], C.AdditiveConstraint)
     assert kwargs["network_factory"].keywords == {"policy_observes_context": True}
     assert set(C.DEFAULT_LEARNER.train_kwargs(C.suite_contexts(LIFT).space)) == {"network_factory"}
-    assert isinstance(told.train_kwargs(C.suite_contexts(ENV_NAME).space)["constraint"], C.PerContextConstraint)  # any Ω
+    network = C.Learner(constraint="network", policy_context="blind")
+    assert isinstance(network.train_kwargs(C.suite_contexts(ENV_NAME).space)["constraint"], C.NetworkConstraint)  # any Ω
+    with pytest.raises(ValueError, match="holds no per-context constraint"):
+        C.DEFAULT_LEARNER.per_context_constraint(C.suite_contexts(LIFT).space)
     with pytest.raises(ValueError):
         C.Learner(constraint="per_episode", policy_context="told")
     with pytest.raises(ValueError, match="need a context distribution"):

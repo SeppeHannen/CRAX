@@ -1,13 +1,15 @@
-"""The per-context constraint λ(ω): the Lagrange multiplier as a function of the
-context, moved each round by PPO-Lagrange's integrator and carried by a network.
+"""The per-context multiplier as a network: λ_ψ(ω) = softplus(f_ψ(ω̃)), moved
+each round by PPO-Lagrange's integrator.
 
 A scalar λ is updated from the mean cost of whatever the curriculum sampled
 this round, so it settles where the policy is on budget for the training
 distribution and nowhere else (``research_design_brief.md`` §6). Here the
-constraint ``C(π, ω) ≤ d`` is held for every ω through a multiplier
-``λ_ψ(ω) = softplus(f_ψ(ω̃))``: a small network ``f_ψ`` over the context,
-normalised to Ω's box, through a positive map. The policy loss weights each
-transition by the multiplier of the context it was generated in.
+constraint ``C(π, ω) ≤ d`` is held for every ω through a multiplier that is a
+function of the context: a small network ``f_ψ`` over the context, normalised to
+Ω's box, through a positive map. The policy loss weights each transition by the
+multiplier of the context it was generated in. The other per-context form,
+monotone and additive in the factors of ω, is ``additive.py``; the shared
+machinery (targets, metrics) is ``fitted.py``.
 
 **The update is the integrator, projected onto the function class.** After a
 round, every transition names where its context's multiplier should move by
@@ -46,6 +48,7 @@ from flax import linen
 
 from training import types
 from training.agents.ppo_lag.constraint import StateExtras
+from training.contexts.constraints.fitted import integrator_targets, multiplier_metrics
 from training.contexts.rollout import TRANSITION_CONTEXT_KEY
 from training.contexts.space import ContextSpace
 
@@ -89,7 +92,7 @@ def _inverse_softplus(value: float) -> float:
 
 
 @dataclasses.dataclass(frozen=True)
-class PerContextConstraint:
+class NetworkConstraint:
     """λ_ψ(ω) over ``space`` (a :class:`~training.agents.ppo_lag.constraint.LagrangeConstraint`).
 
     ``seed`` initialises the hidden layers; the output layer is deterministic (zero
@@ -124,23 +127,11 @@ class PerContextConstraint:
         self, multipliers: MultiplierFunctionState, costs: jax.Array, state_extras: StateExtras,
         budget_per_step: float, rate: float,
     ) -> Tuple[MultiplierFunctionState, Dict[str, jax.Array]]:
-        """Move the function by the integrator: fit ψ to ``relu(λ_ψ(ω_t) + rate·(c_t − d))``
-        over the round's transitions (module docstring).
-
-        Metrics, over the round's transitions under the *updated* ψ (so ``lambda_lagr`` is
-        the λ the batch was weighted by on average, comparable to a scalar arm's):
-        ``lambda_lagr`` mean and ``lambda_lagr/{std,min,max}``, the spread across contexts;
-        ``lambda_lagr/fit_error`` the root mean squared distance from the targets after the
-        fit, and ``lambda_lagr/target_spread`` the targets' standard deviation over the
-        batch. The targets vary for two reasons: between contexts, because their multipliers
-        differ, and within a context, because a target is one transition's cost and costs
-        scatter by ``rate · std(c)`` around their mean. The fit resolves the first and lands on
-        the mean of the second, so ``fit_error`` well below ``target_spread`` means the
-        function holds the contexts' multipliers apart; ``fit_error`` near ``target_spread``
-        means it does not (one context, or a function too smooth for the contexts mixed).
-        """
+        """Move the function by the integrator: fit ψ to the targets of
+        :func:`~training.contexts.constraints.fitted.integrator_targets` over the round's
+        transitions by ``FIT_STEPS`` Adam steps; metrics as in :func:`multiplier_metrics`."""
         contexts = state_extras[TRANSITION_CONTEXT_KEY]
-        targets = jax.nn.relu(self._apply(multipliers.parameters, contexts) + rate * (costs - budget_per_step))
+        targets = integrator_targets(self._apply(multipliers.parameters, contexts), costs, budget_per_step, rate)
 
         def squared_error(parameters: types.Params) -> jax.Array:
             return jnp.mean(jnp.square(self._apply(parameters, contexts) - targets))
@@ -154,14 +145,7 @@ class PerContextConstraint:
             fit_step, (multipliers.parameters, multipliers.optimizer_state), None, length=FIT_STEPS
         )
         per_transition = self._apply(parameters, contexts)
-        return MultiplierFunctionState(parameters=parameters, optimizer_state=optimizer_state), {
-            "lambda_lagr": jnp.mean(per_transition),
-            "lambda_lagr/std": jnp.std(per_transition),
-            "lambda_lagr/min": jnp.min(per_transition),
-            "lambda_lagr/max": jnp.max(per_transition),
-            "lambda_lagr/fit_error": jnp.sqrt(jnp.mean(jnp.square(per_transition - targets))),
-            "lambda_lagr/target_spread": jnp.std(targets),
-        }
+        return MultiplierFunctionState(parameters=parameters, optimizer_state=optimizer_state), multiplier_metrics(per_transition, targets)
 
     def multipliers_at(self, multipliers: MultiplierFunctionState, contexts: jax.Array) -> jax.Array:
         """``λ_ψ`` at arbitrary contexts ``[..., D]``: the function can be read anywhere in Ω."""

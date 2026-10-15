@@ -49,9 +49,13 @@ ARM_COLOURS: Mapping[str, str] = {
     "plr:lagrangian scalar blind": "#ff7f0e",
     "level:3 scalar blind": "#7f7f7f",
     "level:1 scalar blind": "#bcbd22",
-    "uniform per_context told": "#9467bd",
-    "staged:1,2,3 per_context told": "#17becf",
-    "staged:1,2,3 per_context blind": "#8c564b",
+    "uniform network told": "#9467bd",
+    "staged:1,2,3 network told": "#17becf",
+    "staged:1,2,3 network blind": "#8c564b",
+    "plr network told": "#e7ba52",
+    "uniform additive told": "#6b4c9a",
+    "staged:1,2,3 additive told": "#0f7f8c",
+    "plr additive told": "#bd9e39",
     BUDGET_ARM: "#c7c7c7",
 }
 
@@ -194,9 +198,10 @@ class RunFacts:
 
 LEGEND = (
     "**Legend.** Lines are grouped by `arm`: the distribution over contexts the run trained on, then how the "
-    "constraint is held (`scalar` = one λ; `per_context` = one multiplier per context λ(ω)) and what the policy "
-    "observes of its context (`blind` = sensors only; `told` = the context too; the critics always see it) — e.g. "
-    "`uniform scalar blind`, `staged:1,2,3 per_context told`. One line per arm, mean over its seeds, band = min–max "
+    "constraint is held (`scalar` = one λ; `network` / `additive` = a multiplier λ(ω) that is a function of the context, "
+    "an MLP or a sum of per-factor monotone terms) and what the policy observes of its context (`blind` = sensors only; "
+    "`told` = the context too; the critics always see it) — e.g. `uniform scalar blind`, `staged:1,2,3 additive told`. "
+    "One line per arm, mean over its seeds, band = min–max "
     "over seeds. The legend does not indicate what a line was evaluated on; the panel title does."
 )
 

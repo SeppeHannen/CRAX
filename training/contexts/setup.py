@@ -84,12 +84,12 @@ def spec_label(spec: str) -> str:
 
 
 def arm_label(training_spec: str, learner: Learner) -> str:
-    """The arm as the dashboard legend shows it: ``"staged:1,2,3 per_context told"``."""
+    """The arm as the dashboard legend shows it: ``"staged:1,2,3 additive told"``."""
     return f"{training_spec} {learner.label}"
 
 
 def run_name_fragment(training_spec: str, learner: Learner) -> str:
-    """The arm in a run name: ``staged123_per_context_told``."""
+    """The arm in a run name: ``staged123_additive_told``."""
     return f"{spec_label(training_spec)}_{learner.label.replace(' ', '_')}"
 
 

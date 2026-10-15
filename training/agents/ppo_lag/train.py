@@ -116,8 +116,8 @@ def train(
       lagrangian_coef_rate: learning rate for Lagrange multiplier updates
       initial_lambda_lagr: initial value for the Lagrange multiplier
       constraint: how the constraint is held (`ppo_lag/constraint.py`): one λ for the
-        whole training distribution (default), or one per context
-        (`training.contexts.constraint.PerContextConstraint`). It owns the
+        whole training distribution (default), or a function of the context
+        (`training.contexts.constraints`). It owns the
         multipliers' layout in `aux_state`, their lookup per transition and
         their update rule; `lagrangian_coef_rate` and `initial_lambda_lagr`
         apply to either.

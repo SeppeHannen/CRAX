@@ -454,19 +454,20 @@ def test_end_to_end_scalar_constraint_reads_the_batch_cost_from_the_rounds_data(
     assert not any(key.startswith("training/lambda_lagr/") for m in rounds for key in m), "a scalar arm logs no spread"
 
 
-def test_end_to_end_per_context_constraint_with_a_told_policy():
-    """λ_ψ(ω) with the policy told its context, on lift ant (Ω = {0,1}^4: which feet are
-    restricted). One compiled program; the multiplier function's mean, spread and fit error over
-    the batch are logged under registered keys; the policy is evaluated on w and r through the
-    {sensors, context} observation."""
-    told = C.Learner(constraint="per_context", policy_context="told")
+@pytest.mark.parametrize("form", ["network", "additive"])
+def test_end_to_end_per_context_constraint_with_a_told_policy(form):
+    """λ(ω) in either function class with the policy told its context, on lift ant (Ω = {0,1}^4:
+    which feet are restricted). One compiled program; the multiplier function's mean, spread and
+    fit error over the batch are logged under registered keys; the policy is evaluated on w and r
+    through the {sensors, context} observation."""
+    told = C.Learner(constraint=form, policy_context="told")
     # budget 0: a context whose restricted feet touch the ground is over budget and its λ rises; the
     # context that restricts no foot has cost 0 and its λ falls, so the function must spread
     setup, history, compile_seconds, _ = _run(
         "uniform", learner=told, env_name="safe_lift_ant", safety_bound=0.0, lagrangian_coef_rate=1.0, initial_lambda_lagr=0.1
     )
-    assert setup.arm == "uniform per_context told"
-    assert setup.wandb_config()["arm"] == setup.arm and setup.wandb_config()["constraint"] == "per_context"
+    assert setup.arm == f"uniform {form} told"
+    assert setup.wandb_config()["arm"] == setup.arm and setup.wandb_config()["constraint"] == form
 
     rounds = _per_round_training_metrics(history)
     assert len(rounds) == TOTAL_ROUNDS
@@ -494,7 +495,7 @@ def test_end_to_end_per_context_constraint_with_a_told_policy():
 def test_per_context_constraint_needs_ppo_lagrange():
     """PPO-PID has no `constraint` argument: the setup's kwargs are refused by the trainer
     (the CLI turns this into its 'does not accept' message before anything runs)."""
-    told = C.Learner(constraint="per_context", policy_context="told")
+    told = C.Learner(constraint="additive", policy_context="told")
     setup = C.context_training_setup("safe_lift_ant", "uniform", "level:3", told, num_timesteps=NUM_TIMESTEPS,
                                      num_envs=TINY["num_envs"], batch_size=TINY["batch_size"],
                                      unroll_length=TINY["unroll_length"], num_minibatches=TINY["num_minibatches"])

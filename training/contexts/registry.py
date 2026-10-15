@@ -240,6 +240,7 @@ def _velocity_suite(agent: str) -> Callable[[], SuiteContexts]:
                 low=_VELOCITY_LOW_FRACTION * baseline,
                 high=_VELOCITY_HIGH_FRACTION * baseline,
                 description=f"the speed above which a step counts as a violation (the {agent}'s speed limit)",
+                harder_when="lower",
             ),
         ))
         return SuiteContexts(
@@ -276,6 +277,7 @@ def _height_humanoid() -> SuiteContexts:
             low=_HEIGHT_LOW,
             high=_HEIGHT_HIGH,
             description="the ceiling height in metres; the head above it is a violation",
+            harder_when="lower",
         ),
     ))
     return SuiteContexts(
@@ -482,13 +484,13 @@ def _goal_point() -> SuiteContexts:
     return SuiteContexts(
         env_name=env_name,
         space=ContextSpace(
-            hazard_dimensions + (Dimension("goal_size", low=_GOAL_SIZE_LOW, high=_GOAL_SIZE_HIGH, description=goal_size),),
+            hazard_dimensions + (Dimension("goal_size", low=_GOAL_SIZE_LOW, high=_GOAL_SIZE_HIGH, description=goal_size, harder_when="lower"),),
             integer_total_cap=_GOAL_MAX_ACTIVE_HAZARDS,
         ),
         evaluation_regions=(EvaluationRegion(
             name=OUT_OF_DISTRIBUTION_REGION,
             space=ContextSpace(
-                hazard_dimensions + (Dimension("goal_size", low=_GOAL_OUT_OF_DISTRIBUTION_GOAL_SIZE_LOW, high=_GOAL_SIZE_LOW, description=goal_size),),
+                hazard_dimensions + (Dimension("goal_size", low=_GOAL_OUT_OF_DISTRIBUTION_GOAL_SIZE_LOW, high=_GOAL_SIZE_LOW, description=goal_size, harder_when="lower"),),
                 integer_total_floor=_GOAL_OUT_OF_DISTRIBUTION_MIN_ACTIVE_HAZARDS,
             ),
             label="outside Ω (uniform over Ω₂: denser than the cap, smaller goal)",
@@ -542,11 +544,13 @@ def _circle_point() -> SuiteContexts:
         "boundary_x", low=_CIRCLE_BOUNDARY_LOW, high=_CIRCLE_BOUNDARY_X_HIGH,
         description="half-width in metres of the allowed strip |x| ≤ boundary_x around the circle's centre; "
         "smaller = the robot has to leave the circle more",
+        harder_when="lower",
     ))
     dimensions.append(Dimension(
         "boundary_y", low=_CIRCLE_BOUNDARY_LOW, high=_CIRCLE_BOUNDARY_Y_HIGH,
         description="half-height in metres of the allowed strip |y| ≤ boundary_y; 3 m is the arena edge, i.e. no "
         "y-boundary",
+        harder_when="lower",
     ))
     return SuiteContexts(
         env_name=env_name,
@@ -607,6 +611,7 @@ def _button_point() -> SuiteContexts:
         "placement_extent", low=_BUTTON_LAYOUT_LOW, high=_BUTTON_LAYOUT_HIGH,
         description="half-width in metres of the square the buttons and hazards are laid out in; smaller = the same "
         "objects packed closer together",
+        harder_when="lower",
     ))
     return SuiteContexts(
         env_name=env_name,

@@ -9,8 +9,7 @@ The multiplier state is whatever the constraint keeps in ``TrainingState.aux_sta
 a ``[1]`` array for a scalar λ, a network's parameters for λ(ω).
 
 :class:`ScalarConstraint` is the published PPO-Lagrange: one λ, updated from the
-batch's mean cost. The per-context constraint λ(ω) is
-``training.contexts.constraint.PerContextConstraint``
+batch's mean cost. The per-context forms λ(ω) are ``training.contexts.constraints``
 (``docs/acl/design/contextual_learner.md`` §1).
 """
 from __future__ import annotations

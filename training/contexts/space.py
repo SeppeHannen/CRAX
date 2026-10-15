@@ -30,17 +30,26 @@ Context = jax.Array  # shape [D]
 Contexts = jax.Array  # shape [N, D]
 
 DimensionKind = Literal["continuous", "integer"]
+DifficultyDirection = Literal["higher", "lower"]
 
 
 @dataclasses.dataclass(frozen=True)
 class Dimension:
-    """One coordinate of a context space."""
+    """One coordinate of a context space.
+
+    ``harder_when`` says which way difficulty runs along this coordinate: ``"higher"``
+    when a larger value makes the task harder (more hazards, a wider gap), ``"lower"``
+    when a smaller one does (a smaller goal, a tighter speed limit, a lower ceiling).
+    A fact of the suite, stated once here; the additive multiplier
+    (``training/contexts/constraints/additive.py``) is monotone in this direction.
+    """
 
     name: str
     low: float
     high: float
     kind: DimensionKind = "continuous"
     description: str = ""
+    harder_when: DifficultyDirection = "higher"
 
     def __post_init__(self) -> None:
         if not self.low <= self.high:

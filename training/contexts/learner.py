@@ -1,9 +1,11 @@
 """The two switches that make the learner contextual, from the CLI to ``train(...)``.
 
 A context run's learner is named by how it holds the **constraint** — one λ for
-the whole training distribution, or one per context λ(ω) — and by what the
-**policy** observes — its sensors only (blind), or its context too (told). The
-critics observe the context in every context run. The reasons are
+the whole training distribution (``scalar``), or a function of the context
+λ(ω) in one of two function classes (``network``, ``additive``;
+``training/contexts/constraints/``) — and by what the **policy** observes — its
+sensors only (blind), or its context too (told). The critics observe the
+context in every context run. The reasons are
 ``docs/acl/design/contextual_learner.md``; this module turns the two words into
 the trainer arguments that realise them and into the arm label the dashboard
 groups runs by.
@@ -14,11 +16,12 @@ import dataclasses
 import functools
 from typing import Any, Dict, Literal, Tuple, get_args
 
-from training.contexts.constraint import PerContextConstraint
+from training.agents.ppo_lag.constraint import LagrangeConstraint
+from training.contexts.constraints import AdditiveConstraint, NetworkConstraint
 from training.contexts.networks import make_contextual_ppo_networks
 from training.contexts.space import ContextSpace
 
-Constraint = Literal["scalar", "per_context"]
+Constraint = Literal["scalar", "network", "additive"]
 PolicyContext = Literal["blind", "told"]
 CONSTRAINTS: Tuple[str, ...] = get_args(Constraint)
 POLICY_CONTEXTS: Tuple[str, ...] = get_args(PolicyContext)
@@ -42,16 +45,28 @@ class Learner:
         """The two words, as they appear in the arm label and the run name."""
         return f"{self.constraint} {self.policy_context}"
 
+    @property
+    def holds_constraint_per_context(self) -> bool:
+        return self.constraint != "scalar"
+
+    def per_context_constraint(self, space: ContextSpace) -> LagrangeConstraint:
+        """The λ(ω) this learner holds over ``space``; raises for the scalar learner, whose
+        constraint is the agent's own default."""
+        if self.constraint == "network":
+            return NetworkConstraint(space)
+        if self.constraint == "additive":
+            return AdditiveConstraint(space)
+        raise ValueError(f"the {self.constraint!r} learner holds no per-context constraint")
+
     def train_kwargs(self, space: ContextSpace) -> Dict[str, Any]:
         """``network_factory`` always (every context run observes ``{sensors, context}``);
         ``constraint`` only for λ(ω), since a scalar λ is every constrained agent's own default
-        and only PPO-Lagrange takes a ``constraint``. λ(ω) is a function over ``space``, so it
-        needs nothing of Ω beyond its box."""
+        and only PPO-Lagrange takes a ``constraint``."""
         kwargs: Dict[str, Any] = {
             "network_factory": functools.partial(
                 make_contextual_ppo_networks, policy_observes_context=self.policy_context == "told"
             ),
         }
-        if self.constraint == "per_context":
-            kwargs["constraint"] = PerContextConstraint(space)
+        if self.holds_constraint_per_context:
+            kwargs["constraint"] = self.per_context_constraint(space)
         return kwargs

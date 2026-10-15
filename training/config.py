@@ -124,10 +124,11 @@ def add_shared_training_args(parser: argparse.ArgumentParser) -> argparse.Argume
     # The learner of a context run (docs/acl/design/contextual_learner.md). The critics
     # see the context in every context run; these two switches say how the constraint
     # is held and whether the policy sees the context. Both need --context_distribution.
-    parser.add_argument("--constraint", type=str, choices=["scalar", "per_context"], default="scalar",
+    parser.add_argument("--constraint", type=str, choices=["scalar", "network", "additive"], default="scalar",
                         help="How PPO-Lagrange holds the constraint: 'scalar' = one λ updated from the batch's mean cost "
-                             "(the published method); 'per_context' = one multiplier per context λ(ω), each updated from "
-                             "the cost observed in its own context. Needs --alg ppo_lag and a context distribution.")
+                             "(the published method); 'network' = λ(ω) a small MLP over the context; 'additive' = λ(ω) a sum of "
+                             "per-factor terms, each monotone in difficulty. Both per-context forms are moved by the same "
+                             "integrator, per context. Need --alg ppo_lag and a context distribution.")
     parser.add_argument("--policy_context", type=str, choices=["blind", "told"], default="blind",
                         help="What the policy observes of its context ω: 'blind' = its sensors only; 'told' = the context "
                              "vector too, so it can hold a different reward–cost trade-off per context. The critics "

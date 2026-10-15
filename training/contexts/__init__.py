@@ -29,7 +29,7 @@ from training.contexts.episodes import EpisodeTracker
 from training.contexts.rollout import SLOT_INDEX_KEY, TRANSITION_CONTEXT_KEY, CompletedEpisodes, RoundRollout, Transitions
 from training.contexts.statistics import EpisodeStatistic, Fold, MeanAbsolute
 from training.contexts.round_hook import ContextRoundHook
-from training.contexts.constraint import PerContextConstraint
+from training.contexts.constraints import AdditiveConstraint, NetworkConstraint
 from training.contexts.learner import CONSTRAINTS, POLICY_CONTEXTS, Learner
 from training.contexts.networks import make_contextual_ppo_networks
 from training.contexts.observation import CONTEXT_OBSERVATION_KEY, SENSORS_KEY, ContextObservationWrapper
@@ -70,7 +70,8 @@ __all__ = [
     "Evaluation",
     "Learner",
     "POLICY_CONTEXTS",
-    "PerContextConstraint",
+    "AdditiveConstraint",
+    "NetworkConstraint",
     "SENSORS_KEY",
     "ContextObservationWrapper",
     "OUT_OF_DISTRIBUTION_EVALUATION",

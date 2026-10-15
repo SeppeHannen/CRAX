@@ -253,7 +253,7 @@ def test_runs_are_coloured_by_arm_not_by_palette_order():
         assert path[0]["key"] == "config:arm.value"
         by_arm[path[0]["value"]] = colour
     assert by_arm == dict(dashboard.view.ARM_COLOURS)
-    told = contexts.Learner(constraint="per_context", policy_context="told")
+    told = contexts.Learner(constraint="additive", policy_context="told")
     assert {contexts.arm_label("uniform", contexts.DEFAULT_LEARNER), contexts.arm_label("staged:1,2,3", told),
             contexts.arm_label("plr:cost", contexts.DEFAULT_LEARNER)} <= set(by_arm)
 
