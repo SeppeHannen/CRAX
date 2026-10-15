@@ -7,7 +7,7 @@ arriving as run files, and two arms starting at once without racing for the view
 from training.experiments import Arm, Experiment
 
 EXPERIMENT = Experiment(
-    group="snellius_smoke",
+    group="snellius_smoke_v2",
     common=(
         "--env_name", "safe_goal_point", "--alg", "ppo_lag",
         "--deployment_distribution", "level:3",
