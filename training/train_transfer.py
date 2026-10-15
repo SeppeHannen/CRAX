@@ -38,6 +38,9 @@ def main():
                         help='Disable checkpoint-based transfer (use direct param forwarding)')
     parser.add_argument('--transfer_checkpoint_dir', type=str, default="models",
                         help='Directory to save transfer checkpoint')
+    parser.add_argument('--model_dir', type=str, default="models",
+                        help='Working directory for the unsafe phase\'s checkpoints, which the safe phases restore from '
+                             '(the single-run entry points save theirs under the W&B run directory instead)')
     args = parser.parse_args()
 
     # Setup GPU environment

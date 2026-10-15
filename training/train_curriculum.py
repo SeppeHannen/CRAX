@@ -7,13 +7,11 @@ with the policy warm-started from the previous level.
 """
 
 import functools
-import os
 from datetime import datetime
-from pathlib import Path
 
 import wandb
 
-from training import curriculum
+from training import checkpoint, curriculum
 from training.config import build_base_parser
 from training.run_utils import (
     setup_gpu_environment, get_algorithm_train_fn, filter_kwargs_for_fn,
@@ -75,10 +73,7 @@ def main():
         )
 
         if config.store_model:
-            root_dir = Path(__file__).parent.parent.resolve()  # repo root, not training/
-            ckpt_root = root_dir / config.model_dir / run_name
-            os.makedirs(ckpt_root, exist_ok=True)
-            cfg["save_checkpoint_path"] = ckpt_root
+            cfg["save_checkpoint_path"] = checkpoint.run_checkpoint_directory()
 
         progress_fn = wandb_progress_fn(verbose=not config.quiet)
 
