@@ -44,6 +44,7 @@ from training import performance
 from training import pmap
 from training import rounds
 from training import types
+from training.evaluation import EpisodeRecorder, LearnerViewFunction
 from training.acme import running_statistics
 from training.acme import specs
 from training.agents.ppo import checkpoint
@@ -268,6 +269,9 @@ def train(
         round_hook: Optional[rounds.RoundHook] = None,
         learning_signals_fn: Optional[rounds.LearningSignalsFunction] = None,
         evaluation_wrap_env_fns: Optional[Mapping[str, Callable[[Any], Any]]] = None,
+        # episode review (docs/acl/design/episode_review.md)
+        learner_view_fn: Optional[LearnerViewFunction] = None,
+        episode_recorder: Optional[EpisodeRecorder] = None,
 ):
     """PPO training.
 
@@ -367,6 +371,13 @@ def train(
         entry, all on the same eval environment, reported under
         `evaluation/<name>/...`. Default: one evaluator using `wrap_env_fn`,
         reported under `eval/...` as before.
+      learner_view_fn: the agent's `LearnerViewFunction`: its critics' values, its
+        multiplier and the advantages its loss forms, for a batch of whole
+        episodes. Required with `episode_recorder`.
+      episode_recorder: if given, every evaluator keeps the first
+        `episode_recorder.num_episodes` of its episodes whole and the recorder
+        writes them, with the learner's view of every step, as episode records
+        (docs/acl/design/episode_review.md).
 
     Returns:
       Tuple of (make_policy function, network params, metrics)
@@ -434,6 +445,8 @@ def train(
         epochs_per_evaluation = int(num_training_steps_per_epoch)
         num_training_steps_per_epoch = 1
         extra_fields = tuple(dict.fromkeys(extra_fields + tuple(round_hook.extra_fields)))
+    if episode_recorder is not None and learner_view_fn is None:
+        raise ValueError('episode_recorder needs the agent\'s learner_view_fn (see ppo_lag/train.py)')
 
     key = jax.random.PRNGKey(seed)
     global_key, local_key = jax.random.split(key)
@@ -906,20 +919,35 @@ def train(
                 episode_length=episode_length,
                 action_repeat=action_repeat,
                 key=eval_key,
+                recording=episode_recorder.recording if episode_recorder is not None else None,
             )
 
-    def run_evaluations(params, training_metrics: Metrics) -> Metrics:
+    if learner_view_fn is not None:
+        learner_view = jax.jit(functools.partial(
+            learner_view_fn.compute, ppo_network=ppo_network, discounting=discounting,
+            reward_scaling=reward_scaling, gae_lambda=gae_lambda,
+        ))
+
+    def run_evaluations(learner: TrainingState, environment_steps: int, training_metrics: Metrics) -> Metrics:
+        """Score the frozen policy on every evaluation distribution; with a recorder, also keep
+        the first episodes of each, with the learner's view of them, as records."""
+        policy_params = _policy_params_tuple(learner)
         metrics = dict(training_metrics)
         for name, evaluator in evaluators.items():
-            for key, value in evaluator.run_evaluation(params, training_metrics={}).items():
+            evaluation_metrics, recorded = evaluator.run_recorded_evaluation(policy_params, training_metrics={})
+            for key, value in evaluation_metrics.items():
                 metrics[_evaluation_metric_name(key, name)] = value
+            if episode_recorder is not None:
+                episodes = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), recorded)  # [K, T, ...]
+                view = learner_view(learner.params, learner.normalizer_params, episodes, learner.aux_state)
+                episode_recorder.record(name, environment_steps, recorded, view)
         return metrics
 
     # Run initial eval
     metrics = {}
     if process_id == 0 and num_evals > 1 and evaluators:
         with tracker.phase("initial_evaluation"):
-            metrics = run_evaluations(_unpmap(_policy_params_tuple(training_state)), training_metrics={})
+            metrics = run_evaluations(_unpmap(training_state), 0, training_metrics={})
         logging.info(metrics)
         progress_fn(0, metrics)
 
@@ -989,7 +1017,7 @@ def train(
 
         # Only run evaluation if enabled
         if evaluators:
-            metrics = run_evaluations(params, training_metrics)
+            metrics = run_evaluations(_unpmap(training_state), current_step, training_metrics)
             logging.info(metrics)
             progress_fn(current_step, metrics)
 

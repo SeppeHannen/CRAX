@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Episode review</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+</head>
+<body>
+  <header>
+    <h1>Episode review <span id="group"></span></h1>
+    <nav id="pickers">
+      <label>Arm <select id="arm"></select></label>
+      <label>Evaluation <select id="evaluation"></select></label>
+      <label>Target <select id="target"></select></label>
+      <label>Compare with <select id="compare"><option value="">—</option></select></label>
+      <label>Camera <select id="camera"></select></label>
+    </nav>
+  </header>
+
+  <section id="episodes">
+    <table>
+      <thead><tr><th>#</th><th>return</th><th>cost</th><th>length</th><th>context ω</th></tr></thead>
+      <tbody id="episode-rows"></tbody>
+    </table>
+  </section>
+
+  <section id="controls" hidden>
+    <button id="to-start" title="first step (Home)">⏮</button>
+    <button id="back" title="one step back (←)">◂</button>
+    <button id="play" title="play / pause (space)">▶</button>
+    <button id="forward" title="one step forward (→)">▸</button>
+    <button id="to-end" title="last step (End)">⏭</button>
+    <label>speed <select id="speed">
+      <option value="0.25">¼×</option><option value="0.5">½×</option><option value="1" selected>1×</option>
+      <option value="2">2×</option><option value="4">4×</option>
+    </select></label>
+    <input id="timeline" type="range" min="0" max="0" value="0">
+    <span id="step-counter"></span>
+  </section>
+
+  <main id="viewers"></main>
+
+  <template id="viewer-template">
+    <article class="viewer">
+      <div class="facts"></div>
+      <img class="frame" alt="scene">
+      <div class="running"></div>
+      <div class="traces"></div>
+    </article>
+  </template>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
