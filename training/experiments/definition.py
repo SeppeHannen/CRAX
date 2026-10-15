@@ -104,6 +104,7 @@ def run_facts(arguments: argparse.Namespace) -> RunFacts:
         arguments.env_name,
         arguments.context_distribution,
         arguments.deployment_distribution,
+        contexts.Learner(constraint=arguments.constraint, policy_context=arguments.policy_context),
         num_timesteps=int(arguments.num_timesteps),
         num_envs=arguments.num_envs,
         batch_size=arguments.batch_size,
