@@ -492,12 +492,24 @@ def test_end_to_end_per_context_constraint_with_a_told_policy(form):
     assert len(substantial) <= 4, f"unexpected recompiles: {substantial}"
 
 
+def test_the_learner_flags_are_not_forwarded_to_the_trainer_as_if_they_were_its_arguments():
+    """The entry point forwards every CLI flag that shares a name with a ``train()`` parameter.
+    ``--constraint scalar`` is the learner's spec, not PPO-Lagrange's constraint object; if the
+    names collided the string would reach ``train()`` whenever the learner adds no object (scalar)."""
+    from training.config import build_base_parser
+    from training.run_utils import filter_kwargs_for_fn
+    arguments = build_base_parser().parse_args(["--constraint", "scalar", "--policy_context", "blind"])
+    forwarded = filter_kwargs_for_fn(train_ppo_lag, vars(arguments))
+    assert "constraint" not in forwarded and "policy_context" not in forwarded
+    assert "lagrange_constraint" not in forwarded  # the default object is the trainer's own
+
+
 def test_per_context_constraint_needs_ppo_lagrange():
-    """PPO-PID has no `constraint` argument: the setup's kwargs are refused by the trainer
+    """PPO-PID has no `lagrange_constraint` argument: the setup's kwargs are refused by the trainer
     (the CLI turns this into its 'does not accept' message before anything runs)."""
     told = C.Learner(constraint="additive", policy_context="told")
     setup = C.context_training_setup("safe_lift_ant", "uniform", "level:3", told, num_timesteps=NUM_TIMESTEPS,
                                      num_envs=TINY["num_envs"], batch_size=TINY["batch_size"],
                                      unroll_length=TINY["unroll_length"], num_minibatches=TINY["num_minibatches"])
-    with pytest.raises(TypeError, match="constraint"):
+    with pytest.raises(TypeError, match="lagrange_constraint"):
         train_ppo_pid(environment=envs.get_environment("safe_lift_ant", level=1), num_timesteps=NUM_TIMESTEPS, **TINY, **setup.train_kwargs())

@@ -44,15 +44,32 @@ RUN_CHECKPOINTS_DIRECTORY = 'checkpoints'
 def run_checkpoint_directory() -> epath.Path:
     """Where the active W&B run saves its checkpoints.
 
-    Inside the run's directory, so W&B uploads them with the run's other files
-    and any machine can fetch them through the API — the one door for every
-    artefact of a run, wherever it trained. Requires an initialised run.
+    Inside the run's directory: :func:`save` uploads every checkpoint it writes
+    there with the run's other files, so any machine can fetch a run's policy
+    through the W&B API — the one door for every artefact of a run, wherever it
+    trained. Requires an initialised run.
     """
     if wandb.run is None:
         raise RuntimeError('checkpoints are saved under the W&B run directory; initialise the run first')
     path = epath.Path(wandb.run.dir) / RUN_CHECKPOINTS_DIRECTORY
     path.mkdir(exist_ok=True)
     return path
+
+
+def _upload_with_run(checkpoint_path: epath.Path) -> None:
+    """Hand a written checkpoint to the active W&B run when it lies in the run's directory.
+
+    W&B uploads only the files it is told about, after they exist (a glob registered
+    before the files appear uploads nothing; verified 2026-10-15), so this is called
+    once per written checkpoint. A checkpoint written elsewhere — the transfer
+    benchmark's working directory, which its own safe phases restore from — stays local.
+    """
+    if wandb.run is None:
+        return
+    run_directory = epath.Path(wandb.run.dir).resolve()
+    if run_directory not in checkpoint_path.resolve().parents:
+        return
+    wandb.run.save(str(checkpoint_path / '**'), base_path=str(run_directory), policy='now')
 
 
 def _get_function_kwargs(func: Any) -> Dict[str, Any]:
@@ -158,6 +175,7 @@ def save(
 
     config_path = ckpt_path / config_fname
     config_path.write_text(config.to_json())
+    _upload_with_run(ckpt_path)
 
 
 def load(

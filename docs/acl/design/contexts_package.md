@@ -28,7 +28,7 @@ training/contexts/
     fitted.py                  the integrator's targets and the metrics both share
     network.py                 NetworkConstraint: softplus(MLP(ω̃))
     additive.py                AdditiveConstraint: f(Σ h_i(ω_i)), monotone per factor, additive difficulty
-  learner.py                   Learner(constraint, policy_context) -> train(network_factory=, constraint=); the arm label
+  learner.py                   Learner(constraint, policy_context) -> train(network_factory=, lagrange_constraint=); the arm label
   setup.py                     '--context_distribution' / '--deployment_distribution' specs + the Learner -> train(**kwargs); arm_label
 tests/test_contexts.py            wrapper mechanics, round layout, episode tracker, PLR unit tests (CPU, ~40 s)
 tests/test_context_training.py    specs, rollout, metrics, tiny PPO-Lag runs per distribution incl. plr (CPU, ~4 min)

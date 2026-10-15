@@ -77,9 +77,10 @@ def test_facts_need_what_the_run_would_otherwise_read_off_the_environment():
         run_facts(Experiment(group="g", common=COMMON, arms=(Arm("none", ("--context_distribution", "none")),)).jobs()[0].arguments)
 
 
-def test_the_committed_smoke_definition_loads():
-    experiment = load_experiment(REPOSITORY / "scripts" / "experiments" / "snellius_smoke.py")
-    assert experiment.group == "snellius_smoke" and len(experiment.jobs()) == 2
+@pytest.mark.parametrize("name", ["snellius_smoke", "goal_point_learners_500M"])
+def test_the_committed_definitions_load_and_their_arms_share_facts(name: str):
+    experiment = load_experiment(REPOSITORY / "scripts" / "experiments" / f"{name}.py")
+    assert len(experiment.jobs()) >= 2
     experiment.facts()
 
 

@@ -770,11 +770,11 @@ def test_learner_names_the_arm_and_hands_the_trainer_what_realises_it():
     assert C.run_name_fragment("staged:1,2,3", told) == "staged123_additive_told"
     assert C.arm_label("uniform", C.DEFAULT_LEARNER) == "uniform scalar blind"
     kwargs = told.train_kwargs(C.suite_contexts(LIFT).space)
-    assert isinstance(kwargs["constraint"], C.AdditiveConstraint)
+    assert isinstance(kwargs["lagrange_constraint"], C.AdditiveConstraint)
     assert kwargs["network_factory"].keywords == {"policy_observes_context": True}
     assert set(C.DEFAULT_LEARNER.train_kwargs(C.suite_contexts(LIFT).space)) == {"network_factory"}
     network = C.Learner(constraint="network", policy_context="blind")
-    assert isinstance(network.train_kwargs(C.suite_contexts(ENV_NAME).space)["constraint"], C.NetworkConstraint)  # any Ω
+    assert isinstance(network.train_kwargs(C.suite_contexts(ENV_NAME).space)["lagrange_constraint"], C.NetworkConstraint)  # any Ω
     with pytest.raises(ValueError, match="holds no per-context constraint"):
         C.DEFAULT_LEARNER.per_context_constraint(C.suite_contexts(LIFT).space)
     with pytest.raises(ValueError):
