@@ -22,7 +22,11 @@ training/contexts/
   episodes.py                  EpisodeEnds (geometry of one round's completed episodes; reduces any [slots, steps] array with any associative ufunc) + EpisodeTracker(statistics) (per-slot carry across rounds -> CompletedEpisodes)
   training_curriculum.py       the training_curriculum/* metrics: intended (q), sampled, experienced (q̂), <objective>_value_loss, distribution/*
   round_hook.py                ContextRoundHook(RoundHook): store rollout + signals, lay out per slot, close episodes, update φ, attach it, return the round's metrics
-  setup.py                     '--context_distribution' / '--deployment_distribution' specs -> train(**kwargs)
+  observation.py               ContextObservationWrapper: obs = {"sensors": o, "context": ω}, outermost in both stacks (design/contextual_learner.md §2)
+  networks.py                  make_contextual_ppo_networks: policy over sensors (+ context when told), critics over sensors + context
+  constraint.py                PerContextConstraint: λ(ω) over space.integer_points, a ppo_lag LagrangeConstraint (design/contextual_learner.md §1)
+  learner.py                   Learner(constraint, policy_context) -> train(network_factory=, constraint=); the arm label
+  setup.py                     '--context_distribution' / '--deployment_distribution' specs + the Learner -> train(**kwargs); arm_label
 tests/test_contexts.py            wrapper mechanics, round layout, episode tracker, PLR unit tests (CPU, ~40 s)
 tests/test_context_training.py    specs, rollout, metrics, tiny PPO-Lag runs per distribution incl. plr (CPU, ~4 min)
 ```
@@ -65,12 +69,15 @@ grammar, no suite-specific arguments:
 ```
 --context_distribution    none | uniform | level:<n> | staged:<n>,<n>,... | plr    what the student trains on (default none = stock CRAX)
 --deployment_distribution uniform | level:<n> | staged:...                         w, what the policy is for (default level:3)
+--constraint              scalar | per_context                                     one λ, or one per context λ(ω) (ppo_lag only)
+--policy_context          blind | told                                             whether the policy observes ω (the critics always do)
 ```
 
 Every context run is evaluated on `deployment` (w) **and** on `uniform` (r):
 `evaluation/deployment/*`, `evaluation/uniform/*`. Run names become
 `<env>_ctx_<uniform|staged123|level1>_<alg>_seed<s>_<ts>`; W&B config gains
-`context_space`, `training_distribution`, `deployment_distribution`,
+`context_space`, `training_distribution`, `deployment_distribution`, `constraint`,
+`policy_context`, `arm` (`design/contextual_learner.md` §3),
 `num_rounds`, `environment_steps_per_round`. The setup also sets the trainer's
 `training_metrics_steps` to one round, so `episodic/*` (per-episode return,
 cost, length of the training rollouts) is logged once per round like

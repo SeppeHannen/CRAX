@@ -98,57 +98,164 @@ something to push against:
 
 ## The plan
 
-In this order (Giuseppe, 2026-10-09). The three items are **written,
-reviewed 2026-10-11, uncommitted, awaiting Giuseppe's review and a CPU test
-run** — `git diff` against `ffd16fb` is the whole of it. The 2026-10-09
-concerns are resolved as noted; the review walks are in the chat of
-2026-10-11, not in the repository.
+The thesis studies the link between automated curriculum learning and
+generalisation; the scope was set with the supervisors on 2026-10-14 and the
+design is `research_design_brief.md`. The supervisor wants first results the
+week of 2026-10-21. Three tasks follow, in order; each heading states what the
+task delivers. Every experiment is a `--wandb_group` of arms on
+`safe_goal_point` at 500 M steps.
 
-1. **PPO-PID takes the curriculum hooks.** Why first: in the 500 M result
-   every PPO-Lagrange arm's end state was set by λ's integrator (staged wound
-   up to 40 and froze; uniform's λ hit 0 and was still recovering), so a
-   curriculum comparison under PPO-Lagrange is a comparison of λ
-   trajectories. *Written:* `ppo_pid/train.py` forwards `round_hook`,
-   `learning_signals_fn` and `evaluation_wrap_env_fns` as `ppo_lag` does; its
-   controller state is a typed `PIDLagrangeState` (λ read by name);
-   `training/pid/violation` registered.
-2. **PLR scored by the reward critic, the cost critic, or the Lagrangian
-   objective.** Why: the reward critic's error was flat across contexts in the
-   500 M run (max/mean 1.6) — little to rank. *Written:* the agent hands the
-   trainer a `learning_signals_fn` next to its `loss_fn`
-   (`ppo_lag/losses.py: compute_learning_signals`); `LearningSignals` carries
-   reward, cost and Lagrangian advantage, the last by the loss's own rule
-   (`lagrangian_advantage`, shared with the loss); specs `plr`, `plr:cost`,
-   `plr:lagrangian`; one `<signal>_value_loss/<d>` heatmap per produced signal
-   on every arm. Host side per `design/learning_signals.md` (review
-   2026-10-11): a `Signal` vocabulary in `rounds.py`; agents hand the trainer a
-   `LearningSignalsFunction` declaring what they *produce*; distributions
-   declare the `EpisodeStatistic`s (signal + fold, `contexts/statistics.py`)
-   they *require*; the trainer checks one against the other before compiling;
-   `EpisodeTracker` is a fold engine over any associative ufunc (verified
-   against brute force). The doc states the one limitation (statistics must be
-   associative folds) and the buffer fallback. Score design:
-   `design/prioritized_level_replay.md` §"What the trainer has to provide" and
-   §"The score".
-3. **An out-of-distribution evaluation target Ω₂ for goal-point.** *Written:*
-   `ContextSpace.integer_total_floor`; `SuiteContexts.evaluation_regions`, a
-   tuple of `EvaluationRegion(name, space, label, relation)` — the general
-   concept (Ω₂ today, the skill subspaces of goal 2 tomorrow), each region
-   stating and having checked its relation to Ω; `setup.evaluations_for` maps
-   the tuple to evaluators with no per-region branch (trainer kwargs, W&B
-   config → dashboard, and `tests/test_suites.py` all read it). Levels now come
-   from `difficulty.get_supported_levels`, not a constant here. **The values
-   in `registry.py` are a placeholder.**
-   `design/goal_point_out_of_distribution.md` states the design question —
-   what the Ω→Ω₂ gap measures and against what reference it is readable — as
-   five decisions; it needs a one-paragraph answer from Giuseppe and a CPU
-   measurement (hazard overlap vs. total count) before values are chosen.
+### 1. The CMDP becomes contextual: the policy sees its context and the constraint holds per context, so a curriculum can no longer move it
 
-Then: PID × {uniform, staged, plr, plr:cost, plr:lagrangian} at 500 M on
-the three targets (hypotheses to test separately: PID damps the wind-up after a
-stage switch; PID does *not* change the λ→0 regime when the constraint stops
-binding); skill probes as extra evaluation targets on the same runs; the
-cost-critic pre-check for attribution.
+PPO-Lagrange's one multiplier λ is updated each round from the cost of that
+round's training episodes, so it settles where the policy is on budget for
+whatever the curriculum is sampling now. Every run so far shows the result:
+cost at the budget in training, three to four times the budget on level 3 for
+the same policy (`research_design_brief.md` §6).
+
+**The policy is told its context.** Today it is blind: it sees lidar, compasses
+and its own sensors, and nothing of ω. In a contextual CMDP the context is
+part of the state, so the policy and both critics receive ω as input; for
+goal-point that is the five-number context vector (four hazard counts, goal
+radius) appended to the 62-dimensional observation. This is the change
+Giuseppe asked for on 2026-10-14: if the constraint is per context, the
+policy is contextualised, not blind. Which factors a policy may be told is
+decided per factor by what a deployed robot would know (brief §4); layout
+factors qualify, dynamics factors later will not. The observation space
+changes, so this goes to Tristan.
+
+**The learner** keeps one multiplier per context, λ(ω), each updated from the
+cost observed in its own context. The told cost critic estimates cost per
+context; the told policy can hold a different reward–cost trade-off per
+context. A blind policy under λ(ω) receives conflicting gradients on contexts
+it cannot tell apart and collapses to one trade-off; Tristan predicts this,
+and it is run once as a control.
+
+**The switches** are two CLI choices, so that every later arm can run under
+any combination: `--constraint scalar|per_context` and
+`--policy_context blind|told`. The published methods all use a scalar
+constraint, which stays as their baseline. An *arm* is now the training
+distribution under a learner (`uniform scalar blind`, `staged:1,2,3
+per_context told`); the dashboard groups lines by it.
+
+**Status (2026-10-14): built, CPU-tested, uncommitted, awaiting review.**
+Design and what is logged: `design/contextual_learner.md`. λ(ω) is a small
+network λ_ψ(ω) = softplus(f_ψ(ω̃)), fitted each round to the targets
+PPO-Lagrange's integrator names for every transition, so an unseen context's
+multiplier is inherited from its neighbours (a table over the integer points
+was built first and replaced the same day: it left each new stage to start
+from λ = 0). A per-context run needs `--initial_lambda_lagr > 0`. The
+observation of every context run is `{sensors, context}` and the critics read
+both. **Smoke (2026-10-14, group `smoke_contextual_learner_v2`): three arms
+at 100 M, `staged:1,2,3` / `uniform` / `plr`, all `per_context told`, rate 1,
+initial λ 0.1; 0 recompiles, 85 k SPS (no throughput cost).** λ_ψ spreads
+across Ω as designed: under uniform λ runs 0 at the sparse end to 8–9 at the
+dense end (fit error 0.16 against a target spread of 1.75), and the told
+policy holds different behaviour per context — return on Ω stays 19 while the
+multiplier on level 3 drives level-3 cost 166 → 2 **by driving return 17 →
+0.5: the budget on level 3 is met by standing still** (PLR the same: 4 / 3.2).
+Staged under λ_ψ ends at level-3 cost 64 / return 15.9 with λ(L3) 3.9 and
+still rising, so it is on the same road. Two readings for the 500 M design:
+the per-context constraint on level 3 is enforced, which is the claim, and at
+this budget the only policy that meets it at 100 M does nothing, which is the
+"mostly infeasible" row of the challenges table; the integrator at rate 1
+unwinds at 0.023/round, so λ(L3) ≈ 8 takes ~350 rounds to release. At a stage
+switch the function's extrapolation to the unseen level is uninformed (one
+training context carries no direction): λ(L2) inherited 0.27 of 0.51, λ(L3)
+0.0 of 1.37.
+
+**The arms** and what each must show:
+
+| arm | learner | policy | must show |
+|---|---|---|---|
+| `uniform` | scalar | blind | the baseline, rerun at the new λ rate |
+| `staged:1,2,3` | scalar | blind | cost on level 3 and on uniform leaves the budget |
+| `uniform` | per context | told ω | matches or beats its scalar twin |
+| `staged:1,2,3` | per context | told ω | cost on level 3 and on uniform stays near the budget, return holds |
+| `staged:1,2,3` | per context | blind | the multipliers spread across contexts while the behaviour does not |
+
+**The multiplier's learning rate** drops from 10 to 1 in every new arm
+(`--lagrangian_coef_rate`; Tristan, 2026-10-14: at 10 it overshot 100× after
+a stage switch). Old arms are not comparable to new ones, which is why the two
+baselines are rerun rather than reused.
+
+### 2. Each arm is scored on a held-out region that tests one type of generalisation
+
+Every run is scored on level 3 and on uniform over Ω, both inside the
+training support, so neither measures generalisation to unseen contexts. The
+one out-of-distribution region in `registry.py`, Ω₂, was a placeholder and is
+retired: it shifted two factors at once, one of them (goal radius) invisible
+to the policy and without effect on the optimal action, the other (total
+≥ 21) in the range where placement overcrowds silently.
+
+**The survey's rules** (Kirk et al. §4.2–4.3) fix the design. A test set is
+of one type: *interpolation*, a region inside the training set's hull that was
+removed from training; *combinatorial interpolation*, a combination of seen
+values never seen together; *extrapolation*, outside the hull. They are
+ordered by difficulty in that order, and extrapolation is not expected to work
+without an inductive bias, which a curriculum does not add. An interpolation
+set on an ordinal factor is made by training on two disjoint ranges and
+testing between them. The factor must be one the policy perceives, or the
+test measures difficulty rather than generalisation.
+
+**The axis** is total hazard count: ordinal, visible through lidar density,
+and the quantity by which the benchmark's own levels differ. Measured
+2026-10-14: Ω has 3,466 admissible count tuples; the levels sit at totals 12,
+16 and 20; every total from 12 to 18 has 260–295 tuples.
+
+| set | type | definition | read against |
+|---|---|---|---|
+| $T_\text{hole}$ | interpolation | total ∈ {14, 15}: 586 tuples between level 1 and level 2; training is Ω without them, two disjoint ranges either side | a uniform arm over all of Ω |
+| $T_\text{comb}$ | combinatorial | waits for the corridor factor (*After these*); not faked on the kind counts, which are invisible | a uniform arm over the hull |
+| $T_\text{extra}$ | extrapolation | total ∈ {21, 22}, robustness panel only, after an overlap-versus-count measurement shows the layouts are valid | none claimed |
+
+**To build:** a training space, Ω minus the held-out totals, that uniform's
+tuple table, PLR's buffer and staged's level points all read; `ContextSpace`
+able to exclude a band of totals, by the mechanism its cap and floor already
+use; $T_\text{hole}$ as an `EvaluationRegion` whose relation to the training
+space is checked; the placeholder values in `registry.py` replaced; and
+`design/goal_point_out_of_distribution.md` rewritten under a name that says
+what it now is. All CPU-testable; no compiled program changes.
+
+### 3. PLR's twins separate what it covers from how it moves
+
+Of what a curriculum covers and how it moves, which one changes
+generalisation? That is the thesis question (`research_design_brief.md` §1),
+and the twins of brief §3 are the instrument.
+
+**The twins** are built from a finished PLR run. Its realised distribution in
+every round, $\hat q_1 \ldots \hat q_K$, is recorded; one twin samples from
+the round-average $\bar q$ in every round (same coverage, no motion), the
+other replays the recorded distributions in shuffled order (same motion, no
+direction). PLR minus the first twin is the effect of non-stationarity; PLR
+minus the second is the effect of its order.
+
+**The learner** is task 1's. Under a scalar λ an arm and its twin have
+different λ trajectories, because their rounds sample different contexts, and
+the twins would measure that instead of the contexts. Every arm is scored on
+task 2's sets.
+
+**To build:** the realised per-round context sequence stored at full
+resolution by the round hook (today only 12-bin histograms are logged), and a
+`replay` distribution that reads such a sequence, time-averaged or shuffled.
+
+### After these
+
+The corridor factor and with it $T_\text{comb}$; friction and actuator gain,
+with a blind or recurrent policy; CURROT and SCG as baselines
+(`research_design_brief.md` §4, §5).
+
+### Retired
+
+The Ω₂ placeholder (task 2 replaces it). PPO-PID as a prerequisite: the rate
+change addresses the wind-up it was for; PID stays an available learner.
+
+### Built and committed (0ce7d35, bf65448, 2026-10-11/12)
+
+PPO-PID takes the curriculum hooks; PLR scored by the reward critic, the cost
+critic or the Lagrangian objective under the learning-signals contract
+(`design/learning_signals.md`); `EvaluationRegion`s and
+`setup.evaluations_for` as the one place that says which targets a run gets.
 
 ### Done
 
@@ -512,6 +619,17 @@ Upstream bugs found, and places where our changes alter the benchmark:
     wrapper has to lift them out before the vmapped stack (they have no slot
     axis). A per-round-parameters argument on `training_step` /
     `generate_unroll` would make this by construction.
+17. `post_step_fn` (the hook every constrained agent updates its multiplier in)
+    now receives the round's `Transition` as a third argument
+    (`ppo/train.py`), so PPO-Lagrange reads the batch's cost from the recorded
+    transitions rather than from the loss's minibatch metrics; the other four
+    agents accept and ignore it. Same numbers; one source.
+18. A context run's observation is `{"sensors": o, "context": ω}`, produced by
+    a wrapper outside the auto-reset (`training/contexts/observation.py`), and
+    its critics always read ω. The environments are untouched; a stock run
+    still observes the flat vector. The post-training rollout and video
+    (stock environment) cannot feed such a policy, so a context run requires
+    `--skip_rollout --skip_video`.
 
 ## Vocabulary
 
@@ -533,10 +651,13 @@ Upstream bugs found, and places where our changes alter the benchmark:
   --context_distribution staged:1,2,3 --deployment_distribution level:3 \
   --num_envs 8192 --num_timesteps 50_000_000 --num_evals 9 --episode_length 1000 \
   --unroll_length 20 --batch_size 1024 --num_minibatches 32 --num_updates_per_batch 4 \
+  --lagrangian_coef_rate 1 \
   --measure_performance --skip_rollout --skip_video --store_model false \
   --wandb_group <experiment_group>
 
 # uniform: same, with --context_distribution uniform; fixed level: level:3; PLR: plr
+# the contextual learner (design/contextual_learner.md): add --constraint per_context --policy_context told
+# (defaults scalar, blind = the published method; a context run needs --skip_rollout --skip_video)
 ```
 
 Runs in one `--wandb_group` are one experiment and must share every flag but
@@ -582,6 +703,7 @@ docs/acl/
     verify_references.py             resolves every paper_id (Semantic Scholar / arXiv / Crossref) and compares titles; fabricated ids and real-but-wrong ids both fail
   design/
     prioritized_level_replay.md      (done) PLR as a ContextDistribution: what the paper does, what changes on a continuous Ω with frozen φ, diagnostics
+    contextual_learner.md            (plan 1, built) λ(ω) per context, the {sensors, context} observation, blind/told policy, the two CLI switches, what is logged
     goal_point_out_of_distribution.md (plan 3, draft) Ω₂ for goal-point: a first guess at what it is and how it is wired; the values need a design pass
     constrained_challenges.md        (goal 1, later) TMA's challenges with a constraint, plus the one the constraint adds; each as a distribution over Ω   [to write]
     skill_probes.md                  (goal 2, later) probe subspaces of Ω where one skill is needed; skill-acquisition curves against q̂   [to write]

@@ -56,6 +56,18 @@ every arm trained at cost 25, the budget; the same policies cost 73 and 108 on
 level 3. Part of that rise is difficulty, so every gap is read against a
 reference policy trained on the test contexts.
 
+**Explaining and evaluating are one study, not two** (asked at the meeting of
+2026-10-14). Evaluating how well each curriculum generalises, per type of
+shift, could stand alone as a benchmark result; explaining why, through
+coverage and non-stationarity, could stand alone as a mechanism result. They
+are done together because each is the other's test: the inductive-bias table
+(§7) predicts the per-type results from each curriculum's bias, and the twins
+(§3) check that the mechanism behind the prediction is the real one. A
+leaderboard without the mechanism is what the survey warns against (§6.3); a
+mechanism without the methods it matters for has no reader. The scope agreed
+is the link between the two, with the evaluation as the instrument rather
+than a deliverable of its own.
+
 ## 3. Twins keep a curriculum's coverage and remove its non-stationarity
 
 Train a curriculum arm and record the distribution it sampled in every round,
@@ -107,14 +119,17 @@ ended on, because that is the only place the constraint was enforced.
 **A ceiling arm** is a policy trained on the test contexts themselves. It is
 what lets a low score be told from a hard target.
 
-**The policy sees what a deployed robot would see.** Two facts pull against
-each other: a deployed robot does not know its own friction, so a policy told
-its context is an oracle; but a per-context constraint (§6) needs a policy that
-can hold a different trade-off per context, which a blind policy cannot. On
-layout factors the lidar already carries hazard density, which is enough. On
-dynamics factors the policy sees nothing unless it is recurrent and infers
-them within the episode. The critic sees the full context in every case; it
-exists only during training.
+**The policy is told its context, factor by factor, as a deployed robot would
+be.** A per-context constraint (§6) needs a policy that can hold a different
+trade-off per context, so under $\lambda(\omega)$ the policy observes $\omega$;
+a blind policy under $\lambda(\omega)$ is a scalar $\lambda$ in disguise and
+is run once as a control. Which factors enter the observation is decided per
+factor by what a deployed robot would know. The layout factors can be told: a
+robot can be given the number and placement of obstacles in its area. Friction
+and actuator gain cannot, since no deployed robot is told its own wear; on
+those the policy is blind, or recurrent and infers them within the episode.
+The critic sees the full context in every case; it exists only during
+training.
 
 **Compute** is about 190 arms of 500 M steps at five seeds, roughly 400
 GPU-hours on the cluster. The first read, four arms at three seeds, is one day

@@ -364,7 +364,7 @@ that survive the registry, `training_curriculum/*/std`,
 | file | holds |
 |---|---|
 | `metrics.py` | the registry. `Metric(pattern, title, unit, group, description, panel, histogram)` for the 39 keys we keep — `description` is the one sentence that says where the numbers come from (population, what was done to it; may use `{evaluation}`, `{dimension}` and the `FACT_PLACEHOLDERS`) — and `Dropped(pattern, reason)` for the 47 we do not; `registered(key)` returns the metric or `None`, and **raises `UnregisteredMetric`** for anything else. `select_for_logging(metrics, safety_bound)` is what the funnel calls; it also adds `<cost>_budget` next to each per-episode cost. |
-| `view.py` | `RunFacts` (what the text states: budget, evaluations, episode length, `TaskDescription` — agent, reward, cost in words — and Ω with each dimension's description; read from `wandb.config`, missing key → `KeyError`; JSON round-trip). The section text is **generated**: a preamble (Verdict carries the environment block: agent, reward, cost, Ω, budget; then measurement, evaluation distributions, legend) followed by one bullet per panel built from the registry's descriptions. `plots_for(group, facts)`: metrics sharing a `panel` become one panel; `{evaluation}` expands to *the deployment task (level:3)* and *all of Ω (uniform)*, `{dimension}` to Ω's dimensions. Runs grouped by `training_distribution` so the legend names what a line trained on. |
+| `view.py` | `RunFacts` (what the text states: budget, evaluations, episode length, `TaskDescription` — agent, reward, cost in words — and Ω with each dimension's description; read from `wandb.config`, missing key → `KeyError`; JSON round-trip). The section text is **generated**: a preamble (Verdict carries the environment block: agent, reward, cost, Ω, budget; then measurement, evaluation distributions, legend) followed by one bullet per panel built from the registry's descriptions. `plots_for(group, facts)`: metrics sharing a `panel` become one panel; `{evaluation}` expands to *the deployment task (level:3)* and *all of Ω (uniform)*, `{dimension}` to Ω's dimensions. Runs grouped by `arm` (the training distribution under a learner) so the legend names what a line trained on and how. |
 | `save.py` | **the group invariant.** A named W&B group is one experiment: its runs share the facts. The view is the group's record of them (the `RunFacts` JSON is stored in the view's description). `ensure_view(...)` — called by `train_env.py` for every context run with `--wandb_group`, *before* `wandb.init` — creates the view for a new group and **raises `FactsMismatch`** (listing the differing fields) for a run whose flags differ; `rebuild_view(...)` overwrites deliberately after dashboard code changed. Owns the two GraphQL calls (find by name, upsert) and prints the view URL. |
 | `__main__.py` | `python -m training.dashboard --group <name>`: the rebuild path — facts from the group's runs (raises if they disagree), `rebuild_view`. |
 
@@ -396,8 +396,9 @@ Around it:
 - Tests (`tests/test_dashboard.py`, CPU): every key of the 500 M runs and of
   a stock `eval/` run is registered; an unknown key raises with instructions;
   the funnel drops the duplicates and adds the budgets; the view has the four
-  sections in order, text first, smoothing off, grouped by
-  `training_distribution`; every panel and every series is described in its
+  sections in order, text first, smoothing off, grouped by `arm` (the training
+  distribution under a learner, `design/contextual_learner.md` §3; was
+  `training_distribution` until 2026-10-14); every panel and every series is described in its
   section's text with no placeholder left; `RunFacts` round-trips through JSON
   (the invariant's equality).
 - Package: `wandb-workspaces` in `requirements.txt` / `pyproject.toml`.
