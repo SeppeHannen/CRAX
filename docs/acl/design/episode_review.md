@@ -1,7 +1,8 @@
 # Watching what the policy did: requirements for the episode review
 
-2026-10-15, requirements for review before anything is built. Branch
-`episode-review`; to be merged into `contextual-learner` for testing.
+2026-10-15. Requirements agreed, then built the same day on branch
+`episode-review` (§4 says what exists and how to use it); to be merged into
+`contextual-learner` for testing.
 
 Every result so far is a curve: a mean over 128 episodes, once per evaluation.
 Curves show *that* something happened and never *how*. Twice already we read
@@ -122,29 +123,52 @@ had a path and λ priced it out, the budget binds and the result is the
 method's; if it never had one, level 3 is infeasible for this policy at 100 M
 and the budget is what to discuss.
 
-## 4. What has to exist for this
+## 4. What exists, and how to use it
 
-In the order it is built; each line is testable on CPU with the tiny trainer.
+**Record** by adding `--record_episodes 4` to a context run's command. Every
+evaluation then leaves four records per target under the run's W&B files
+(`episodes/`), uploaded with the run; while the run is local they are on disk
+under `wandb/run-*/files/episodes/` and can be reviewed as it trains.
 
-| piece | one sentence |
-|---|---|
-| the record | a typed artifact holding §2, written once per recorded episode, read by the viewer |
-| recording | the evaluator keeps the first K of its episodes whole; the agent hands it the function that applies its critics, its multiplier and the loss's advantage code to an episode, as it hands the trainer its learning signals today |
-| the whole learner in the checkpoint | the cost critic and the multiplier state are saved next to the policy at every evaluation, so a checkpoint can later be run on any context |
-| the viewer | a local page: the three choices, the scene with play / pause / step / scrub, the traces, the comparison |
-| the switch | `--record_episodes K`, default 4 |
+**Review** with `python -m training.review --group <wandb group>`. It finds the
+group's runs, reads their records (locally when present, downloaded into
+`runs/review/` otherwise) and opens the page at `http://127.0.0.1:8790/`.
+The first open takes a few seconds while the suite's model is built for the
+renderer.
 
-The merge point with `contextual-learner`: there the multiplier is a function
-λ(ω) and the observation is `{sensors, context}`; the recorder takes both from
-the agent, so only the agent-side function changes.
+| piece | where | one sentence |
+|---|---|---|
+| the record | `training/evaluation/record.py` | `EpisodeRecord`, §2 as a typed dataclass, one `.episode.npz` per episode, self-describing |
+| the scene | `training/evaluation/scene.py` | `SceneWrapper` writes `qpos`, `qvel` and the mocap poses into the state so the trainer records them like any field; MJX suites only, since the scene is the MJX state's |
+| the learner's view | `training/evaluation/learner_view.py`, `agents/ppo_lag/losses.py` | `LearnerView` and the function PPO-Lagrange hands the trainer; `critic_estimates` is the one place the critics are read and GAE formed outside the loss, shared with the round hook's signals |
+| recording | `training/acting.py`, `agents/ppo/train.py`, `training/evaluation/recorder.py` | the Evaluator keeps the first K environments' unroll; the trainer applies the view; the recorder cuts each unroll at its episode's end and writes the record |
+| the switch | `training/config.py`, `train_env.py`, `contexts/setup.py` | `--record_episodes K` (default 0); a stock run with K > 0 is refused, the records are indexed by arm and target |
+| the viewer | `training/review/` | the library (where a group's records are), the renderer (one frame from a scene, on one thread, since a GL context belongs to one thread), the server (reads, never computes), the page |
+| tests | `tests/test_episode_review.py` | the record round-trips; the view equals the round hook's signals and the critics; a tiny run leaves the expected records; the server serves the page, the library, an episode and a frame |
+
+**Two decisions taken while building.** The whole-learner checkpoint was
+listed here and is not built: its only consumer is §5's "run a checkpoint on a
+context chosen in the viewer", and the record already carries what the
+checkpoint would be asked for; it moves to §5 with that consumer. And the
+recorded advantages are in the loss's units, reward scaled by
+`reward_scaling`, as the critics are trained; the per-step reward in the
+record is the raw one.
+
+**The merge point with `contextual-learner`.** There the multiplier is a
+function λ(ω) and the observation is `{sensors, context}`. The recorder takes
+the view from the agent, so PPO-Lagrange's `compute_learner_view` passes
+`constraint.per_transition(...)` as the multiplier (per step, which the record
+already holds); the record's `observation` becomes the `sensors` part, the
+context being a field of its own already.
 
 ## 5. Out of scope
 
 - **Training transitions**, the data a gradient was computed from. A different
   record, built only if the evaluation episodes leave a question open.
-- **Running a checkpoint on a context chosen in the viewer.** The whole-learner
-  checkpoint makes it possible from a script; a button for it waits until the
-  first viewing shows which contexts are worth probing.
+- **Running a checkpoint on a context chosen in the viewer**, and the
+  whole-learner checkpoint (cost critic and multiplier state next to the
+  policy) it needs. Both wait until the first viewing shows which contexts are
+  worth probing; `--store_model` already saves the policy at every evaluation.
 - **Tristan's browser player.** It has the physics and the task logic but no
   observation vector, so it cannot run our policies. Its renderer could replay
   our scenes later.
