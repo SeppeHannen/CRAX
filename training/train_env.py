@@ -29,6 +29,15 @@ def main():
     env_name = config.env_name
     alg_name = config.alg
     difficulty = config.difficulty
+    learner = contexts.Learner(constraint=config.constraint, policy_context=config.policy_context)
+    if config.context_distribution != contexts.NO_DISTRIBUTION:
+        if config.vision:
+            raise ValueError("--vision and --context_distribution both choose the networks; a context run has no vision mode")
+        if not (config.skip_rollout and config.skip_video):
+            raise ValueError(
+                "a context run's policy observes {sensors, context}, which the post-training rollout and video "
+                "(stock environment, flat observation) cannot feed it; pass --skip_rollout --skip_video"
+            )
 
     # Fill in the morphology-specific pixel-obs training camera, but only if
     # the user didn't explicitly pass --vision_camera
@@ -50,7 +59,8 @@ def main():
         if config.context_distribution == contexts.NO_DISTRIBUTION:
             run_name = f"{env_name}_Level_{difficulty}_{alg_name}_seed{seed}_{timestamp}"
         else:
-            run_name = f"{env_name}_ctx_{contexts.spec_label(config.context_distribution)}_{alg_name}_seed{seed}_{timestamp}"
+            arm = contexts.run_name_fragment(config.context_distribution, learner)
+            run_name = f"{env_name}_ctx_{arm}_{alg_name}_seed{seed}_{timestamp}"
 
         # Build vision kwargs. Pixel-obs wrapping happens inside the training function
         vision_kwargs = None
@@ -136,6 +146,7 @@ def main():
             env_name,
             config.context_distribution,
             config.deployment_distribution,
+            learner,
             num_timesteps=int(config.num_timesteps),
             num_envs=config.num_envs,
             batch_size=config.batch_size,

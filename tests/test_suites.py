@@ -60,8 +60,8 @@ def _logged_keys(env_name: str) -> List[str]:
     state = jax.jit(wrapped.step)(state, jnp.zeros((NUM_SLOTS, env.action_size)))
     keys = [f"episodic/{name}" for name in state.info["episode_metrics"]]
 
-    def zero_policy(_params):
-        return lambda observation, key: (jnp.zeros((observation.shape[0], env.action_size)), {})
+    def zero_policy(_params):  # the context stacks observe {sensors, context}
+        return lambda observation, key: (jnp.zeros((observation[C.SENSORS_KEY].shape[0], env.action_size)), {})
 
     # One evaluator per target the run would be scored on, each on its own evaluation stack --
     # the targets come from the same function `context_training_setup` uses.

@@ -28,26 +28,30 @@ from wandb_workspaces import expr
 from training.dashboard.metrics import FACT_PLACEHOLDERS, KEPT, Group, Metric
 
 X_AXIS = "environment_steps"
-# The arm of the experiment. This config key names what a line *is* (the
-# distribution the run trained on), so the legend reads `training_distribution: uniform`.
-GROUP_RUNS_BY = "training_distribution"
+# The arm of the experiment. This config key names what a line *is*: the distribution
+# the run trained on under which learner (training/contexts/setup.py `arm_label`), so
+# the legend reads `arm: uniform scalar blind`.
+GROUP_RUNS_BY = "arm"
 
 # The budget is drawn by a reference run in the group whose only history is the budget
 # value at the first and last environment step (training/dashboard/budget_run.py); its
-# `training_distribution` is this, so it is one grey line in the legend.
+# `arm` is this, so it is one grey line in the legend.
 BUDGET_ARM = "budget"
 
 # One colour per arm, the same on every panel. W&B otherwise cycles its palette and
 # falls back to dashed lines after a few arms, which reads as a different kind of
 # series. Arms not listed here get W&B's default.
 ARM_COLOURS: Mapping[str, str] = {
-    "uniform": "#e377c2",
-    "staged:1,2,3": "#2ca02c",
-    "plr": "#1f77b4",
-    "plr:cost": "#d62728",
-    "plr:lagrangian": "#ff7f0e",
-    "level:3": "#7f7f7f",
-    "level:1": "#bcbd22",
+    "uniform scalar blind": "#e377c2",
+    "staged:1,2,3 scalar blind": "#2ca02c",
+    "plr scalar blind": "#1f77b4",
+    "plr:cost scalar blind": "#d62728",
+    "plr:lagrangian scalar blind": "#ff7f0e",
+    "level:3 scalar blind": "#7f7f7f",
+    "level:1 scalar blind": "#bcbd22",
+    "uniform per_context told": "#9467bd",
+    "staged:1,2,3 per_context told": "#17becf",
+    "staged:1,2,3 per_context blind": "#8c564b",
     BUDGET_ARM: "#c7c7c7",
 }
 
@@ -189,8 +193,10 @@ class RunFacts:
 # --------------------------------------------------------------------------- #
 
 LEGEND = (
-    "**Legend.** Lines are grouped by `training_distribution`, the distribution over contexts that the run trained "
-    "on (e.g. `uniform`, `staged:1,2,3`): one line per training distribution, mean over its seeds, band = min–max "
+    "**Legend.** Lines are grouped by `arm`: the distribution over contexts the run trained on, then how the "
+    "constraint is held (`scalar` = one λ; `per_context` = one multiplier per context λ(ω)) and what the policy "
+    "observes of its context (`blind` = sensors only; `told` = the context too; the critics always see it) — e.g. "
+    "`uniform scalar blind`, `staged:1,2,3 per_context told`. One line per arm, mean over its seeds, band = min–max "
     "over seeds. The legend does not indicate what a line was evaluated on; the panel title does."
 )
 

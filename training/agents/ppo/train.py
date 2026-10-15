@@ -57,8 +57,9 @@ Metrics = types.Metrics
 
 _PMAP_AXIS_NAME = 'i'
 
-# Type alias for the post-step hook function
-PostStepFn = Callable[['TrainingState', Metrics], Tuple['TrainingState', Metrics]]
+# Type alias for the post-step hook function: (training state after SGD, the SGD
+# metrics, the round's transitions) -> (training state, extra metrics)
+PostStepFn = Callable[['TrainingState', Metrics, types.Transition], Tuple['TrainingState', Metrics]]
 
 
 
@@ -342,7 +343,10 @@ def train(
       loss_fn: Optional custom loss function. If None, uses compute_ppo_loss.
         For constrained RL variants, pass compute_ppo_lagrange_loss.
       post_step_fn: Optional function called after each training step.
-        Signature: (TrainingState, Metrics) -> (TrainingState, Metrics).
+        Signature: (TrainingState, Metrics, Transition) -> (TrainingState, Metrics);
+        the Transition is the round's rollout (leading dimensions
+        [batch_size * num_minibatches, unroll_length]), so a multiplier can be
+        updated from the recorded cost and context of every transition.
         Used for Lagrange multiplier updates in constrained RL.
       extra_fields: Extra fields to collect from env state during rollout.
         Default is ('truncation', 'episode_metrics', 'episode_done').
@@ -714,7 +718,7 @@ def train(
         # Apply post-step hook if provided (for Lagrange multiplier updates, etc.)
         if post_step_fn is not None:
             with tracker.scope("post_step"):
-                new_training_state, extra_metrics = post_step_fn(new_training_state, metrics)
+                new_training_state, extra_metrics = post_step_fn(new_training_state, metrics, data)
             metrics = {**metrics, **extra_metrics}
 
         if log_training_metrics:

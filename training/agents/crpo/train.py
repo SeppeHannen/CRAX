@@ -146,8 +146,9 @@ def train(
                 obs_size, action_size, cost_value_hidden_layer_sizes=(256,) * 5, **kwargs)
 
     # CRPO stores the current regime (1.0 = optimize reward, 0.0 = optimize cost) in aux_state
-    def post_step_fn(training_state: TrainingState, metrics: Metrics) -> Tuple[TrainingState, Metrics]:
+    def post_step_fn(training_state: TrainingState, metrics: Metrics, data: types.Transition) -> Tuple[TrainingState, Metrics]:
         """Rectifies the objective based on the constraint's current violation."""
+        del data  # the regime is chosen from the batch's mean cost in the loss metrics
         avg_cost = jnp.mean(metrics['mean_cost'][-1])
         cost_violation = avg_cost - per_step_safety_bound
         updated_regime = jnp.where(cost_violation > crpo_eta, 0.0, 1.0)

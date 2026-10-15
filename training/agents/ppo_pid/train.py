@@ -98,7 +98,8 @@ def train(
             return ppo_networks.make_ppo_networks(
                 obs_size, action_size, cost_value_hidden_layer_sizes=(256,) * 5, **kwargs)
 
-    def post_step_fn(training_state: TrainingState, metrics: Metrics) -> Tuple[TrainingState, Metrics]:
+    def post_step_fn(training_state: TrainingState, metrics: Metrics, data: types.Transition) -> Tuple[TrainingState, Metrics]:
+        del data  # the controller reads the batch's mean cost from the loss metrics
         controller: PIDLagrangeState = training_state.aux_state
         avg_cost = jnp.mean(metrics["mean_cost"][-1])
         violation = (avg_cost - per_step_safety_bound).reshape((1,))

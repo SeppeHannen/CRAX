@@ -14,6 +14,7 @@ from crax import envs
 from training import rounds
 from training import types
 from training.agents.ppo_lag import losses as ppo_lag_losses
+from training.agents.ppo_lag.constraint import LagrangeConstraint, ScalarConstraint
 from training.agents.ppo import networks as ppo_networks
 from training.agents.ppo import train as ppo_train
 
@@ -57,6 +58,7 @@ def train(
         safety_bound: float = 0.0,
         lagrangian_coef_rate: float = 0.01,
         initial_lambda_lagr: float = 0.0,
+        constraint: LagrangeConstraint = ScalarConstraint(),
         # eval
         num_evals: int = 0,
         eval_env: Optional[envs.Env] = None,
@@ -113,6 +115,12 @@ def train(
       safety_bound: the safety constraint bound for PPO-Lagrange (episodic)
       lagrangian_coef_rate: learning rate for Lagrange multiplier updates
       initial_lambda_lagr: initial value for the Lagrange multiplier
+      constraint: how the constraint is held (`ppo_lag/constraint.py`): one λ for the
+        whole training distribution (default), or one per context
+        (`training.contexts.constraint.PerContextConstraint`). It owns the
+        multipliers' layout in `aux_state`, their lookup per transition and
+        their update rule; `lagrangian_coef_rate` and `initial_lambda_lagr`
+        apply to either.
       num_evals: the number of evals to run during the entire training run.
       eval_env: an optional environment for eval only
       num_eval_envs: the number of envs to use for evaluation.
@@ -145,35 +153,42 @@ def train(
             return ppo_networks.make_ppo_networks(
                 obs_size, action_size, cost_value_hidden_layer_sizes=(256,) * 5, **kwargs)
 
-    # Define the Lagrange multiplier update function
-    def post_step_fn(training_state: TrainingState, metrics: Metrics) -> Tuple[TrainingState, Metrics]:
-        """Updates the Lagrange multiplier based on constraint violation."""
-        avg_cost = jnp.mean(metrics['mean_cost'][-1])
-        cost_violation = avg_cost - per_step_safety_bound
-        delta_lambda = cost_violation * lagrangian_coef_rate
-        updated_lambda_lagr = jax.nn.relu(training_state.aux_state + delta_lambda)
-        new_training_state = training_state.replace(aux_state=updated_lambda_lagr)
-        return new_training_state, {'lambda_lagr': updated_lambda_lagr, 'cost_violation': cost_violation}
+    # aux_state holds the constraint's multiplier state: a [1] array for a scalar λ, a network's
+    # parameters for λ(ω). Built here so an initial value the constraint cannot represent is
+    # refused before anything is reset or compiled.
+    initial_multipliers = constraint.initial_multipliers(initial_lambda_lagr)
+
+    def post_step_fn(training_state: TrainingState, metrics: Metrics, data: types.Transition) -> Tuple[TrainingState, Metrics]:
+        """Updates the multipliers from the round's transitions, by the constraint's rule."""
+        del metrics
+        state_extras = data.extras['state_extras']
+        costs = state_extras['cost']
+        multipliers, multiplier_metrics = constraint.update(
+            training_state.aux_state, costs, state_extras, per_step_safety_bound, lagrangian_coef_rate
+        )
+        new_training_state = training_state.replace(aux_state=multipliers)
+        return new_training_state, {**multiplier_metrics, 'cost_violation': jnp.mean(costs) - per_step_safety_bound}
 
     # Define the custom loss function for PPO-Lagrange
-    def lagrange_loss_fn(params, normalizer_params, data, rng, aux_state=None,
+    def lagrange_loss_fn(params, normalizer_params, data, rng, aux_state,
                          ppo_network=None, entropy_cost=1e-4, discounting=0.9,
                          reward_scaling=1.0, gae_lambda=0.95, clipping_epsilon=0.3,
                          normalize_advantage=True):
         """PPO-Lagrange loss function."""
-        lambda_lagr = aux_state if aux_state is not None else jnp.array([0.0])
         return ppo_lag_losses.compute_ppo_lagrange_loss(
             params=params, normalizer_params=normalizer_params, data=data, rng=rng,
-            ppo_network=ppo_network, lambda_lagr=lambda_lagr, safety_bound=per_step_safety_bound,
+            ppo_network=ppo_network, lambda_lagr=constraint.per_transition(aux_state, data.extras['state_extras']),
+            safety_bound=per_step_safety_bound,
             entropy_cost=entropy_cost, discounting=discounting, reward_scaling=reward_scaling,
             gae_lambda=gae_lambda, clipping_epsilon=clipping_epsilon, normalize_advantage=normalize_advantage)
 
     # The round hook's view of the rollout: the same advantages the loss is about to
-    # use, under the λ in force. aux_state *is* λ for this agent.
+    # use, under the λ in force for each transition.
     def compute_learning_signals(params, normalizer_params, data, aux_state,
                                  ppo_network, discounting, reward_scaling, gae_lambda, normalize_advantage):
         return ppo_lag_losses.compute_learning_signals(
-            params=params, normalizer_params=normalizer_params, data=data, lagrange_multiplier=aux_state,
+            params=params, normalizer_params=normalizer_params, data=data,
+            lagrange_multiplier=constraint.per_transition(aux_state, data.extras['state_extras']),
             ppo_network=ppo_network, discounting=discounting, reward_scaling=reward_scaling,
             gae_lambda=gae_lambda, normalize_advantage=normalize_advantage)
 
@@ -181,12 +196,11 @@ def train(
         produces=ppo_lag_losses.LEARNING_SIGNALS, compute=compute_learning_signals
     )
 
-    # Initialize aux_state with the initial Lagrange multiplier
     def init_aux_state_fn():
-        return jnp.array([initial_lambda_lagr], dtype=jnp.float32)
+        return initial_multipliers
 
-    # Extra fields to collect during rollout (including cost)
-    extra_fields = ('truncation', 'episode_metrics', 'episode_done', 'cost')
+    # Extra fields to collect during rollout: cost, plus whatever the constraint needs to look up λ per transition
+    extra_fields = ('truncation', 'episode_metrics', 'episode_done', 'cost') + constraint.extra_fields
 
     # Handle pretrained_params taking precedence over restore_params
     effective_restore_params = pretrained_params if pretrained_params is not None else restore_params

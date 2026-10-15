@@ -82,8 +82,9 @@ def train(
             return ppo_networks.make_ppo_networks(
                 obs_size, action_size, cost_value_hidden_layer_sizes=(256,) * 5, **kwargs)
 
-    def post_step_fn(training_state, metrics):
+    def post_step_fn(training_state, metrics, data):
         """Updates nu (Lagrange multiplier) based on constraint violation."""
+        del data  # nu is updated from the batch's mean cost in the loss metrics
         nu = training_state.aux_state
         avg_cost = jnp.mean(metrics['mean_cost'][-1])
         cost_violation = avg_cost - per_step_safety_bound

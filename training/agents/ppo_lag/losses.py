@@ -28,12 +28,22 @@ def lagrangian_advantage(
 ) -> jnp.ndarray:
     """The advantage the policy loss weights each transition by: ``A_r − λ A_c``,
     each advantage first standardised over the batch it is given when
-    ``normalize_advantage``. The one rule for both the loss and the learning
-    signals, so a score on the Lagrangian objective is the loss's own quantity."""
+    ``normalize_advantage``. ``lagrange_multiplier`` is λ per transition in the
+    advantages' layout, or one value broadcast to all. The one rule for both the
+    loss and the learning signals, so a score on the Lagrangian objective is the
+    loss's own quantity."""
     if normalize_advantage:
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         cost_advantages = (cost_advantages - cost_advantages.mean()) / (cost_advantages.std() + 1e-8)
     return advantages - lagrange_multiplier * cost_advantages
+
+
+def _time_first(lagrange_multiplier: jnp.ndarray, data_shape: Tuple[int, ...]) -> jnp.ndarray:
+    """λ as one value per transition, laid out ``[T, B]`` like the time-first data.
+
+    ``lagrange_multiplier`` is either ``[1]`` (a scalar constraint) or already one value
+    per transition in the data's ``[B, T]`` layout (a per-context constraint)."""
+    return jnp.swapaxes(jnp.broadcast_to(lagrange_multiplier, data_shape), 0, 1)
 
 
 def compute_learning_signals(
@@ -49,13 +59,15 @@ def compute_learning_signals(
 ) -> rounds.LearningSignals:
     """The reward, cost and Lagrangian advantage of every transition in ``data``
     (leading dimension ``[B, T]``), each as ``[B, T]``, under the critics in
-    ``params`` and the multiplier ``lagrange_multiplier`` (λ).
+    ``params`` and the multiplier ``lagrange_multiplier`` (λ: ``[1]``, or one per
+    transition as ``[B, T]``).
 
     The same estimates :func:`compute_ppo_lagrange_loss` makes, computed once over
     the whole batch so that a round hook can read them per transition (the loss
     sees shuffled minibatches; the Lagrangian advantage is therefore standardised
     over the batch here and over a minibatch there).
     """
+    lagrange_multiplier = _time_first(lagrange_multiplier, data.reward.shape)
     data = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), data)
     obs = with_shared_latent(ppo_network, params, normalizer_params, data.observation)
     terminal_obs = jax.tree_util.tree_map(lambda x: x[-1], data.next_observation)
@@ -109,7 +121,7 @@ def compute_ppo_lagrange_loss(
         ['policy_extras']['log_prob'] and ['state_extras']['cost']
       rng: Random key
       ppo_network: PPO networks (must include cost_value_network).
-      lambda_lagr: Current Lagrange multiplier
+      lambda_lagr: Current Lagrange multiplier: ``[1]``, or one per transition as ``[B, T]``
       safety_bound: Safety constraint bound (per-step)
       entropy_cost: entropy cost.
       discounting: discounting,
@@ -127,6 +139,7 @@ def compute_ppo_lagrange_loss(
     cost_value_apply = ppo_network.cost_value_network.apply
 
     # Put the time dimension first.
+    lambda_lagr = _time_first(lambda_lagr, data.reward.shape)
     data = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), data)
     obs = with_shared_latent(ppo_network, params, normalizer_params, data.observation)
     policy_logits = policy_apply(normalizer_params, params.policy, obs)

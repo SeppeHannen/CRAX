@@ -9,7 +9,9 @@ training on ``safe_velocity_ant`` on CPU with each distribution and check that
   recompile of the epoch program,
 * the policy is evaluated on both the deployment context w and the uniform
   reference r,
-* the realised curriculum q̂ is reported next to the intended one.
+* the realised curriculum q̂ is reported next to the intended one,
+* the contextual learner (``docs/acl/design/contextual_learner.md``) runs on an
+  Ω with integer dimensions (``safe_lift_ant``): λ(ω) per context, told policy.
 
 Run with: JAX_PLATFORMS=cpu pytest tests/test_context_training.py -v
 """
@@ -62,8 +64,8 @@ def test_setup_evaluates_on_every_region_the_suite_registers():
     """w and r always; then one evaluator per `EvaluationRegion`, named and labelled by the
     region itself. A suite with no regions gets exactly two."""
     common = dict(num_timesteps=1000, num_envs=4, batch_size=4, unroll_length=5, num_minibatches=2)
-    velocity = C.context_training_setup(ENV_NAME, "uniform", "level:3", **common)
-    goal = C.context_training_setup("safe_goal_point", "uniform", "level:3", **common)
+    velocity = C.context_training_setup(ENV_NAME, "uniform", "level:3", C.DEFAULT_LEARNER, **common)
+    goal = C.context_training_setup("safe_goal_point", "uniform", "level:3", C.DEFAULT_LEARNER, **common)
     assert [e.name for e in velocity.evaluations] == [C.DEPLOYMENT_EVALUATION, C.UNIFORM_EVALUATION]
     assert [e.name for e in goal.evaluations] == [C.DEPLOYMENT_EVALUATION, C.UNIFORM_EVALUATION, C.OUT_OF_DISTRIBUTION_EVALUATION]
     assert set(goal.train_kwargs()["evaluation_wrap_env_fns"]) == {e.name for e in goal.evaluations}
@@ -220,12 +222,17 @@ class _RecordingHook(C.ContextRoundHook):
 
 
 def _run(
-    training_spec: str, train_fn: Callable[..., Any] = train_ppo_lag
+    training_spec: str,
+    train_fn: Callable[..., Any] = train_ppo_lag,
+    learner: C.Learner = C.DEFAULT_LEARNER,
+    env_name: str = ENV_NAME,
+    **train_overrides: Any,
 ) -> Tuple[C.ContextTrainingSetup, List[Tuple[int, Dict[str, Any]]], List[float], _RecordingHook]:
     setup = C.context_training_setup(
-        ENV_NAME,
+        env_name,
         training_spec,
         "level:3",
+        learner,
         num_timesteps=NUM_TIMESTEPS,
         num_envs=TINY["num_envs"],
         batch_size=TINY["batch_size"],
@@ -244,7 +251,7 @@ def _run(
     )
 
     history: List[Tuple[int, Dict[str, Any]]] = []
-    env = envs.get_environment(ENV_NAME, level=1)
+    env = envs.get_environment(env_name, level=1)
     train_kwargs = setup.train_kwargs()
     hook = _RecordingHook(setup.distribution, num_slots=setup.num_envs)
     train_kwargs["round_hook"] = hook
@@ -253,7 +260,7 @@ def _run(
         num_timesteps=NUM_TIMESTEPS,
         seed=0,
         progress_fn=lambda step, metrics: history.append((step, dict(metrics))),
-        safety_bound=25.0,
+        **{"safety_bound": 25.0, **train_overrides},
         **TINY,
         **train_kwargs,
     )
@@ -419,3 +426,77 @@ def test_end_to_end_plr_fills_its_buffer_from_the_trainers_advantages_and_replay
     assert np.all(np.asarray(setup.suite.space.contains(final.contexts[occupied])))
     last_round = np.asarray(final.last_round)[occupied]
     assert np.all((0 <= last_round) & (last_round < TOTAL_ROUNDS))
+
+
+# --------------------------------------------------------------------------- #
+# The contextual learner on the real trainer
+# --------------------------------------------------------------------------- #
+
+
+def _per_round_training_metrics(history) -> List[Dict[str, Any]]:
+    """The one entry per round in which the trainer's `training/*` arrive together with the
+    hook's `training_curriculum/*` (the stock logger re-reports `training/*` on its own cadence)."""
+    return [m for _, m in history if CURRICULUM + "num_transitions" in m and "training/cost_violation" in m]
+
+
+def test_end_to_end_scalar_constraint_reads_the_batch_cost_from_the_rounds_data():
+    """The scalar rule now reads the cost from the round's transitions instead of the loss's
+    minibatch metrics; the two agree, so `cost_violation` is the batch's `mean_cost` minus the
+    budget per step to float precision, and λ moves by rate × that."""
+    _, history, _, _ = _run("uniform")
+    rounds = _per_round_training_metrics(history)
+    assert len(rounds) == TOTAL_ROUNDS
+    budget_per_step = 25.0 / TINY["episode_length"]
+    for metrics in rounds:
+        assert float(np.mean(metrics["training/cost_violation"])) == pytest.approx(
+            float(np.mean(metrics["training/mean_cost"])) - budget_per_step, abs=1e-6
+        )
+    assert not any(key.startswith("training/lambda_lagr/") for m in rounds for key in m), "a scalar arm logs no spread"
+
+
+def test_end_to_end_per_context_constraint_with_a_told_policy():
+    """λ_ψ(ω) with the policy told its context, on lift ant (Ω = {0,1}^4: which feet are
+    restricted). One compiled program; the multiplier function's mean, spread and fit error over
+    the batch are logged under registered keys; the policy is evaluated on w and r through the
+    {sensors, context} observation."""
+    told = C.Learner(constraint="per_context", policy_context="told")
+    # budget 0: a context whose restricted feet touch the ground is over budget and its λ rises; the
+    # context that restricts no foot has cost 0 and its λ falls, so the function must spread
+    setup, history, compile_seconds, _ = _run(
+        "uniform", learner=told, env_name="safe_lift_ant", safety_bound=0.0, lagrangian_coef_rate=1.0, initial_lambda_lagr=0.1
+    )
+    assert setup.arm == "uniform per_context told"
+    assert setup.wandb_config()["arm"] == setup.arm and setup.wandb_config()["constraint"] == "per_context"
+
+    rounds = _per_round_training_metrics(history)
+    assert len(rounds) == TOTAL_ROUNDS
+    for metrics in rounds:
+        mean, std = float(np.mean(metrics["training/lambda_lagr"])), float(np.mean(metrics["training/lambda_lagr/std"]))
+        low, high = float(np.mean(metrics["training/lambda_lagr/min"])), float(np.mean(metrics["training/lambda_lagr/max"]))
+        assert 0.0 <= low <= mean <= high and std >= 0.0
+        assert np.isfinite(float(np.mean(metrics["training/lambda_lagr/fit_error"])))
+        assert float(np.mean(metrics["training/lambda_lagr/target_spread"])) >= 0.0
+        for key in metrics:
+            if key.startswith("training/"):
+                dashboard.registered(key)
+    # contexts whose cost differs end with different multipliers: the spread is not identically zero
+    assert float(np.mean(rounds[-1]["training/lambda_lagr/std"])) > 0
+    assert float(np.mean(rounds[-1]["training/lambda_lagr/max"])) > float(np.mean(rounds[-1]["training/lambda_lagr/min"]))
+
+    dimension = setup.suite.space.names[0]
+    assert all(_histogram_masses(m[f"{CURRICULUM}experienced/{dimension}"]).sum() == pytest.approx(1.0) for _, m in history if f"{CURRICULUM}experienced/{dimension}" in m)
+    evaluations = [m for _, m in history if f"evaluation/{C.DEPLOYMENT_EVALUATION}/episode_reward" in m]
+    assert len(evaluations) == 3 and all(f"evaluation/{C.UNIFORM_EVALUATION}/episode_cost" in m for m in evaluations)
+    substantial = [s for s in compile_seconds if s > 1.0]
+    assert len(substantial) <= 4, f"unexpected recompiles: {substantial}"
+
+
+def test_per_context_constraint_needs_ppo_lagrange():
+    """PPO-PID has no `constraint` argument: the setup's kwargs are refused by the trainer
+    (the CLI turns this into its 'does not accept' message before anything runs)."""
+    told = C.Learner(constraint="per_context", policy_context="told")
+    setup = C.context_training_setup("safe_lift_ant", "uniform", "level:3", told, num_timesteps=NUM_TIMESTEPS,
+                                     num_envs=TINY["num_envs"], batch_size=TINY["batch_size"],
+                                     unroll_length=TINY["unroll_length"], num_minibatches=TINY["num_minibatches"])
+    with pytest.raises(TypeError, match="constraint"):
+        train_ppo_pid(environment=envs.get_environment("safe_lift_ant", level=1), num_timesteps=NUM_TIMESTEPS, **TINY, **setup.train_kwargs())

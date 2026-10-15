@@ -146,6 +146,8 @@ FORWARD_REWARD_PANEL = "Training forward reward, summed over the episode"
 EVALUATION_FORWARD_REWARD_PANEL = "Evaluation forward reward, summed over the episode"
 COST_PARTS_PANEL = "Training cost per episode, by part"
 EVALUATION_COST_PARTS_PANEL = "Evaluation cost per episode, by part"
+LAMBDA_SPREAD_PANEL = "Spread of the per-context multipliers λ(ω) over the round's transitions"
+LAMBDA_FIT_PANEL = "How closely λ(ω) follows the integrator: fit error against the targets' own spread"
 
 # Wording shared by several descriptions.
 EVALUATION_POPULATION = "{num_eval_envs} episodes of the frozen policy on {evaluation}"
@@ -207,7 +209,26 @@ KEPT: Tuple[Metric, ...] = (
            panel="PLR: concentration of the replay distribution"),
     Metric("training/lambda_lagr", "Lagrange multiplier λ", "λ", Group.MECHANISM,
            "the multiplier on the cost advantage after the round's update, by the agent's own rule (PPO-Lagrange: an integrator; "
-           "PPO-PID: a PID controller). It grows while the batch's cost per step exceeds the budget per step and shrinks otherwise."),
+           "PPO-PID: a PID controller). It grows while the batch's cost per step exceeds the budget per step and shrinks otherwise. "
+           "Under a per-context constraint (`per_context` arms) the multiplier is a function λ(ω) of the context and this is its "
+           "mean over the round's transitions — the λ the batch was weighted by on average; the spread is below."),
+    Metric("training/lambda_lagr/std", "std", "λ", Group.MECHANISM,
+           "per-context constraint only: the standard deviation, over the round's transitions, of λ(ω) at each transition's "
+           "context — how far apart the contexts' multipliers are. 0 would be a scalar λ in disguise.",
+           panel=LAMBDA_SPREAD_PANEL),
+    Metric("training/lambda_lagr/min", "min", "λ", Group.MECHANISM,
+           "per-context constraint only: the smallest λ(ω) among the contexts the round trained on.", panel=LAMBDA_SPREAD_PANEL),
+    Metric("training/lambda_lagr/max", "max", "λ", Group.MECHANISM,
+           "per-context constraint only: the largest λ(ω) among the contexts the round trained on.", panel=LAMBDA_SPREAD_PANEL),
+    Metric("training/lambda_lagr/fit_error", "fit error", "λ", Group.TRUST,
+           "per-context constraint only: root mean squared distance, over the round's transitions, between λ(ω) after the fit and "
+           "where PPO-Lagrange's integrator asked each transition's multiplier to go (λ + rate × (cost − budget), floored at 0). "
+           "Read against the targets' spread on the same panel: a target is one transition's cost, so even a perfect fit to each "
+           "context's mean leaves the within-context scatter (≈ rate × std of the cost per step) behind. Well below the spread = "
+           "the function holds the contexts' multipliers apart; near it = it does not.", panel=LAMBDA_FIT_PANEL),
+    Metric("training/lambda_lagr/target_spread", "spread of the targets", "λ", Group.TRUST,
+           "per-context constraint only: the standard deviation of the integrator's targets over the round's transitions — "
+           "between contexts (their multipliers differ) plus within a context (one transition's cost).", panel=LAMBDA_FIT_PANEL),
     Metric("training/pid/violation", "Constraint violation the controller sees", "cost per step above the budget", Group.MECHANISM,
            "the batch's mean cost per step minus the budget per step — the error signal PPO-PID's controller drives to zero; "
            "positive = over budget."),

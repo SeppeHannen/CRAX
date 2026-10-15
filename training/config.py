@@ -121,6 +121,17 @@ def add_shared_training_args(parser: argparse.ArgumentParser) -> argparse.Argume
                         help="Distribution w the policy is for; evaluated on it (evaluation/deployment/*) next to "
                              "Uniform(Ω) (evaluation/uniform/*) and, on suites that define one, Uniform(Ω₂) "
                              "(evaluation/out_of_distribution/*). Same grammar as --context_distribution.")
+    # The learner of a context run (docs/acl/design/contextual_learner.md). The critics
+    # see the context in every context run; these two switches say how the constraint
+    # is held and whether the policy sees the context. Both need --context_distribution.
+    parser.add_argument("--constraint", type=str, choices=["scalar", "per_context"], default="scalar",
+                        help="How PPO-Lagrange holds the constraint: 'scalar' = one λ updated from the batch's mean cost "
+                             "(the published method); 'per_context' = one multiplier per context λ(ω), each updated from "
+                             "the cost observed in its own context. Needs --alg ppo_lag and a context distribution.")
+    parser.add_argument("--policy_context", type=str, choices=["blind", "told"], default="blind",
+                        help="What the policy observes of its context ω: 'blind' = its sensors only; 'told' = the context "
+                             "vector too, so it can hold a different reward–cost trade-off per context. The critics "
+                             "always observe ω in a context run.")
 
     # --- Algorithm ---
     parser.add_argument("--alg", type=str, default="ppo_lag", help="Algorithm name (e.g., ppo, ppo_lag)")

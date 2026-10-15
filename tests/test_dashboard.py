@@ -160,7 +160,7 @@ def test_view_has_the_four_review_sections_with_text_first_and_no_smoothing():
             assert plot["config"]["xAxis"] == "environment_steps"
             assert plot["config"]["chartTitle"] and plot["config"]["yAxisTitle"]
     runset = view._spec["spec"]["section"]["runSets"][0]
-    assert runset["grouping"][0]["name"].startswith("training_distribution")
+    assert runset["grouping"][0]["name"].startswith("arm")
     assert "some_group" in str(runset["filters"])
 
 
@@ -169,7 +169,7 @@ def test_text_panels_state_population_unit_cadence_and_budget():
                           dashboard.build_view("e", "p", "g", FACTS)._spec["spec"]["section"]["panelBankConfig"]["sections"][:2])
     for fact in ("21 evaluations", "128 episodes", "level:3", "25,000,000", "not data", "velocity_threshold",
                  "**Environment.** A MuJoCo ant", "**Reward.** Per step: forward velocity", "**Cost.** Per step, 1 if",
-                 "budget is 25", "128 episodes of the frozen policy on the deployment task (level:3)", "training_distribution"):
+                 "budget is 25", "128 episodes of the frozen policy on the deployment task (level:3)", "grouped by `arm`"):
         assert fact in verdict, fact
     for fact in ("One point per round", "655,360", "763 rounds", "**sampled**"):
         assert fact in mechanism, fact
@@ -204,7 +204,7 @@ def test_budget_run_logs_the_budget_under_every_cost_key_of_the_group():
     assert budget_run.budget_run_id("some_group") == "some_group__budget"
     assert dashboard.view.BUDGET_ARM in dashboard.view.ARM_COLOURS
     # the budget run is grouped with the arms under the same config key, so it is one legend entry
-    assert budget_run.GROUP_RUNS_BY == "training_distribution"
+    assert budget_run.GROUP_RUNS_BY == "arm"
 
 
 def test_trust_has_relative_spread_as_a_derived_series_over_the_logged_std_and_mean():
@@ -239,18 +239,23 @@ def test_mechanism_shows_only_the_sampled_mean_and_detail_the_other_two():
 
 
 def test_runs_are_coloured_by_arm_not_by_palette_order():
-    """Each known arm has a fixed colour keyed by its training_distribution value, so the same
-    arm is the same colour on every panel and W&B never falls back to dashed lines."""
+    """Each known arm has a fixed colour keyed by its `arm` config value (the training distribution
+    under a learner, as `training.contexts.arm_label` writes it), so the same arm is the same colour
+    on every panel and W&B never falls back to dashed lines."""
     from urllib.parse import unquote
+
+    from training import contexts
 
     colours = dashboard.build_view("e", "p", "g", FACTS)._spec["spec"]["section"]["customRunColors"]
     by_arm = {}
     for encoded_key, colour in colours.items():
         path = json.loads(unquote(encoded_key.split(":", 2)[2]))
-        assert path[0]["key"] == "config:training_distribution.value"
+        assert path[0]["key"] == "config:arm.value"
         by_arm[path[0]["value"]] = colour
     assert by_arm == dict(dashboard.view.ARM_COLOURS)
-    assert {"uniform", "staged:1,2,3", "plr", "plr:cost", "plr:lagrangian"} <= set(by_arm)
+    told = contexts.Learner(constraint="per_context", policy_context="told")
+    assert {contexts.arm_label("uniform", contexts.DEFAULT_LEARNER), contexts.arm_label("staged:1,2,3", told),
+            contexts.arm_label("plr:cost", contexts.DEFAULT_LEARNER)} <= set(by_arm)
 
 
 def test_run_facts_round_trip_through_json():

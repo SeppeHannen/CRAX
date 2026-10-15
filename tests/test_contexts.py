@@ -236,7 +236,9 @@ def test_evaluation_episodes_start_at_step_zero_and_are_summed_whole(suite, env)
     evaluation_env = C.wrap_for_context_evaluation(env, distribution, episode_length=EPISODE_LENGTH)
 
     def random_policy(_params):
-        return lambda observation, key: (jax.random.uniform(key, (observation.shape[0], env.action_size), minval=-1.0, maxval=1.0), {})
+        return lambda observation, key: (
+            jax.random.uniform(key, (observation[C.SENSORS_KEY].shape[0], env.action_size), minval=-1.0, maxval=1.0), {}
+        )
 
     from crax.envs.wrappers.training import EvalWrapper
     from training.acting import generate_unroll
@@ -562,3 +564,150 @@ def test_plr_rejects_hyperparameters_outside_their_range(suite):
     for bad in (dict(buffer_size=0), dict(replay_probability=1.5), dict(temperature=0.0), dict(staleness_coefficient=-0.1)):
         with pytest.raises(ValueError):
             C.PrioritizedLevelReplay(suite.space, **bad)
+
+
+# --------------------------------------------------------------------------- #
+# Contextual learner: the observation, the networks, λ(ω)
+# --------------------------------------------------------------------------- #
+
+LIFT = "safe_lift_ant"  # an Ω with integer dimensions (one 0/1 per foot) and no continuous one
+
+
+def test_observation_is_the_sensors_and_the_running_episodes_context(env, suite):
+    """Both stacks observe {sensors, context}; the context part is always the context of
+    the episode the sensors describe, including on the step a slot's episode ends."""
+    for wrap in (C.wrap_for_context_training, C.wrap_for_context_evaluation):
+        wrapped = wrap(env, C.UniformDistribution(suite.space), episode_length=EPISODE_LENGTH)
+        step = jax.jit(wrapped.step)
+        state = jax.jit(wrapped.reset)(jax.random.split(jax.random.PRNGKey(0), NUM_SLOTS))
+        ended = 0
+        for _ in range(EPISODE_LENGTH + 1):
+            assert set(state.obs) == {C.SENSORS_KEY, C.CONTEXT_OBSERVATION_KEY}
+            assert state.obs[C.SENSORS_KEY].shape == (NUM_SLOTS, env.observation_size)
+            np.testing.assert_array_equal(np.asarray(state.obs[C.CONTEXT_OBSERVATION_KEY]), np.asarray(C.current_contexts(state)))
+            ended += int(np.asarray(state.done).sum())
+            state = step(state, zero_actions(env))
+        assert ended > 0, "no episode ended; the at-done case was not exercised"
+
+
+def test_networks_read_the_context_where_the_learner_allows_it():
+    """Blind policy: a function of the sensors only. Told policy and both critics: the
+    context changes their output."""
+    from training.acme import running_statistics, specs
+
+    observation_size = {C.SENSORS_KEY: (6,), C.CONTEXT_OBSERVATION_KEY: (2,)}
+    normalizer = running_statistics.init_state({key: specs.Array(shape, jnp.float32) for key, shape in observation_size.items()})
+    sensors = jax.random.normal(jax.random.PRNGKey(1), (3, 6))
+    observation = {C.SENSORS_KEY: sensors, C.CONTEXT_OBSERVATION_KEY: jnp.ones((3, 2))}
+    other_context = {C.SENSORS_KEY: sensors, C.CONTEXT_OBSERVATION_KEY: -jnp.ones((3, 2))}
+    for policy_observes_context in (False, True):
+        networks = C.make_contextual_ppo_networks(
+            observation_size, action_size=2, preprocess_observations_fn=running_statistics.normalize,
+            policy_observes_context=policy_observes_context,
+        )
+        keys = jax.random.split(jax.random.PRNGKey(2), 3)
+        policy_params = networks.policy_network.init(keys[0])
+        logits = lambda obs: networks.policy_network.apply(normalizer, policy_params, obs)
+        assert logits(observation).shape == (3, 4)  # mean and std per action
+        policy_sees_it = not np.allclose(logits(observation), logits(other_context))
+        assert policy_sees_it == policy_observes_context
+        for critic, key in ((networks.value_network, keys[1]), (networks.cost_value_network, keys[2])):
+            params = critic.init(key)
+            value = lambda obs: critic.apply(normalizer, params, obs)
+            assert value(observation).shape == (3,)
+            assert not np.allclose(value(observation), value(other_context)), "a critic must see the context"
+
+
+def test_per_context_constraint_starts_as_the_scalar_and_moves_by_the_integrator():
+    """λ_ψ(ω) = softplus(f_ψ(ω̃)): the constant `initial_lambda` everywhere at the start; one
+    update with every transition in one context moves λ there by rate·(mean cost − budget),
+    the scalar's step; the function is positive everywhere; the metrics describe the batch."""
+    space = C.suite_contexts(LIFT).space
+    constraint = C.PerContextConstraint(space)
+    assert constraint.extra_fields == (C.TRANSITION_CONTEXT_KEY,)
+    multipliers = constraint.initial_multipliers(0.5)
+    everywhere = jnp.asarray(space.integer_points, jnp.float32)  # the 16 contexts of {0,1}^4
+    np.testing.assert_allclose(np.asarray(constraint.multipliers_at(multipliers, everywhere)), 0.5, atol=1e-6)
+    with pytest.raises(ValueError, match="cannot start at 0"):
+        constraint.initial_multipliers(0.0)
+    # one context over budget by 1 per step at rate 0.25: its λ should land near 0.5 + 0.25 = 0.75
+    context = jnp.ones((64, 8, 4))
+    state_extras = {C.TRANSITION_CONTEXT_KEY: context}
+    costs = jnp.full((64, 8), 2.0)
+    updated, metrics = constraint.update(multipliers, costs, state_extras, budget_per_step=1.0, rate=0.25)
+    per_transition = np.asarray(constraint.per_transition(updated, state_extras))
+    assert per_transition.shape == (64, 8)
+    assert per_transition.mean() == pytest.approx(0.75, abs=0.05)
+    assert metrics["lambda_lagr"] == pytest.approx(per_transition.mean()) and metrics["lambda_lagr/std"] == pytest.approx(0.0, abs=1e-4)
+    assert metrics["lambda_lagr/fit_error"] < 0.05 and metrics["lambda_lagr/target_spread"] == pytest.approx(0.0)  # one cost: no scatter
+    # a context the round never visited moved less than the visited one did, and stays positive
+    far = jnp.zeros((1, 4))
+    assert 0.0 < float(constraint.multipliers_at(updated, far)[0]) < float(per_transition.mean())
+    # under budget for many rounds: λ falls towards 0 and never below
+    for _ in range(30):
+        updated, metrics = constraint.update(updated, jnp.zeros((64, 8)), state_extras, budget_per_step=1.0, rate=0.25)
+    assert 0.0 <= float(metrics["lambda_lagr/min"]) and float(metrics["lambda_lagr"]) < 0.05
+
+
+def test_per_context_constraint_tracks_a_scalar_and_separates_contexts():
+    """Forty rounds of one context over budget: λ_ψ there follows the scalar integrator to within
+    a tenth; then two contexts with opposite violations in one round move in opposite directions."""
+    from training.agents.ppo_lag.constraint import ScalarConstraint
+
+    space = C.suite_contexts(LIFT).space
+    constraint, scalar = C.PerContextConstraint(space), ScalarConstraint()
+    function, value = constraint.initial_multipliers(0.1), scalar.initial_multipliers(0.1)
+    first, second = jnp.zeros((32, 8, 4)), jnp.ones((32, 8, 4))
+    costs = jnp.full((32, 8), 0.085)  # over a budget of 0.025 by 0.06 per step
+    update = jax.jit(lambda f, c, ctx: constraint.update(f, c, {C.TRANSITION_CONTEXT_KEY: ctx}, 0.025, 1.0))
+    for _ in range(40):
+        function, metrics = update(function, costs, first)
+        value, _ = scalar.update(value, costs, {}, 0.025, 1.0)
+    assert float(metrics["lambda_lagr"]) == pytest.approx(float(value[0]), abs=0.1)
+    at_first, at_second = (float(constraint.multipliers_at(function, ctx[0, :1])[0]) for ctx in (first, second))
+    assert at_second < at_first, "the unvisited context should not have risen as far as the visited one"
+    both = jnp.concatenate([first, second])
+    opposite = jnp.concatenate([jnp.full((32, 8), 0.01), jnp.full((32, 8), 0.065)])  # first under, second over
+    function, metrics = update(function, opposite, both)
+    now_first, now_second = (float(constraint.multipliers_at(function, ctx[0, :1])[0]) for ctx in (first, second))
+    assert now_first < at_first and now_second > at_second
+    assert float(metrics["lambda_lagr/std"]) > 0.0
+
+
+def test_scalar_constraint_is_the_published_rule_and_broadcasts():
+    from training.agents.ppo_lag.constraint import ScalarConstraint
+
+    constraint = ScalarConstraint()
+    multipliers = constraint.initial_multipliers(0.5)
+    costs = jnp.asarray([[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]])  # batch mean 1.0
+    updated, metrics = constraint.update(multipliers, costs, {}, budget_per_step=0.5, rate=2.0)
+    np.testing.assert_allclose(np.asarray(updated), [1.5])
+    assert metrics == {"lambda_lagr": updated}
+    assert constraint.per_transition(updated, {}).shape == (1,)
+
+
+def test_lagrangian_advantage_takes_lambda_per_transition_in_the_datas_layout():
+    """`_time_first` lays λ out [T, B] like the swapped data; a [1] λ broadcasts to the same."""
+    from training.agents.ppo_lag.losses import _time_first
+
+    batch, time = 2, 3
+    per_transition = jnp.arange(batch * time, dtype=jnp.float32).reshape(batch, time)
+    np.testing.assert_array_equal(np.asarray(_time_first(per_transition, (batch, time))), np.asarray(per_transition).T)
+    np.testing.assert_array_equal(np.asarray(_time_first(jnp.asarray([2.0]), (batch, time))), np.full((time, batch), 2.0))
+
+
+def test_learner_names_the_arm_and_hands_the_trainer_what_realises_it():
+    told = C.Learner(constraint="per_context", policy_context="told")
+    assert C.arm_label("staged:1,2,3", told) == "staged:1,2,3 per_context told"
+    assert C.run_name_fragment("staged:1,2,3", told) == "staged123_per_context_told"
+    assert C.arm_label("uniform", C.DEFAULT_LEARNER) == "uniform scalar blind"
+    kwargs = told.train_kwargs(C.suite_contexts(LIFT).space)
+    assert isinstance(kwargs["constraint"], C.PerContextConstraint)
+    assert kwargs["network_factory"].keywords == {"policy_observes_context": True}
+    assert set(C.DEFAULT_LEARNER.train_kwargs(C.suite_contexts(LIFT).space)) == {"network_factory"}
+    assert isinstance(told.train_kwargs(C.suite_contexts(ENV_NAME).space)["constraint"], C.PerContextConstraint)  # any Ω
+    with pytest.raises(ValueError):
+        C.Learner(constraint="per_episode", policy_context="told")
+    with pytest.raises(ValueError, match="need a context distribution"):
+        C.context_training_setup(ENV_NAME, C.NO_DISTRIBUTION, "level:3", told, num_timesteps=10, num_envs=1, batch_size=1, unroll_length=1, num_minibatches=1)
+    assert C.context_training_setup(ENV_NAME, C.NO_DISTRIBUTION, "level:3", C.DEFAULT_LEARNER, num_timesteps=10, num_envs=1, batch_size=1, unroll_length=1, num_minibatches=1) is None

@@ -82,8 +82,9 @@ def train(
                 obs_size, action_size, cost_value_hidden_layer_sizes=(256,) * 5, **kwargs)
 
     # P3O stores (kappa, cost_violation) in aux_state
-    def post_step_fn(training_state, metrics):
+    def post_step_fn(training_state, metrics, data):
         """Updates kappa based on constraint violation."""
+        del data  # kappa is updated from the batch's mean cost in the loss metrics
         kappa, _ = training_state.aux_state
         avg_cost = jnp.mean(metrics['mean_cost'][-1])
         cost_violation = jnp.array([avg_cost - per_step_safety_bound])

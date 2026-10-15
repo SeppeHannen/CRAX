@@ -53,15 +53,17 @@ Decision of 2026-10-06; the lockstep run is
 ``docs/acl/experiments/2026-10-06_goal_point_staged_vs_uniform.md``.
 
 Wrapper order follows Brax exactly, with this class in place of
-``AutoResetWrapper``::
+``AutoResetWrapper`` and one more wrapper outside it::
 
-    AutoReset( Episode( Vmap( env ) ) )   ->   ContextualAutoReset( Episode( Vmap( env ) ) )
+    AutoReset( Episode( Vmap( env ) ) )   ->   ContextObservation( ContextualAutoReset( Episode( Vmap( env ) ) ) )
 
 so the batched ``done`` (including truncation at ``episode_length``) and the
 episode bookkeeping (``episode_metrics``, ``episode_done``) that the trainer and
 PPO-Lagrange read are untouched. The env's ``reset`` is therefore called via
-``jax.vmap`` here, with one key and one context per slot. See
-:func:`wrap_for_context_training`.
+``jax.vmap`` here, with one key and one context per slot. The outermost
+:class:`~training.contexts.observation.ContextObservationWrapper` makes the
+observation ``{"sensors": …, "context": ω}`` so that the learner's networks can
+choose what they read. See :func:`wrap_for_context_training`.
 """
 from __future__ import annotations
 
@@ -76,6 +78,7 @@ from crax.envs.wrappers.training import EpisodeWrapper, VmapWrapper
 from crax.envs.context import CONTEXT_KEY
 
 from training.contexts.distribution import ContextDistribution, DistributionParameters
+from training.contexts.observation import ContextObservationWrapper
 from training.contexts.rollout import SLOT_INDEX_KEY, TRANSITION_CONTEXT_KEY
 from training.contexts.space import Contexts
 
@@ -291,7 +294,8 @@ def _wrap_with_contexts(
         raise NotImplementedError("randomization_fn is not supported with context distributions")
     env = VmapWrapper(env)
     env = EpisodeWrapper(env, episode_length, action_repeat)
-    return ContextualAutoResetWrapper(env, distribution, spread_initial_phase=spread_initial_phase)
+    env = ContextualAutoResetWrapper(env, distribution, spread_initial_phase=spread_initial_phase)
+    return ContextObservationWrapper(env)
 
 
 def wrap_for_context_training(
@@ -304,9 +308,9 @@ def wrap_for_context_training(
     """The **training** stack: per-slot contexts, slots spread over the episode.
 
     Same as ``crax.envs.training.wrap`` with ``ContextualAutoResetWrapper`` in
-    place of ``AutoResetWrapper``::
+    place of ``AutoResetWrapper`` and the context labelled in the observation::
 
-        ContextualAutoResetWrapper(EpisodeWrapper(VmapWrapper(env)))
+        ContextObservationWrapper(ContextualAutoResetWrapper(EpisodeWrapper(VmapWrapper(env))))
 
     ``randomization_fn`` (Brax domain randomisation of the physics `System`) is
     accepted for signature compatibility with ``wrap`` but not supported

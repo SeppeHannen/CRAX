@@ -6,8 +6,7 @@ What a panel can draw is a run. So each group holds one *reference run* whose
 only history is the budget, logged at the first and last environment step of
 the experiment, under every per-episode cost key the group's panels show. W&B
 joins the two points into one flat line across the panel, and the run's
-``training_distribution`` value puts it in the legend as ``budget`` (grey,
-``view.ARM_COLOURS``).
+``arm`` value puts it in the legend as ``budget`` (grey, ``view.ARM_COLOURS``).
 
 The run is the group's object, like its view: :func:`save.ensure_view` creates
 it with the view on the group's first run and never again. Its facts are the

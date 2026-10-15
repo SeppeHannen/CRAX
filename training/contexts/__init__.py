@@ -29,16 +29,23 @@ from training.contexts.episodes import EpisodeTracker
 from training.contexts.rollout import SLOT_INDEX_KEY, TRANSITION_CONTEXT_KEY, CompletedEpisodes, RoundRollout, Transitions
 from training.contexts.statistics import EpisodeStatistic, Fold, MeanAbsolute
 from training.contexts.round_hook import ContextRoundHook
+from training.contexts.constraint import PerContextConstraint
+from training.contexts.learner import CONSTRAINTS, POLICY_CONTEXTS, Learner
+from training.contexts.networks import make_contextual_ppo_networks
+from training.contexts.observation import CONTEXT_OBSERVATION_KEY, SENSORS_KEY, ContextObservationWrapper
 from training.contexts.setup import (
+    DEFAULT_LEARNER,
     DEPLOYMENT_EVALUATION,
     NO_DISTRIBUTION,
     OUT_OF_DISTRIBUTION_EVALUATION,
     UNIFORM_EVALUATION,
     ContextTrainingSetup,
     Evaluation,
+    arm_label,
     context_training_setup,
     evaluations_for,
     parse_distribution,
+    run_name_fragment,
     spec_label,
 )
 from training.contexts.space import Context, Contexts, ContextSpace, Dimension, box
@@ -55,9 +62,17 @@ from training.contexts.wrapper import (
 )
 
 __all__ = [
+    "CONSTRAINTS",
     "CONTEXT_KEY",
+    "CONTEXT_OBSERVATION_KEY",
+    "DEFAULT_LEARNER",
     "DEPLOYMENT_EVALUATION",
     "Evaluation",
+    "Learner",
+    "POLICY_CONTEXTS",
+    "PerContextConstraint",
+    "SENSORS_KEY",
+    "ContextObservationWrapper",
     "OUT_OF_DISTRIBUTION_EVALUATION",
     "NO_DISTRIBUTION",
     "SLOT_INDEX_KEY",
@@ -85,9 +100,11 @@ __all__ = [
     "SuiteContexts",
     "Transitions",
     "UniformDistribution",
+    "arm_label",
     "attach_parameters",
     "box",
     "context_training_setup",
+    "make_contextual_ppo_networks",
     "current_contexts",
     "current_parameters",
     "evaluations_for",
@@ -96,6 +113,7 @@ __all__ = [
     "parse_distribution",
     "training_curriculum_metrics",
     "registered_environments",
+    "run_name_fragment",
     "spec_label",
     "suite_contexts",
     "wrap_for_context_evaluation",
