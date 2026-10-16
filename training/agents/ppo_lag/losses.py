@@ -2,12 +2,14 @@
 
 from typing import Any, FrozenSet, Tuple
 
+import flax.struct
 import jax
 import jax.numpy as jnp
 
 from training import networks
 from training import rounds
 from training import types
+from training.evaluation.learner_view import LearnerView
 from training.rounds import Signal
 from training.agents.ppo import networks as ppo_networks
 from training.agents.ppo.losses import compute_gae
@@ -17,7 +19,7 @@ from training.types import Params
 from training.agents.ppo.losses import PPONetworkParams, compute_ppo_loss, with_shared_latent
 
 __all__ = ["PPONetworkParams", "compute_gae", "compute_ppo_loss", "compute_ppo_lagrange_loss", "compute_learning_signals",
-           "lagrangian_advantage", "LEARNING_SIGNALS"]
+           "compute_learner_view", "critic_estimates", "CriticEstimates", "lagrangian_advantage", "LEARNING_SIGNALS"]
 
 # What a Lagrangian agent (two critics and a multiplier) can tell a round hook about its rollout.
 LEARNING_SIGNALS: FrozenSet[Signal] = frozenset({Signal.REWARD_ADVANTAGE, Signal.COST_ADVANTAGE, Signal.LAGRANGIAN_ADVANTAGE})
@@ -46,6 +48,50 @@ def _time_first(lagrange_multiplier: jnp.ndarray, data_shape: Tuple[int, ...]) -
     return jnp.swapaxes(jnp.broadcast_to(lagrange_multiplier, data_shape), 0, 1)
 
 
+@flax.struct.dataclass
+class CriticEstimates:
+    """The two critics' values and GAE advantages over a batch, time first (``[T, B]``)."""
+
+    value: jnp.ndarray
+    cost_value: jnp.ndarray
+    reward_advantage: jnp.ndarray
+    cost_advantage: jnp.ndarray
+
+
+def critic_estimates(
+    params: PPONetworkParams,
+    normalizer_params: Any,
+    data: types.Transition,
+    ppo_network: ppo_networks.PPONetworks,
+    discounting: float,
+    reward_scaling: float,
+    gae_lambda: float,
+) -> CriticEstimates:
+    """Values and advantages of every transition in ``data`` (leading dimension ``[B, T]``),
+    returned time first, by the arithmetic :func:`compute_ppo_lagrange_loss` uses: the one
+    place the critics are read and GAE is formed outside the loss, so the round hook's
+    signals and the episode records are the loss's own quantities."""
+    data = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), data)
+    obs = with_shared_latent(ppo_network, params, normalizer_params, data.observation)
+    terminal_obs = jax.tree_util.tree_map(lambda x: x[-1], data.next_observation)
+    terminal_obs = with_shared_latent(ppo_network, params, normalizer_params, terminal_obs)
+    truncation = data.extras['state_extras']['truncation']
+    termination = (1 - data.discount) * (1 - truncation)
+
+    def estimate(network: networks.FeedForwardNetwork, network_params: Params, per_step: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
+        values = network.apply(normalizer_params, network_params, obs)
+        _, advantage = compute_gae(
+            truncation=truncation, termination=termination, rewards=per_step, values=values,
+            bootstrap_value=network.apply(normalizer_params, network_params, terminal_obs),
+            lambda_=gae_lambda, discount=discounting,
+        )
+        return values, advantage
+
+    value, reward_advantage = estimate(ppo_network.value_network, params.value, data.reward * reward_scaling)
+    cost_value, cost_advantage = estimate(ppo_network.cost_value_network, params.cost_value, data.extras['state_extras']['cost'])
+    return CriticEstimates(value=value, cost_value=cost_value, reward_advantage=reward_advantage, cost_advantage=cost_advantage)
+
+
 def compute_learning_signals(
     params: PPONetworkParams,
     normalizer_params: Any,
@@ -68,32 +114,45 @@ def compute_learning_signals(
     over the batch here and over a minibatch there).
     """
     lagrange_multiplier = _time_first(lagrange_multiplier, data.reward.shape)
-    data = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), data)
-    obs = with_shared_latent(ppo_network, params, normalizer_params, data.observation)
-    terminal_obs = jax.tree_util.tree_map(lambda x: x[-1], data.next_observation)
-    terminal_obs = with_shared_latent(ppo_network, params, normalizer_params, terminal_obs)
-    truncation = data.extras['state_extras']['truncation']
-    termination = (1 - data.discount) * (1 - truncation)
-
-    def advantages(network: networks.FeedForwardNetwork, network_params: Params, per_step: jnp.ndarray) -> jnp.ndarray:
-        _, estimate = compute_gae(
-            truncation=truncation, termination=termination, rewards=per_step,
-            values=network.apply(normalizer_params, network_params, obs),
-            bootstrap_value=network.apply(normalizer_params, network_params, terminal_obs),
-            lambda_=gae_lambda, discount=discounting,
-        )
-        return estimate
-
-    reward_advantage = advantages(ppo_network.value_network, params.value, data.reward * reward_scaling)
-    cost_advantage = advantages(ppo_network.cost_value_network, params.cost_value, data.extras['state_extras']['cost'])
+    estimates = critic_estimates(params, normalizer_params, data, ppo_network, discounting, reward_scaling, gae_lambda)
     batch_first = lambda per_step: jnp.swapaxes(per_step, 0, 1)
     return {
-        Signal.REWARD_ADVANTAGE: batch_first(reward_advantage),
-        Signal.COST_ADVANTAGE: batch_first(cost_advantage),
+        Signal.REWARD_ADVANTAGE: batch_first(estimates.reward_advantage),
+        Signal.COST_ADVANTAGE: batch_first(estimates.cost_advantage),
         Signal.LAGRANGIAN_ADVANTAGE: batch_first(
-            lagrangian_advantage(reward_advantage, cost_advantage, lagrange_multiplier, normalize_advantage)
+            lagrangian_advantage(estimates.reward_advantage, estimates.cost_advantage, lagrange_multiplier, normalize_advantage)
         ),
     }
+
+
+def compute_learner_view(
+    params: PPONetworkParams,
+    normalizer_params: Any,
+    data: types.Transition,
+    lagrange_multiplier: jnp.ndarray,
+    ppo_network: ppo_networks.PPONetworks,
+    discounting: float,
+    reward_scaling: float,
+    gae_lambda: float,
+) -> LearnerView:
+    """The learner's view of a batch of whole episodes (``[B, T]``), for the episode
+    records: the critics' values, λ at each transition (``lagrange_multiplier``: ``[1]`` for
+    a scalar constraint, ``[B, T]`` for a per-context one, as for the loss), and the
+    advantages by the loss's arithmetic, with the Lagrangian advantage left unstandardised
+    (an episode has no minibatch to standardise over; ``docs/acl/design/episode_review.md`` §2)."""
+    lagrange_multiplier = _time_first(lagrange_multiplier, data.reward.shape)
+    estimates = critic_estimates(params, normalizer_params, data, ppo_network, discounting, reward_scaling, gae_lambda)
+    batch_first = lambda per_step: jnp.swapaxes(per_step, 0, 1)
+    return LearnerView(
+        value=batch_first(estimates.value),
+        cost_value=batch_first(estimates.cost_value),
+        lagrange_multiplier=batch_first(lagrange_multiplier),
+        reward_advantage=batch_first(estimates.reward_advantage),
+        cost_advantage=batch_first(estimates.cost_advantage),
+        lagrangian_advantage=batch_first(
+            lagrangian_advantage(estimates.reward_advantage, estimates.cost_advantage, lagrange_multiplier, normalize_advantage=False)
+        ),
+    )
 
 
 def compute_ppo_lagrange_loss(

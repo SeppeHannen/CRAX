@@ -1,0 +1,33 @@
+:root { --ink: #222; --faint: #777; --line: #ddd; --accent: #1f77b4; --reward: #2ca02c; --cost: #d62728; }
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.4 system-ui, sans-serif; color: var(--ink); }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem 2rem; padding: .6rem 1rem; border-bottom: 1px solid var(--line); }
+h1 { font-size: 1.1rem; margin: 0; }
+h1 span { color: var(--faint); font-weight: normal; margin-left: .5rem; }
+nav { display: flex; flex-wrap: wrap; gap: .3rem 1rem; }
+nav label { color: var(--faint); white-space: nowrap; }
+select, button { font: inherit; }
+
+#episodes { padding: .4rem 1rem; max-height: 11rem; overflow: auto; border-bottom: 1px solid var(--line); }
+#episodes table { border-collapse: collapse; width: 100%; }
+#episodes th, #episodes td { text-align: left; padding: .15rem .6rem; font-variant-numeric: tabular-nums; }
+#episodes th { color: var(--faint); font-weight: normal; }
+#episodes tbody tr { cursor: pointer; }
+#episodes tbody tr:hover { background: #f4f4f4; }
+#episodes tbody tr.selected { background: #e6f0fa; }
+#episodes tbody tr.compared { background: #fbeee6; }
+
+#controls { display: flex; align-items: center; gap: .5rem; padding: .5rem 1rem; border-bottom: 1px solid var(--line); }
+#controls button { width: 2.2rem; height: 1.8rem; }
+#timeline { flex: 1; }
+#step-counter { min-width: 9rem; text-align: right; font-variant-numeric: tabular-nums; color: var(--faint); }
+
+#viewers { display: flex; gap: 1rem; padding: 1rem; }
+.viewer { flex: 1; min-width: 0; }
+.viewer .facts { color: var(--faint); margin-bottom: .3rem; }
+.viewer .facts b { color: var(--ink); }
+.viewer .frame { width: 100%; aspect-ratio: 4 / 3; background: #000; display: block; }
+.viewer .running { display: flex; gap: 1.5rem; padding: .3rem 0; font-variant-numeric: tabular-nums; }
+.viewer .running .reward { color: var(--reward); }
+.viewer .running .cost { color: var(--cost); }
+.viewer .traces { width: 100%; }
