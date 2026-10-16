@@ -132,6 +132,11 @@ def add_shared_training_args(parser: argparse.ArgumentParser) -> argparse.Argume
                         help="What the policy observes of its context ω: 'blind' = its sensors only; 'told' = the context "
                              "vector too, so it can hold a different reward–cost trade-off per context. The critics "
                              "always observe ω in a context run.")
+    parser.add_argument("--record_episodes", type=int, default=0,
+                        help="Keep this many of every evaluation's episodes whole, per evaluation distribution, with "
+                             "the learner's view of each step (critics, λ, advantages), as episode records in the run's "
+                             "W&B files (docs/acl/design/episode_review.md; review with `python -m training.review "
+                             "--group <group>`). Needs a context distribution. 0 (default) records nothing.")
 
     # --- Algorithm ---
     parser.add_argument("--alg", type=str, default="ppo_lag", help="Algorithm name (e.g., ppo, ppo_lag)")

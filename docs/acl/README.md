@@ -658,12 +658,24 @@ Upstream bugs found, and places where our changes alter the benchmark:
   --unroll_length 20 --batch_size 1024 --num_minibatches 32 --num_updates_per_batch 4 \
   --lagrangian_coef_rate 1 \
   --measure_performance --skip_rollout --skip_video --store_model false \
+  --record_episodes 4 \
   --wandb_group <experiment_group>
 
 # uniform: same, with --context_distribution uniform; fixed level: level:3; PLR: plr
 # the contextual learner (design/contextual_learner.md): add --constraint additive --policy_context told (or network)
 # (defaults scalar, blind = the published method; a context run needs --skip_rollout --skip_video)
 ```
+
+`--record_episodes 4` keeps four of every evaluation's episodes per target whole,
+with the critics' values, λ and the loss's advantages at every step, as records in
+the run's W&B files; watch and compare them with
+
+```bash
+.venv/bin/python -m training.review --group <wandb_group>   # http://127.0.0.1:8790/
+```
+
+(`design/episode_review.md`: why, what a reviewer can do, what a record carries).
+Records of a run on this machine are read live from `wandb/run-*/files/episodes/`.
 
 Runs in one `--wandb_group` are one experiment and must share every flag but
 the distribution; the first run creates the group's W&B view.
@@ -691,8 +703,9 @@ otherwise — `git worktree add ../CRAX-replay <commit>`).
 MUJOCO_GL=egl .venv/bin/python -m training.replay --run <run name> --contexts level:1 level:2 level:3 --episodes 3
 ```
 
-CPU tests: `JAX_PLATFORMS=cpu .venv/bin/python -m pytest tests/test_contexts.py tests/test_context_training.py tests/test_dashboard.py tests/test_suites.py -q -p no:cacheprovider`
-(`test_suites.py` runs every check per registered suite; add a suite to the registry and it is covered.)
+CPU tests: `JAX_PLATFORMS=cpu MUJOCO_GL=egl .venv/bin/python -m pytest tests/test_contexts.py tests/test_context_training.py tests/test_dashboard.py tests/test_episode_review.py tests/test_suites.py -q -p no:cacheprovider`
+(`test_suites.py` runs every check per registered suite; add a suite to the registry and it is covered;
+`MUJOCO_GL` is for the review's frame test, skipped without it.)
 
 ## Rules
 
@@ -721,6 +734,7 @@ docs/acl/
   design/
     prioritized_level_replay.md      (done) PLR as a ContextDistribution: what the paper does, what changes on a continuous Ω with frozen φ, diagnostics
     contextual_learner.md            (plan 1, built) λ(ω) per context, the {sensors, context} observation, blind/told policy, the two CLI switches, what is logged
+    episode_review.md                (built 2026-10-15) why the evaluation episodes are recorded with the learner's view, what a reviewer can do, what a record carries, what the first viewing should settle
     goal_point_out_of_distribution.md (plan 3, draft) Ω₂ for goal-point: a first guess at what it is and how it is wired; the values need a design pass
     constrained_challenges.md        (goal 1, later) TMA's challenges with a constraint, plus the one the constraint adds; each as a distribution over Ω   [to write]
     skill_probes.md                  (goal 2, later) probe subspaces of Ω where one skill is needed; skill-acquisition curves against q̂   [to write]

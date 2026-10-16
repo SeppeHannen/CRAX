@@ -13,6 +13,7 @@ from crax import base
 from crax import envs
 from training import rounds
 from training import types
+from training.evaluation import EpisodeRecorder, LearnerViewFunction
 from training.agents.ppo_lag import losses as ppo_lag_losses
 from training.agents.ppo_lag.constraint import LagrangeConstraint, ScalarConstraint
 from training.agents.ppo import networks as ppo_networks
@@ -79,6 +80,8 @@ def train(
         # per-round host hook and named evaluation distributions (see ppo.train)
         round_hook: Optional[rounds.RoundHook] = None,
         evaluation_wrap_env_fns: Optional[Mapping[str, Callable[[Any], Any]]] = None,
+        # episode records of the evaluations (see ppo.train)
+        episode_recorder: Optional[EpisodeRecorder] = None,
 ):
     """PPO-Lagrange training.
 
@@ -196,6 +199,16 @@ def train(
         produces=ppo_lag_losses.LEARNING_SIGNALS, compute=compute_learning_signals
     )
 
+    # The episode records' view of an evaluation episode (docs/acl/design/episode_review.md §2):
+    # the critics' values and the λ in force at each recorded transition, by the constraint's lookup.
+    def compute_learner_view(params, normalizer_params, data, aux_state, ppo_network, discounting, reward_scaling, gae_lambda):
+        return ppo_lag_losses.compute_learner_view(
+            params=params, normalizer_params=normalizer_params, data=data,
+            lagrange_multiplier=lagrange_constraint.per_transition(aux_state, data.extras['state_extras']),
+            ppo_network=ppo_network, discounting=discounting, reward_scaling=reward_scaling, gae_lambda=gae_lambda)
+
+    learner_view_fn = LearnerViewFunction(compute=compute_learner_view)
+
     def init_aux_state_fn():
         return initial_multipliers
 
@@ -255,4 +268,6 @@ def train(
         round_hook=round_hook,
         learning_signals_fn=learning_signals_fn,
         evaluation_wrap_env_fns=evaluation_wrap_env_fns,
+        learner_view_fn=learner_view_fn,
+        episode_recorder=episode_recorder,
     )

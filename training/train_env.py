@@ -10,6 +10,7 @@ import wandb
 from crax import envs
 from training import checkpoint, contexts, dashboard
 from training.config import build_base_parser
+from training.evaluation import RECORDS_DIRECTORY, EpisodeRecorder
 from training.run_utils import (
     collect_rollout_metrics, record_episode_video, setup_gpu_environment,
     get_algorithm_train_fn, filter_kwargs_for_fn, wandb_progress_fn,
@@ -151,6 +152,10 @@ def main():
             unroll_length=config.unroll_length,
             num_minibatches=config.num_minibatches,
         )
+        if config.record_episodes < 0:
+            raise ValueError(f"--record_episodes must be 0 or more, got {config.record_episodes}")
+        if context_setup is None and config.record_episodes > 0:
+            raise ValueError("--record_episodes needs a context distribution: the records are indexed by arm and evaluation target")
 
         cli_cfg = vars(config)
         runtime_cfg = {"seed": seed, "timestamp": timestamp, "episode_length": episode_length}
@@ -188,6 +193,12 @@ def main():
 
         if context_setup is not None:
             context_kwargs = context_setup.train_kwargs()
+            if config.record_episodes > 0:
+                # Under the run directory, so W&B uploads the records with the run's files.
+                context_kwargs["episode_recorder"] = EpisodeRecorder(
+                    directory=Path(wandb.run.dir) / RECORDS_DIRECTORY, env_name=env_name, run_name=run_name,
+                    arm=context_setup.arm, num_episodes=config.record_episodes,
+                )
             unsupported = set(context_kwargs) - set(filter_kwargs_for_fn(train_fn_base, context_kwargs))
             if unsupported:
                 raise ValueError(
