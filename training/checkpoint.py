@@ -142,6 +142,65 @@ def save(
     config_path.write_text(config.to_json())
 
 
+LEARNER_STATE_DIRECTORY = 'learner'
+
+
+def save_learner_state(path: Union[str, epath.Path], step: int, learner_state: Any) -> None:
+    """Save what the learner knows beyond the policy, next to :func:`save`'s policy tuple.
+
+    The policy tuple (normaliser, policy, value[, encoder]) is what acting needs and what
+    every existing reader unpacks positionally. A constrained agent also holds a cost
+    critic and its constraint's multipliers; a replay that wants the learner's view of an
+    episode (``docs/acl/design/episode_review.md``) needs them too. They go into
+    ``<step>/learner`` as their own tree, so the policy tuple keeps its shape and
+    :func:`load` keeps its meaning. ``learner_state`` is the agent's own structure
+    (PPO-Lagrange: ``{'cost_value': params, 'aux_state': multipliers}``); the reader
+    rebuilds that structure and hands it to :func:`load_learner_state`.
+    """
+    directory = _step_directory(path, step) / LEARNER_STATE_DIRECTORY
+    if not directory.exists():
+        directory.mkdir(parents=True)
+    orbax_checkpointer = ocp.PyTreeCheckpointer()
+    orbax_checkpointer.save(directory, learner_state, force=True, save_args=orbax_utils.save_args_from_target(learner_state))
+
+
+def load_learner_state(path: Union[str, epath.Path], like: Any) -> Any:
+    """The tree :func:`save_learner_state` wrote under ``<step>/learner``, restored into the
+    structure of ``like`` (the agent's own containers: a multiplier state is a dataclass, an
+    optimizer state a NamedTuple; orbax alone would return dicts), every array NumPy. Raises
+    if the checkpoint has none (trained before learner states were saved)."""
+    directory = _absolute(path) / LEARNER_STATE_DIRECTORY
+    if not directory.exists():
+        raise ValueError(f'checkpoint {path} has no learner state ({LEARNER_STATE_DIRECTORY}/): it holds the policy only')
+    restore_args = jax.tree.map(lambda _: ocp.RestoreArgs(restore_type=np.ndarray), like)
+    return ocp.PyTreeCheckpointer().restore(directory, ocp.args.PyTreeRestore(item=like, restore_args=restore_args))
+
+
+def _step_directory(path: Union[str, epath.Path], step: int) -> epath.Path:
+    return _absolute(path) / f'{step:012d}'
+
+
+def _absolute(path: Union[str, epath.Path]) -> epath.Path:
+    """orbax requires absolute paths."""
+    path = epath.Path(path)
+    if not path.is_absolute():
+        from pathlib import Path as StdPath
+        path = epath.Path(StdPath(path).resolve())
+    return path
+
+
+def _restore_as_numpy(path: epath.Path) -> Any:
+    """Restore every array as NumPy, whatever device it was saved from: a checkpoint trained
+    on a GPU (Snellius) must load on a machine without one. The saved tree is
+    ``metadata.item_metadata``; the step metadata around it is one leaf, and mapping over
+    that (Brax 0.12.3) produced restore args that never matched the tree, so restoring fell
+    back to the saved ``cuda:0`` sharding."""
+    orbax_checkpointer = ocp.PyTreeCheckpointer()
+    saved_tree = orbax_checkpointer.metadata(path).item_metadata
+    restore_args = jax.tree.map(lambda _: ocp.RestoreArgs(restore_type=np.ndarray), saved_tree)
+    return orbax_checkpointer.restore(path, ocp.args.PyTreeRestore(restore_args=restore_args))
+
+
 def load(
         path: Union[str, epath.Path],
 ):
@@ -156,15 +215,7 @@ def load(
 
     logging.info('restoring from checkpoint %s', path.as_posix())
 
-    # Restore every array as NumPy, whatever device it was saved from: a checkpoint
-    # trained on a GPU (Snellius) must load on a machine without one. The saved
-    # tree is `metadata.item_metadata`; the step metadata around it is one leaf, and
-    # mapping over that (Brax 0.12.3) produced restore args that never matched the
-    # tree, so restoring fell back to the saved `cuda:0` sharding.
-    orbax_checkpointer = ocp.PyTreeCheckpointer()
-    saved_tree = orbax_checkpointer.metadata(path).item_metadata
-    restore_args = jax.tree.map(lambda _: ocp.RestoreArgs(restore_type=np.ndarray), saved_tree)
-    target = orbax_checkpointer.restore(path, ocp.args.PyTreeRestore(restore_args=restore_args))
+    target = _restore_as_numpy(path)
     target[0] = running_statistics.RunningStatisticsState(**target[0])
 
     return target

@@ -46,6 +46,11 @@ def load(
   return checkpoint.load(path)
 
 
+def save_learner_state(path: Union[str, epath.Path], step: int, learner_state: Any) -> None:
+  """Saves what the learner knows beyond the policy tuple, next to :func:`save`'s checkpoint."""
+  checkpoint.save_learner_state(path, step, learner_state)
+
+
 def network_config(
     observation_size: types.ObservationSize,
     action_size: int,

@@ -64,6 +64,12 @@ PostStepFn = Callable[['TrainingState', Metrics, types.Transition], Tuple['Train
 
 
 
+# The keys of the learner state a checkpoint carries next to the policy
+# (checkpoint.save_learner_state); training/replay.py reads them back.
+LEARNER_COST_VALUE = 'cost_value'
+LEARNER_AUX_STATE = 'aux_state'
+
+
 @flax.struct.dataclass
 class TrainingState:
     """Contains training state for the learner."""
@@ -1021,6 +1027,15 @@ def train(
             )
             checkpoint.save(
                 save_checkpoint_path, current_step, params, ckpt_config
+            )
+            # What the learner knows beyond the policy: the cost critic and the
+            # constraint's multipliers (a constrained agent's aux_state). Saved next
+            # to the policy tuple so a replay can compute the learner's view of an
+            # episode (training/replay.py); the policy tuple keeps its shape.
+            learner = _unpmap(training_state)
+            checkpoint.save_learner_state(
+                save_checkpoint_path, current_step,
+                {LEARNER_COST_VALUE: learner.params.cost_value, LEARNER_AUX_STATE: learner.aux_state},
             )
 
         # Only run evaluation if enabled
