@@ -59,7 +59,7 @@ def train(
         safety_bound: float = 0.0,
         lagrangian_coef_rate: float = 0.01,
         initial_lambda_lagr: float = 0.0,
-        constraint: LagrangeConstraint = ScalarConstraint(),
+        lagrange_constraint: LagrangeConstraint = ScalarConstraint(),
         # eval
         num_evals: int = 0,
         eval_env: Optional[envs.Env] = None,
@@ -118,7 +118,7 @@ def train(
       safety_bound: the safety constraint bound for PPO-Lagrange (episodic)
       lagrangian_coef_rate: learning rate for Lagrange multiplier updates
       initial_lambda_lagr: initial value for the Lagrange multiplier
-      constraint: how the constraint is held (`ppo_lag/constraint.py`): one λ for the
+      lagrange_constraint: how the constraint is held (`ppo_lag/constraint.py`): one λ for the
         whole training distribution (default), or a function of the context
         (`training.contexts.constraints`). It owns the
         multipliers' layout in `aux_state`, their lookup per transition and
@@ -159,14 +159,14 @@ def train(
     # aux_state holds the constraint's multiplier state: a [1] array for a scalar λ, a network's
     # parameters for λ(ω). Built here so an initial value the constraint cannot represent is
     # refused before anything is reset or compiled.
-    initial_multipliers = constraint.initial_multipliers(initial_lambda_lagr)
+    initial_multipliers = lagrange_constraint.initial_multipliers(initial_lambda_lagr)
 
     def post_step_fn(training_state: TrainingState, metrics: Metrics, data: types.Transition) -> Tuple[TrainingState, Metrics]:
         """Updates the multipliers from the round's transitions, by the constraint's rule."""
         del metrics
         state_extras = data.extras['state_extras']
         costs = state_extras['cost']
-        multipliers, multiplier_metrics = constraint.update(
+        multipliers, multiplier_metrics = lagrange_constraint.update(
             training_state.aux_state, costs, state_extras, per_step_safety_bound, lagrangian_coef_rate
         )
         new_training_state = training_state.replace(aux_state=multipliers)
@@ -180,7 +180,7 @@ def train(
         """PPO-Lagrange loss function."""
         return ppo_lag_losses.compute_ppo_lagrange_loss(
             params=params, normalizer_params=normalizer_params, data=data, rng=rng,
-            ppo_network=ppo_network, lambda_lagr=constraint.per_transition(aux_state, data.extras['state_extras']),
+            ppo_network=ppo_network, lambda_lagr=lagrange_constraint.per_transition(aux_state, data.extras['state_extras']),
             safety_bound=per_step_safety_bound,
             entropy_cost=entropy_cost, discounting=discounting, reward_scaling=reward_scaling,
             gae_lambda=gae_lambda, clipping_epsilon=clipping_epsilon, normalize_advantage=normalize_advantage)
@@ -191,7 +191,7 @@ def train(
                                  ppo_network, discounting, reward_scaling, gae_lambda, normalize_advantage):
         return ppo_lag_losses.compute_learning_signals(
             params=params, normalizer_params=normalizer_params, data=data,
-            lagrange_multiplier=constraint.per_transition(aux_state, data.extras['state_extras']),
+            lagrange_multiplier=lagrange_constraint.per_transition(aux_state, data.extras['state_extras']),
             ppo_network=ppo_network, discounting=discounting, reward_scaling=reward_scaling,
             gae_lambda=gae_lambda, normalize_advantage=normalize_advantage)
 
@@ -204,7 +204,7 @@ def train(
     def compute_learner_view(params, normalizer_params, data, aux_state, ppo_network, discounting, reward_scaling, gae_lambda):
         return ppo_lag_losses.compute_learner_view(
             params=params, normalizer_params=normalizer_params, data=data,
-            lagrange_multiplier=constraint.per_transition(aux_state, data.extras['state_extras']),
+            lagrange_multiplier=lagrange_constraint.per_transition(aux_state, data.extras['state_extras']),
             ppo_network=ppo_network, discounting=discounting, reward_scaling=reward_scaling, gae_lambda=gae_lambda)
 
     learner_view_fn = LearnerViewFunction(compute=compute_learner_view)
@@ -213,7 +213,7 @@ def train(
         return initial_multipliers
 
     # Extra fields to collect during rollout: cost, plus whatever the constraint needs to look up λ per transition
-    extra_fields = ('truncation', 'episode_metrics', 'episode_done', 'cost') + constraint.extra_fields
+    extra_fields = ('truncation', 'episode_metrics', 'episode_done', 'cost') + lagrange_constraint.extra_fields
 
     # Handle pretrained_params taking precedence over restore_params
     effective_restore_params = pretrained_params if pretrained_params is not None else restore_params

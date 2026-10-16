@@ -60,13 +60,16 @@ class Learner:
 
     def train_kwargs(self, space: ContextSpace) -> Dict[str, Any]:
         """``network_factory`` always (every context run observes ``{sensors, context}``);
-        ``constraint`` only for λ(ω), since a scalar λ is every constrained agent's own default
-        and only PPO-Lagrange takes a ``constraint``."""
+        ``lagrange_constraint`` only for λ(ω), since a scalar λ is every constrained agent's own
+        default and only PPO-Lagrange takes a ``lagrange_constraint``. The key differs from the
+        CLI flag ``--constraint`` on purpose: the entry point forwards every CLI flag that shares
+        a name with a ``train()`` parameter, and the flag's value is this learner's spec string,
+        not the constraint object."""
         kwargs: Dict[str, Any] = {
             "network_factory": functools.partial(
                 make_contextual_ppo_networks, policy_observes_context=self.policy_context == "told"
             ),
         }
         if self.holds_constraint_per_context:
-            kwargs["constraint"] = self.per_context_constraint(space)
+            kwargs["lagrange_constraint"] = self.per_context_constraint(space)
         return kwargs
