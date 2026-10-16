@@ -156,14 +156,15 @@ def load(
 
     logging.info('restoring from checkpoint %s', path.as_posix())
 
-    metadata = ocp.PyTreeCheckpointer().metadata(path)
-    restore_args = jax.tree.map(lambda _: ocp.RestoreArgs(restore_type=np.ndarray), metadata)
+    # Restore every array as NumPy, whatever device it was saved from: a checkpoint
+    # trained on a GPU (Snellius) must load on a machine without one. The saved
+    # tree is `metadata.item_metadata`; the step metadata around it is one leaf, and
+    # mapping over that (Brax 0.12.3) produced restore args that never matched the
+    # tree, so restoring fell back to the saved `cuda:0` sharding.
     orbax_checkpointer = ocp.PyTreeCheckpointer()
-    try:
-        target = orbax_checkpointer.restore(path, ocp.args.PyTreeRestore(restore_args=restore_args), item=None)
-    except ValueError:
-        # Fallback without restore args.
-        target = orbax_checkpointer.restore(path, item=None)
+    saved_tree = orbax_checkpointer.metadata(path).item_metadata
+    restore_args = jax.tree.map(lambda _: ocp.RestoreArgs(restore_type=np.ndarray), saved_tree)
+    target = orbax_checkpointer.restore(path, ocp.args.PyTreeRestore(restore_args=restore_args))
     target[0] = running_statistics.RunningStatisticsState(**target[0])
 
     return target
