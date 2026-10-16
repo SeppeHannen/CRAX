@@ -619,6 +619,54 @@ def test_networks_read_the_context_where_the_learner_allows_it():
             assert not np.allclose(value(observation), value(other_context)), "a critic must see the context"
 
 
+def test_with_pixels_every_contextual_network_reads_the_shared_encoders_latent():
+    """A context run under --vision observes {sensors, context, pixels/<camera>}: the factory
+    adds the shared CNN encoder the trainer runs once per step (its latent goes under
+    VISION_LATENT_KEY, as for the stock vision networks), and every head reads that latent next
+    to its scaled parts — so the pixels change the policy's and both critics' outputs, and the
+    loss path (with_shared_latent → heads) runs as the trainer runs it."""
+    from training import networks as N
+    from training.acme import running_statistics, specs
+    from training.agents.ppo.losses import PPONetworkParams, with_shared_latent
+
+    observation_size = {C.SENSORS_KEY: (6,), C.CONTEXT_OBSERVATION_KEY: (2,), "pixels/vision": (64, 64, 3)}  # the benchmark's camera size
+    normalizer = running_statistics.init_state(
+        {key: specs.Array(shape, jnp.float32) for key, shape in observation_size.items() if not key.startswith("pixels/")}
+    )
+    networks = C.make_contextual_ppo_networks(
+        observation_size, action_size=2, preprocess_observations_fn=running_statistics.normalize,
+        policy_observes_context=False, context_bounds={"low": (-2.0, -2.0), "high": (2.0, 2.0)},
+    )
+    assert networks.encoder_network is not None
+    keys = jax.random.split(jax.random.PRNGKey(3), 4)
+    params = PPONetworkParams(
+        policy=networks.policy_network.init(keys[0]), value=networks.value_network.init(keys[1]),
+        cost_value=networks.cost_value_network.init(keys[2]), encoder=networks.encoder_network.init(keys[3]),
+    )
+    sensors, context = jax.random.normal(keys[0], (3, 6)), jnp.zeros((3, 2))
+    image_keys = jax.random.split(keys[1], 2)
+    scene = lambda key: jax.random.randint(key, (3, 64, 64, 3), 0, 256).astype(jnp.uint8)
+    one = {C.SENSORS_KEY: sensors, C.CONTEXT_OBSERVATION_KEY: context, "pixels/vision": scene(image_keys[0])}
+    another = {**one, "pixels/vision": scene(image_keys[1])}
+    for network, network_params in ((networks.policy_network, params.policy), (networks.value_network, params.value), (networks.cost_value_network, params.cost_value)):
+        outputs = [network.apply(normalizer, network_params, with_shared_latent(networks, params, normalizer, obs)) for obs in (one, another)]
+        assert outputs[0].shape[0] == 3 and np.all(np.isfinite(np.asarray(outputs[0])))
+        assert not np.allclose(outputs[0], outputs[1]), "the pixels must reach every network through the latent"
+    with pytest.raises(KeyError, match=N.VISION_LATENT_KEY):
+        networks.policy_network.apply(normalizer, params.policy, one)  # without the trainer's latent the head cannot run
+
+    no_pixels = C.make_contextual_ppo_networks(
+        {C.SENSORS_KEY: (6,), C.CONTEXT_OBSERVATION_KEY: (2,)}, action_size=2,
+        policy_observes_context=True, context_bounds={"low": (-2.0, -2.0), "high": (2.0, 2.0)},
+    )
+    assert no_pixels.encoder_network is None
+    with pytest.raises(ValueError, match="nothing"):  # an image the CNN's strides consume whole would give an empty latent
+        C.make_contextual_ppo_networks(
+            {**observation_size, "pixels/vision": (16, 16, 3)}, action_size=2,
+            policy_observes_context=False, context_bounds={"low": (-2.0, -2.0), "high": (2.0, 2.0)},
+        )
+
+
 def test_scale_to_bounds_maps_omega_to_the_unit_box_and_a_degenerate_dimension_to_zero():
     space = C.suite_contexts("safe_goal_point").space
     bounds = space.bounds

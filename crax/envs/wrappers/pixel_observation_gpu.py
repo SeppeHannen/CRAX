@@ -208,13 +208,12 @@ class GpuPixelObservationWrapper(Wrapper):
             return state_obs
         if self._obs_mode == 'pixels':
             return {self._obs_key: pixels}
-        # pixels+state
-        obs: Dict[str, jnp.ndarray] = {self._obs_key: pixels}
+        # pixels+state: the pixels join the inner observation's parts. An inner
+        # observation that is already a dict of named parts (a context run's
+        # {"sensors", "context"}) keeps its parts; a flat vector becomes 'state'.
         if isinstance(state_obs, Mapping):
-            obs['state'] = state_obs.get('state', state_obs)
-        else:
-            obs['state'] = state_obs
-        return obs
+            return {**state_obs, self._obs_key: pixels}
+        return {self._obs_key: pixels, 'state': state_obs}
 
     def _init_frame_buffer(self, pixels):
         if self._frame_stack <= 1:
@@ -308,10 +307,8 @@ class GpuPixelObservationWrapper(Wrapper):
         }
         if self._obs_mode == 'pixels+state':
             inner_size = self.env.observation_size
-            if isinstance(inner_size, int):
-                obs_size['state'] = (inner_size,)
-            elif isinstance(inner_size, Mapping):
-                obs_size['state'] = inner_size.get('state', inner_size)
+            if isinstance(inner_size, Mapping):
+                obs_size.update(inner_size)
             else:
-                obs_size['state'] = (inner_size,)
+                obs_size['state'] = (int(inner_size),)
         return obs_size
