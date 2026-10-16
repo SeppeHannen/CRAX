@@ -200,14 +200,15 @@ def train(
             gae_lambda=gae_lambda, clipping_epsilon=clipping_epsilon, normalize_advantage=normalize_advantage)
 
     # The round hook's view of the rollout: the same advantages the loss is about to
-    # use, under the λ in force for each transition.
+    # use, under the λ in force for each transition; the critics read the round in
+    # minibatch-sized pieces, so this pass is never larger than the loss's own.
     def compute_learning_signals(params, normalizer_params, data, aux_state,
                                  ppo_network, discounting, reward_scaling, gae_lambda, normalize_advantage):
         return ppo_lag_losses.compute_learning_signals(
             params=params, normalizer_params=normalizer_params, data=data,
             lagrange_multiplier=lagrange_constraint.per_transition(aux_state, data.extras['state_extras']),
             ppo_network=ppo_network, discounting=discounting, reward_scaling=reward_scaling,
-            gae_lambda=gae_lambda, normalize_advantage=normalize_advantage)
+            gae_lambda=gae_lambda, normalize_advantage=normalize_advantage, pieces=num_minibatches)
 
     learning_signals_fn = rounds.LearningSignalsFunction(
         produces=ppo_lag_losses.LEARNING_SIGNALS, compute=compute_learning_signals

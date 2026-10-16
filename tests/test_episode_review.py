@@ -173,6 +173,33 @@ def test_learner_view_is_the_learning_signals_values_and_unstandardised_lagrangi
     np.testing.assert_allclose(other.reward_advantage[0, :3], view.reward_advantage[0, :3], rtol=1e-5)
 
 
+def test_critic_estimates_in_pieces_equal_the_estimates_in_one_pass():
+    """The trainer reads a round's critics in minibatch-sized pieces (a vision encoder over every
+    frame of a round at once exceeded the GPU); the estimates are the same, and the Lagrangian
+    standardisation stays over the whole batch."""
+    obs, actions = 6, 2
+    network = ppo_networks.make_ppo_networks(obs, actions, running_statistics.normalize, cost_value_hidden_layer_sizes=(16,))
+    keys = jax.random.split(jax.random.PRNGKey(5), 4)
+    params = ppo_lag_losses.PPONetworkParams(
+        policy=network.policy_network.init(keys[0]), value=network.value_network.init(keys[1]),
+        cost_value=network.cost_value_network.init(keys[2]), encoder=None,
+    )
+    normalizer = running_statistics.init_state(specs.Array((obs,), jnp.float32))
+    data = _batch(keys[3], batch=12, steps=7, obs=obs, actions=actions)
+    constants = dict(ppo_network=network, discounting=0.9, reward_scaling=0.5, gae_lambda=0.95)
+    whole = ppo_lag_losses.critic_estimates(params, normalizer, data, **constants)
+    in_pieces = ppo_lag_losses.critic_estimates(params, normalizer, data, pieces=4, **constants)
+    for field in ("value", "cost_value", "reward_advantage", "cost_advantage"):
+        assert getattr(in_pieces, field).shape == (7, 12)
+        np.testing.assert_allclose(getattr(in_pieces, field), getattr(whole, field), rtol=1e-5, atol=1e-6)
+    lam = jnp.asarray([0.7])
+    whole_signals = ppo_lag_losses.compute_learning_signals(params, normalizer, data, lam, normalize_advantage=True, **constants)
+    piece_signals = ppo_lag_losses.compute_learning_signals(params, normalizer, data, lam, normalize_advantage=True, pieces=4, **constants)
+    np.testing.assert_allclose(piece_signals[ppo_lag_losses.Signal.LAGRANGIAN_ADVANTAGE], whole_signals[ppo_lag_losses.Signal.LAGRANGIAN_ADVANTAGE], rtol=1e-5, atol=1e-6)
+    with pytest.raises(ValueError, match="equal pieces"):
+        ppo_lag_losses.critic_estimates(params, normalizer, data, pieces=5, **constants)
+
+
 # --------------------------------------------------------------------------- #
 # End to end: a tiny run records, the library indexes, the server serves
 # --------------------------------------------------------------------------- #

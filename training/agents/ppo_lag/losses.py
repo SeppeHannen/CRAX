@@ -66,11 +66,39 @@ def critic_estimates(
     discounting: float,
     reward_scaling: float,
     gae_lambda: float,
+    pieces: int = 1,
 ) -> CriticEstimates:
     """Values and advantages of every transition in ``data`` (leading dimension ``[B, T]``),
     returned time first, by the arithmetic :func:`compute_ppo_lagrange_loss` uses: the one
     place the critics are read and GAE is formed outside the loss, so the round hook's
-    signals and the episode records are the loss's own quantities."""
+    signals and the episode records are the loss's own quantities.
+
+    ``pieces``: the batch is processed in that many equal, consecutive pieces, one after the
+    other. The estimates are identical (GAE runs along time, within a batch element); only the
+    networks' activations shrink to a piece's. The trainer passes ``num_minibatches`` so this
+    pass is never larger than the loss's own: a vision encoder over a round's every frame at
+    once (1024 environments x 80 steps) exceeded a 40 GiB GPU."""
+    batch = data.reward.shape[0]
+    if batch % pieces:
+        raise ValueError(f"a batch of {batch} cannot be processed in {pieces} equal pieces")
+    if pieces == 1:
+        return _critic_estimates(params, normalizer_params, data, ppo_network, discounting, reward_scaling, gae_lambda)
+    in_pieces = jax.tree_util.tree_map(lambda x: jnp.reshape(x, (pieces, batch // pieces, *x.shape[1:])), data)
+    estimates = jax.lax.map(
+        lambda piece: _critic_estimates(params, normalizer_params, piece, ppo_network, discounting, reward_scaling, gae_lambda), in_pieces
+    )  # each field [pieces, T, B / pieces]
+    return jax.tree_util.tree_map(lambda x: jnp.reshape(jnp.swapaxes(x, 0, 1), (x.shape[1], batch)), estimates)
+
+
+def _critic_estimates(
+    params: PPONetworkParams,
+    normalizer_params: Any,
+    data: types.Transition,
+    ppo_network: ppo_networks.PPONetworks,
+    discounting: float,
+    reward_scaling: float,
+    gae_lambda: float,
+) -> CriticEstimates:
     data = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), data)
     obs = with_shared_latent(ppo_network, params, normalizer_params, data.observation)
     terminal_obs = jax.tree_util.tree_map(lambda x: x[-1], data.next_observation)
@@ -102,6 +130,7 @@ def compute_learning_signals(
     reward_scaling: float,
     gae_lambda: float,
     normalize_advantage: bool,
+    pieces: int = 1,
 ) -> rounds.LearningSignals:
     """The reward, cost and Lagrangian advantage of every transition in ``data``
     (leading dimension ``[B, T]``), each as ``[B, T]``, under the critics in
@@ -111,10 +140,11 @@ def compute_learning_signals(
     The same estimates :func:`compute_ppo_lagrange_loss` makes, computed once over
     the whole batch so that a round hook can read them per transition (the loss
     sees shuffled minibatches; the Lagrangian advantage is therefore standardised
-    over the batch here and over a minibatch there).
+    over the batch here and over a minibatch there). ``pieces`` bounds the critics'
+    activations (:func:`critic_estimates`); the standardisation stays over the whole batch.
     """
     lagrange_multiplier = _time_first(lagrange_multiplier, data.reward.shape)
-    estimates = critic_estimates(params, normalizer_params, data, ppo_network, discounting, reward_scaling, gae_lambda)
+    estimates = critic_estimates(params, normalizer_params, data, ppo_network, discounting, reward_scaling, gae_lambda, pieces=pieces)
     batch_first = lambda per_step: jnp.swapaxes(per_step, 0, 1)
     return {
         Signal.REWARD_ADVANTAGE: batch_first(estimates.reward_advantage),
