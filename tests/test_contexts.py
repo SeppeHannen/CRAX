@@ -604,7 +604,7 @@ def test_networks_read_the_context_where_the_learner_allows_it():
     for policy_observes_context in (False, True):
         networks = C.make_contextual_ppo_networks(
             observation_size, action_size=2, preprocess_observations_fn=running_statistics.normalize,
-            policy_observes_context=policy_observes_context,
+            policy_observes_context=policy_observes_context, context_bounds={"low": (-2.0, -2.0), "high": (2.0, 2.0)},
         )
         keys = jax.random.split(jax.random.PRNGKey(2), 3)
         policy_params = networks.policy_network.init(keys[0])
@@ -617,6 +617,52 @@ def test_networks_read_the_context_where_the_learner_allows_it():
             value = lambda obs: critic.apply(normalizer, params, obs)
             assert value(observation).shape == (3,)
             assert not np.allclose(value(observation), value(other_context)), "a critic must see the context"
+
+
+def test_scale_to_bounds_maps_omega_to_the_unit_box_and_a_degenerate_dimension_to_zero():
+    space = C.suite_contexts("safe_goal_point").space
+    bounds = space.bounds
+    assert bounds.low == tuple(float(d.low) for d in space.dimensions) and len(bounds.low) == space.size
+    corners = jnp.stack([space.low, space.high])
+    np.testing.assert_allclose(np.asarray(space.scale(corners)), np.stack([-np.ones(space.size), np.ones(space.size)]), atol=1e-6)
+    np.testing.assert_allclose(np.asarray(space.scale((space.low + space.high) / 2)), 0.0, atol=1e-6)
+    degenerate = C.scale_to_bounds(jnp.asarray([[3.0, 7.0]]), C.Bounds(low=(3.0, 0.0), high=(3.0, 10.0)))
+    np.testing.assert_allclose(np.asarray(degenerate), [[0.0, 0.4]], atol=1e-6)
+    with pytest.raises(ValueError, match="exceeds"):
+        C.Bounds(low=(1.0,), high=(0.0,))
+    with pytest.raises(ValueError, match="lower bounds"):
+        C.Bounds(low=(0.0, 0.0), high=(1.0,))
+
+
+def test_a_told_policy_trained_on_one_context_still_sees_every_other_context_in_scale():
+    """The defect of 2026-10-15: under `staged` the running normaliser sees one context per
+    stage, its std collapses to the floor, and any other context normalises to ~1e6. The
+    context part must not go through the running normaliser at all: whatever the statistics
+    say, the policy's output on another context stays finite and the context still matters."""
+    from training.acme import running_statistics, specs
+
+    suite = C.suite_contexts("safe_goal_point")
+    space = suite.space
+    level_1, level_3 = suite.level_contexts[1], suite.level_contexts[3]
+    observation_size = {C.SENSORS_KEY: (4,), C.CONTEXT_OBSERVATION_KEY: (space.size,)}
+    statistics = running_statistics.init_state({key: specs.Array(shape, jnp.float32) for key, shape in observation_size.items()})
+    one_context_batch = {C.SENSORS_KEY: jax.random.normal(jax.random.PRNGKey(0), (512, 4)), C.CONTEXT_OBSERVATION_KEY: jnp.tile(level_1, (512, 1))}
+    for _ in range(20):
+        statistics = running_statistics.update(statistics, one_context_batch)
+    # the premise of the defect holds for the raw statistics: level 3 would normalise to ~1e6
+    raw = running_statistics.normalize({C.SENSORS_KEY: jnp.zeros((1, 4)), C.CONTEXT_OBSERVATION_KEY: level_3[None]}, statistics)
+    assert float(jnp.abs(raw[C.CONTEXT_OBSERVATION_KEY]).max()) > 1e5
+
+    networks = C.Learner(constraint="scalar", policy_context="told").train_kwargs(space)["network_factory"](
+        observation_size, 2, preprocess_observations_fn=running_statistics.normalize
+    )
+    params = networks.policy_network.init(jax.random.PRNGKey(1))
+    sensors = jnp.zeros((1, 4))
+    on_level_1 = networks.policy_network.apply(statistics, params, {C.SENSORS_KEY: sensors, C.CONTEXT_OBSERVATION_KEY: level_1[None]})
+    on_level_3 = networks.policy_network.apply(statistics, params, {C.SENSORS_KEY: sensors, C.CONTEXT_OBSERVATION_KEY: level_3[None]})
+    assert np.all(np.isfinite(np.asarray(on_level_3)))
+    assert float(jnp.abs(on_level_3).max()) < 10.0, "a fresh policy on an unseen context must not be saturated"
+    assert not np.allclose(np.asarray(on_level_1), np.asarray(on_level_3)), "the told policy must still see the context"
 
 
 PER_CONTEXT_FORMS = ("network", "additive")
@@ -771,7 +817,9 @@ def test_learner_names_the_arm_and_hands_the_trainer_what_realises_it():
     assert C.arm_label("uniform", C.DEFAULT_LEARNER) == "uniform scalar blind"
     kwargs = told.train_kwargs(C.suite_contexts(LIFT).space)
     assert isinstance(kwargs["lagrange_constraint"], C.AdditiveConstraint)
-    assert kwargs["network_factory"].keywords == {"policy_observes_context": True}
+    assert kwargs["network_factory"].keywords == {
+        "policy_observes_context": True, "context_bounds": {"low": (0.0,) * 4, "high": (1.0,) * 4},
+    }
     assert set(C.DEFAULT_LEARNER.train_kwargs(C.suite_contexts(LIFT).space)) == {"network_factory"}
     network = C.Learner(constraint="network", policy_context="blind")
     assert isinstance(network.train_kwargs(C.suite_contexts(ENV_NAME).space)["lagrange_constraint"], C.NetworkConstraint)  # any Ω

@@ -528,6 +528,21 @@ is the mechanism, seen twice.
 
 ## Known defects
 
+- **A told policy under `staged` was blind to any context but the current
+  stage's** (found 2026-10-15, fixed 2026-10-16 on `experiment/goal_point_learners_500M`).
+  The observation normaliser keeps a running standard deviation per input and
+  clips it at 10⁻⁶ (`training/acme/running_statistics.py`, `std_min_value`);
+  one context per stage gave the context inputs zero variance, so every other
+  context — the level-3 and uniform evaluations, and the next stage's context at
+  a switch — normalised to ~10⁶ and saturated the network (reproduced: after 50
+  rounds on level 1, level 3 normalised to −6·10⁶, 4·10⁶, 6·10⁶, 4·10⁶). The
+  staged-told arms of `goal_point_learners_500M` have evaluation return exactly
+  0.0 on both targets for 350 M steps while training return is 23–29, and their
+  training return drops at each switch where the blind arm's does not; uniform
+  and PLR arms draw a new context every episode and were unaffected. Fix: the
+  context part of the observation is scaled by Ω's bounds (`ContextSpace.scale`,
+  the function the λ network already used), never by running statistics;
+  `design/contextual_learner.md` §2. The two staged-told arms are to be rerun.
 - **Every context-run evaluation between 2026-10-06 and 2026-10-08 reported
   about half an episode** (fixed 2026-10-08, uncommitted). The slot
   desynchronisation added on 2026-10-06 gives each slot a random head start on
