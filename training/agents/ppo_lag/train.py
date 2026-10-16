@@ -25,6 +25,20 @@ Metrics = types.Metrics
 TrainingState = ppo_train.TrainingState
 
 
+def learner_view_function(lagrange_constraint: LagrangeConstraint) -> LearnerViewFunction:
+    """The episode records' view of an evaluation episode (docs/acl/design/episode_review.md §2):
+    the critics' values and the λ in force at each recorded transition, by the constraint's
+    lookup. One definition for the trainer and for a replay from a checkpoint (training/replay.py)."""
+
+    def compute(params, normalizer_params, data, aux_state, ppo_network, discounting, reward_scaling, gae_lambda):
+        return ppo_lag_losses.compute_learner_view(
+            params=params, normalizer_params=normalizer_params, data=data,
+            lagrange_multiplier=lagrange_constraint.per_transition(aux_state, data.extras['state_extras']),
+            ppo_network=ppo_network, discounting=discounting, reward_scaling=reward_scaling, gae_lambda=gae_lambda)
+
+    return LearnerViewFunction(compute=compute)
+
+
 def train(
         environment: envs.Env,
         num_timesteps: int,
@@ -199,15 +213,7 @@ def train(
         produces=ppo_lag_losses.LEARNING_SIGNALS, compute=compute_learning_signals
     )
 
-    # The episode records' view of an evaluation episode (docs/acl/design/episode_review.md §2):
-    # the critics' values and the λ in force at each recorded transition, by the constraint's lookup.
-    def compute_learner_view(params, normalizer_params, data, aux_state, ppo_network, discounting, reward_scaling, gae_lambda):
-        return ppo_lag_losses.compute_learner_view(
-            params=params, normalizer_params=normalizer_params, data=data,
-            lagrange_multiplier=lagrange_constraint.per_transition(aux_state, data.extras['state_extras']),
-            ppo_network=ppo_network, discounting=discounting, reward_scaling=reward_scaling, gae_lambda=gae_lambda)
-
-    learner_view_fn = LearnerViewFunction(compute=compute_learner_view)
+    learner_view_fn = learner_view_function(lagrange_constraint)
 
     def init_aux_state_fn():
         return initial_multipliers
