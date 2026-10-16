@@ -679,6 +679,18 @@ means is `training/dashboard/metrics.py`; the W&B view for an experiment group:
 .venv/bin/python -m training.dashboard --group <wandb_group>
 ```
 
+**Watching a trained policy.** A run trained with `--store_model true` has its
+checkpoints in its W&B files; `training.replay` fetches the latest, rebuilds the
+networks from the checkpoint's own config and rolls the deterministic policy out
+on chosen contexts through the evaluation stack, one MP4 per episode plus a
+return / cost table. A policy is replayed by the code that trained it: the
+checkout must be at the run's commit (W&B records it; the command refuses
+otherwise — `git worktree add ../CRAX-replay <commit>`).
+
+```bash
+MUJOCO_GL=egl .venv/bin/python -m training.replay --run <run name> --contexts level:1 level:2 level:3 --episodes 3
+```
+
 CPU tests: `JAX_PLATFORMS=cpu .venv/bin/python -m pytest tests/test_contexts.py tests/test_context_training.py tests/test_dashboard.py tests/test_suites.py -q -p no:cacheprovider`
 (`test_suites.py` runs every check per registered suite; add a suite to the registry and it is covered.)
 
