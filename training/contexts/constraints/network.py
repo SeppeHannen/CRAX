@@ -156,15 +156,7 @@ class NetworkConstraint:
     def _apply(self, parameters: types.Params, contexts: jax.Array) -> jax.Array:
         # `initial_output` only acts at init; from then on the stored bias carries it.
         module = _PreActivation(hidden_layer_sizes=HIDDEN_LAYER_SIZES, initial_output=0.0)
-        return jax.nn.softplus(module.apply(parameters, self._normalise(contexts)))
-
-    def _normalise(self, contexts: jax.Array) -> jax.Array:
-        """ω mapped to [-1, 1] per dimension over Ω's box (0 on a degenerate dimension), so the
-        network's inputs are of order one whatever a dimension's units."""
-        middle = (self.space.high + self.space.low) / 2.0
-        half_range = (self.space.high - self.space.low) / 2.0
-        degenerate = half_range == 0.0
-        return jnp.where(degenerate, 0.0, (contexts - middle) / jnp.where(degenerate, 1.0, half_range))
+        return jax.nn.softplus(module.apply(parameters, self.space.scale(contexts)))
 
 
 def _optimizer() -> optax.GradientTransformation:

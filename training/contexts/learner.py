@@ -67,7 +67,9 @@ class Learner:
         not the constraint object."""
         kwargs: Dict[str, Any] = {
             "network_factory": functools.partial(
-                make_contextual_ppo_networks, policy_observes_context=self.policy_context == "told"
+                make_contextual_ppo_networks,
+                policy_observes_context=self.policy_context == "told",
+                context_bounds=dataclasses.asdict(space.bounds),
             ),
         }
         if self.holds_constraint_per_context:

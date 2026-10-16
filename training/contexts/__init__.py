@@ -48,7 +48,7 @@ from training.contexts.setup import (
     run_name_fragment,
     spec_label,
 )
-from training.contexts.space import Context, Contexts, ContextSpace, Dimension, box
+from training.contexts.space import Bounds, Context, Contexts, ContextSpace, Dimension, box, scale_to_bounds
 from training.contexts.wrapper import (
     CONTEXT_KEY,
     ContextualAutoResetWrapper,
@@ -81,6 +81,7 @@ __all__ = [
     "UNIFORM_EVALUATION",
     "Context",
     "ContextDistribution",
+    "Bounds",
     "ContextRoundHook",
     "ContextSpace",
     "ContextTrainingSetup",
@@ -115,6 +116,7 @@ __all__ = [
     "training_curriculum_metrics",
     "registered_environments",
     "run_name_fragment",
+    "scale_to_bounds",
     "spec_label",
     "suite_contexts",
     "wrap_for_context_evaluation",

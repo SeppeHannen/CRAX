@@ -61,6 +61,37 @@ class Dimension:
 
 
 @dataclasses.dataclass(frozen=True)
+class Bounds:
+    """Ω's bounds per dimension as plain floats: what a network needs to scale a context, in a
+    form a checkpoint's JSON config can hold (a :class:`ContextSpace` cannot be a factory keyword)."""
+
+    low: Tuple[float, ...]
+    high: Tuple[float, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.low) != len(self.high):
+            raise ValueError(f"Bounds: {len(self.low)} lower bounds against {len(self.high)} upper bounds")
+        if any(l > h for l, h in zip(self.low, self.high)):
+            raise ValueError(f"Bounds: a lower bound exceeds its upper bound: low={self.low}, high={self.high}")
+
+
+def scale_to_bounds(contexts: jax.Array, bounds: Bounds) -> jax.Array:
+    """Contexts ``[..., D]`` mapped to [-1, 1] per dimension over ``bounds``; 0 on a degenerate dimension.
+
+    The one way a context enters a network. Its scale is known before training — Ω is
+    declared — and so does not depend on what the curriculum samples; a running
+    normaliser's does, and under one context per stage (``staged``) its standard deviation
+    collapses to the floor and every other context maps to ~10⁶ (found 2026-10-15).
+    """
+    low = jnp.asarray(bounds.low, dtype=jnp.float32)
+    high = jnp.asarray(bounds.high, dtype=jnp.float32)
+    middle = (high + low) / 2.0
+    half_range = (high - low) / 2.0
+    degenerate = half_range == 0.0
+    return jnp.where(degenerate, 0.0, (contexts - middle) / jnp.where(degenerate, 1.0, half_range))
+
+
+@dataclasses.dataclass(frozen=True)
 class ContextSpace:
     """A box-shaped Ω with named coordinates, optionally bounded in its integer total.
 
@@ -127,6 +158,11 @@ class ContextSpace:
     def high(self) -> jax.Array:
         return jnp.asarray([d.high for d in self.dimensions], dtype=jnp.float32)
 
+    @property
+    def bounds(self) -> Bounds:
+        """Ω's bounds as plain numbers, for whoever scales a context without holding the space."""
+        return Bounds(low=tuple(float(d.low) for d in self.dimensions), high=tuple(float(d.high) for d in self.dimensions))
+
     def index(self, name: str) -> int:
         return self.names.index(name)
 
@@ -151,6 +187,10 @@ class ContextSpace:
     def component(self, contexts: Contexts, name: str) -> jax.Array:
         """Select one named coordinate from a batch: ``[N, D] -> [N]``."""
         return contexts[..., self.index(name)]
+
+    def scale(self, contexts: Contexts) -> jax.Array:
+        """Contexts mapped to [-1, 1] per dimension over Ω's box; see :func:`scale_to_bounds`."""
+        return scale_to_bounds(contexts, self.bounds)
 
     # ---- sampling / checking (JAX, usable inside jit) --------------------- #
 

@@ -132,8 +132,21 @@ episode. Labelling the parts at the source is what lets a network declare what
 it reads instead of slicing a concatenation by position.
 
 **The networks read keys** (`training/contexts/networks.py`,
-`make_contextual_ppo_networks`): each MLP concatenates the normalised parts it
-is given. The observation normaliser already runs per key.
+`make_contextual_ppo_networks`): each MLP concatenates the parts it is given,
+each scaled its own way. **The sensors go through the trainer's running
+normaliser**, whose statistics are kept per key; their range depends on the
+environment and the policy and is not known in advance. **The context is scaled
+by Ω's bounds** to [−1, 1] per dimension (`ContextSpace.scale`, the one
+function, which the λ network in §1 uses for the same input): its range is
+declared before training and must not depend on what the curriculum samples.
+Running statistics on the context are wrong under `staged` — one context per
+stage gives zero variance, the standard deviation clips at its floor of 10⁻⁶,
+and every other context (the level-3 evaluation, the next stage) normalises to
+~10⁶ and saturates the network (found 2026-10-15 in the 500 M experiment, where
+the staged-told arms scored exactly 0 on both evaluation targets for 350 M
+steps). The bounds are a factory keyword of plain floats so a checkpoint's JSON
+config can rebuild the network. Test:
+`test_a_told_policy_trained_on_one_context_still_sees_every_other_context_in_scale`.
 
 | network | reads | why |
 |---|---|---|
