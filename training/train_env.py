@@ -13,6 +13,7 @@ from crax import envs
 from training import contexts, dashboard
 from training.config import build_base_parser
 from training.evaluation import RECORDS_DIRECTORY, EpisodeRecorder
+from training.pixels import PixelObservation
 from training.run_utils import (
     collect_rollout_metrics, record_episode_video, setup_gpu_environment,
     get_algorithm_train_fn, filter_kwargs_for_fn, wandb_progress_fn,
@@ -32,8 +33,11 @@ def main():
     difficulty = config.difficulty
     learner = contexts.Learner(constraint=config.constraint, policy_context=config.policy_context)
     if config.context_distribution != contexts.NO_DISTRIBUTION:
-        if config.vision:
-            raise ValueError("--vision and --context_distribution both choose the networks; a context run has no vision mode")
+        if config.vision and config.vision_obs_mode != "pixels+state":
+            raise ValueError(
+                "a context run observes {sensors, context} and, with --vision, the pixels next to them: "
+                "pass --vision_obs_mode pixels+state (pixels alone would drop the sensors the contextual networks read)"
+            )
         if not (config.skip_rollout and config.skip_video):
             raise ValueError(
                 "a context run's policy observes {sensors, context}, which the post-training rollout and video "
@@ -44,6 +48,7 @@ def main():
     # the user didn't explicitly pass --vision_camera
     if config.vision_camera is None:
         config.vision_camera = morphology_override(env_name, VISION_CAMERA_OVERRIDES) or 'vision'
+    pixel_observation = PixelObservation.from_config(config)
 
     # Setup GPU environment
     setup_gpu_environment(vision=config.vision)
@@ -65,14 +70,8 @@ def main():
 
         # Build vision kwargs. Pixel-obs wrapping happens inside the training function
         vision_kwargs = None
-        if config.vision:
-            vision_kwargs = dict(
-                camera=config.vision_camera,
-                height=config.vision_height,
-                width=config.vision_width,
-                obs_mode=config.vision_obs_mode,
-                frame_stack=config.vision_frame_stack,
-            )
+        if pixel_observation is not None:
+            vision_kwargs = pixel_observation.wrapper_kwargs()
             print(
                 f"Vision mode: GPU rendering (MJWarp), "
                 f"camera='{config.vision_camera}', "
@@ -203,6 +202,8 @@ def main():
                 context_kwargs["episode_recorder"] = EpisodeRecorder(
                     directory=Path(wandb.run.dir) / RECORDS_DIRECTORY, env_name=env_name, run_name=run_name,
                     arm=context_setup.arm, num_episodes=config.record_episodes,
+                    sensors_key=contexts.SENSORS_KEY, context_key=contexts.TRANSITION_CONTEXT_KEY,
+                    image_keys=(pixel_observation.key,) if pixel_observation is not None else (),
                 )
             unsupported = set(context_kwargs) - set(filter_kwargs_for_fn(train_fn_base, context_kwargs))
             if unsupported:
@@ -212,14 +213,16 @@ def main():
                 )
             train_kwargs.update(context_kwargs)
 
-        # Inject vision network factory + pixel-obs wrapping kwargs if vision mode is enabled
+        # Inject the pixel-obs wrapping kwargs if vision mode is enabled; the stock vision networks
+        # only for a stock run (a context run's contextual networks read the pixel latent themselves)
         if config.vision:
-            state_obs_key = 'state' if config.vision_obs_mode == 'pixels+state' else ''
-            train_kwargs['network_factory'] = make_vision_network_factory(
-                alg_name,
-                policy_obs_key=state_obs_key,
-                value_obs_key=state_obs_key,
-            )
+            if context_setup is None:
+                state_obs_key = 'state' if config.vision_obs_mode == 'pixels+state' else ''
+                train_kwargs['network_factory'] = make_vision_network_factory(
+                    alg_name,
+                    policy_obs_key=state_obs_key,
+                    value_obs_key=state_obs_key,
+                )
             train_kwargs['augment_pixels'] = config.vision_augment
             train_kwargs['vision_kwargs'] = vision_kwargs
             if video_fn is not None:

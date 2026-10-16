@@ -19,7 +19,7 @@ from typing import Dict, List, Sequence, Tuple
 import numpy as np
 import wandb
 
-from training.evaluation.record import RECORDS_DIRECTORY, SUFFIX, EpisodeRecord
+from training.evaluation.record import IMAGE_PARTS_KEY, METADATA_KEY, RECORDS_DIRECTORY, SUFFIX, EpisodeRecord
 
 
 @dataclasses.dataclass(frozen=True)
@@ -38,18 +38,19 @@ class EpisodeSummary:
     episode_return: float
     episode_cost: float
     context: Tuple[float, ...]
+    image_parts: Tuple[str, ...]  # the policy's own camera views the record holds (none for a state-based run)
 
     @classmethod
     def read(cls, index: int, path: pathlib.Path) -> "EpisodeSummary":
         with np.load(path) as contents:
-            metadata = json.loads(str(contents["metadata"]))
+            metadata = json.loads(str(contents[METADATA_KEY]))
             reward, cost, context = contents["reward"], contents["cost"], contents["context"]
         return cls(
             index=index, path=path, env_name=str(metadata["env_name"]), run_name=str(metadata["run_name"]),
             arm=str(metadata["arm"]), evaluation_name=str(metadata["evaluation_name"]),
             environment_steps=int(metadata["environment_steps"]), episode_index=int(metadata["episode_index"]),
             length=int(reward.shape[0]), episode_return=float(reward.sum()), episode_cost=float(cost.sum()),
-            context=tuple(float(value) for value in context),
+            context=tuple(float(value) for value in context), image_parts=tuple(metadata[IMAGE_PARTS_KEY]),
         )
 
     def as_json(self) -> Dict[str, object]:

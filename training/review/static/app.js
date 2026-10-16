@@ -26,8 +26,10 @@ async function loadLibrary() {
   $("group").textContent = state.library.group;
   const arms = unique(state.library.episodes.map((e) => e.arm));
   fill($("arm"), arms, arms);
+  // The model's cameras, then what the policy itself saw (a vision run's image parts, e.g. "pixels/vision").
   const cameras = unique(Object.values(state.library.environments).flatMap((env) => env.cameras));
-  fill($("camera"), cameras, cameras, state.library.default_camera);
+  const views = state.library.policy_views;
+  fill($("camera"), [...cameras, ...views], [...cameras, ...views.map((v) => `policy: ${v}`)], state.library.default_camera);
   refreshPickers();
 }
 

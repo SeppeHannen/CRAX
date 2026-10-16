@@ -7,9 +7,11 @@ Run with: JAX_PLATFORMS=cpu MUJOCO_GL=egl pytest tests/test_episode_review.py -v
 """
 from __future__ import annotations
 
+import io
 import json
 import os
 import pathlib
+import tempfile
 import threading
 import urllib.request
 from typing import Any, Dict, Tuple
@@ -18,6 +20,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from PIL import Image
 
 from crax import envs
 from training import contexts as C
@@ -27,8 +30,10 @@ from training.agents.ppo import networks as ppo_networks
 from training.agents.ppo_lag import losses as ppo_lag_losses
 from training.agents.ppo_lag.train import train as train_ppo_lag
 from training.evaluation import TRANSITION_SCENE_KEY, EpisodeRecord, EpisodeRecorder, LearnerView, SceneWrapper, records_under
+from training.evaluation.scene import Scene
 from training.evaluation.recorder import EvaluationRecording, _episode_length
 from training.review.library import Library
+from training.review.policy_view import SCALE
 from training.review.server import ReviewServer
 
 ENV_NAME = "safe_velocity_ant"  # on the MJX backend: the scene is its pipeline state's pose fields
@@ -40,7 +45,7 @@ def _record(length: int = 5, **overrides: Any) -> EpisodeRecord:
     fields: Dict[str, Any] = dict(
         env_name=ENV_NAME, run_name="run", arm="uniform", evaluation_name="deployment", environment_steps=640, episode_index=1,
         context=np.asarray([1.5], np.float32), qpos=per_step(15), qvel=per_step(14), mocap_pos=per_step(0, 3), mocap_quat=per_step(0, 4),
-        observation=per_step(27), action=per_step(8), reward=per_step(), cost=per_step(), value=per_step(), cost_value=per_step(),
+        observation=per_step(27), images={}, action=per_step(8), reward=per_step(), cost=per_step(), value=per_step(), cost_value=per_step(),
         lagrange_multiplier=per_step(), reward_advantage=per_step(), cost_advantage=per_step(), lagrangian_advantage=per_step(),
     )
     return EpisodeRecord(**{**fields, **overrides})
@@ -61,6 +66,22 @@ def test_record_round_trips_through_its_file_and_names_itself(tmp_path):
         np.testing.assert_array_equal(getattr(loaded, name), getattr(record, name))
     assert loaded.length == 5 and loaded.episode_return == pytest.approx(10.0) and loaded.episode_cost == pytest.approx(10.0)
     assert [r.key for r in records_under(tmp_path)] == [record.key]
+
+
+def test_record_keeps_the_frames_the_policy_saw_by_part_name():
+    """A vision run's record holds each image part as [T, H, W, C] uint8 under the observation
+    part's name (which has a '/'); a state-based run's holds none."""
+    frames = np.arange(5 * 4 * 4 * 6, dtype=np.uint8).reshape(5, 4, 4, 6)  # two stacked RGB frames
+    record = _record(images={"pixels/vision": frames})
+    with tempfile.TemporaryDirectory() as directory:
+        loaded = EpisodeRecord.load(record.save(pathlib.Path(directory)))
+    assert tuple(loaded.images) == ("pixels/vision",)
+    np.testing.assert_array_equal(loaded.images["pixels/vision"], frames)
+    assert loaded.images["pixels/vision"].dtype == np.uint8
+    with pytest.raises(ValueError, match="uint8"):
+        _record(images={"pixels/vision": frames.astype(np.float32)})
+    with pytest.raises(ValueError, match=r"T=5"):
+        _record(images={"pixels/vision": frames[:4]})
 
 
 def test_record_refuses_arrays_of_the_wrong_length_or_shape():
@@ -171,7 +192,8 @@ LEARNERS = {
 def _record_a_run(directory: pathlib.Path, learner: C.Learner) -> C.ContextTrainingSetup:
     setup = C.context_training_setup(ENV_NAME, "uniform", "level:3", learner, num_timesteps=NUM_TIMESTEPS, num_envs=8,
                                      batch_size=8, unroll_length=5, num_minibatches=2)
-    recorder = EpisodeRecorder(directory, ENV_NAME, "tiny_run", setup.arm, num_episodes=2)
+    recorder = EpisodeRecorder(directory, ENV_NAME, "tiny_run", setup.arm, num_episodes=2, sensors_key=C.SENSORS_KEY, context_key=C.TRANSITION_CONTEXT_KEY,
+                               image_keys=())
     assert recorder.recording == EvaluationRecording(2, ("cost", "truncation", TRANSITION_SCENE_KEY, C.TRANSITION_CONTEXT_KEY))
     train_ppo_lag(environment=envs.get_environment(ENV_NAME, level=1, backend="mjx"), num_timesteps=NUM_TIMESTEPS, seed=0,
                   progress_fn=lambda *_: None, safety_bound=25.0, initial_lambda_lagr=0.1, **TINY, **setup.train_kwargs(),
@@ -224,16 +246,31 @@ def test_every_evaluation_of_a_run_leaves_its_first_episodes_as_records(recorded
 
 
 def test_recorder_refuses_an_unroll_of_the_wrong_width(tmp_path):
-    recorder = EpisodeRecorder(tmp_path, ENV_NAME, "run", "uniform", num_episodes=2)
+    recorder = EpisodeRecorder(tmp_path, ENV_NAME, "run", "uniform", num_episodes=2, sensors_key=C.SENSORS_KEY, context_key=C.TRANSITION_CONTEXT_KEY, image_keys=())
     with pytest.raises(ValueError, match="recorded 1 episodes"):
         recorder.record("deployment", 0, _unroll(width=1), _view(width=1))
 
 
-def _unroll(width: int, steps: int = 3) -> types.Transition:
+def test_recorder_keeps_the_named_image_parts_of_the_observation(tmp_path):
+    """With image keys, each record holds that part's frames cut to the episode's length, as the
+    observation dict had them; the sensors part stays the record's `observation`."""
+    recorder = EpisodeRecorder(tmp_path, ENV_NAME, "run", "uniform", num_episodes=2, sensors_key=C.SENSORS_KEY,
+                               context_key=C.TRANSITION_CONTEXT_KEY, image_keys=("pixels/vision",))
+    frames = jnp.arange(3 * 2 * 4 * 4 * 3, dtype=jnp.uint8).reshape(3, 2, 4, 4, 3)
+    unroll = _unroll(width=2, observation={C.SENSORS_KEY: jnp.zeros((3, 2, 4)), "pixels/vision": frames})
+    paths = recorder.record("deployment", 0, unroll, _view(width=2))
+    records = [EpisodeRecord.load(path) for path in paths]
+    for k, record in enumerate(records):
+        np.testing.assert_array_equal(record.images["pixels/vision"], np.asarray(frames[:, k]))
+        assert record.observation.shape == (3, 4)
+
+
+def _unroll(width: int, steps: int = 3, observation: Any = None) -> types.Transition:
     z = lambda *shape: jnp.zeros((steps, width, *shape))
-    return types.Transition(observation=z(4), action=z(2), reward=z(), discount=jnp.ones((steps, width)), next_observation=z(4),
+    return types.Transition(observation=z(4) if observation is None else observation, action=z(2), reward=z(),
+                            discount=jnp.ones((steps, width)), next_observation=z(4),
                             extras={"state_extras": {"cost": z(), "truncation": z(), C.TRANSITION_CONTEXT_KEY: z(1),
-                                                     TRANSITION_SCENE_KEY: {"qpos": z(3), "qvel": z(3), "mocap_pos": z(0, 3), "mocap_quat": z(0, 4)}}})
+                                                     TRANSITION_SCENE_KEY: Scene(qpos=z(3), qvel=z(3), mocap_pos=z(0, 3), mocap_quat=z(0, 4))}})
 
 
 def _view(width: int, steps: int = 3) -> LearnerView:
@@ -244,7 +281,7 @@ def _view(width: int, steps: int = 3) -> LearnerView:
 def test_trainer_refuses_a_recorder_without_the_agents_learner_view():
     from training.agents.ppo import train as ppo_train
 
-    recorder = EpisodeRecorder(pathlib.Path("/nonexistent"), ENV_NAME, "run", "uniform", num_episodes=1)
+    recorder = EpisodeRecorder(pathlib.Path("/nonexistent"), ENV_NAME, "run", "uniform", num_episodes=1, sensors_key=C.SENSORS_KEY, context_key=C.TRANSITION_CONTEXT_KEY, image_keys=())
     with pytest.raises(ValueError, match="learner_view_fn"):
         ppo_train.train(environment=envs.get_environment(ENV_NAME, level=1, backend="mjx"), num_timesteps=80, episode_length=20,
                         num_envs=4, batch_size=4, num_minibatches=1, unroll_length=5, episode_recorder=recorder)
@@ -290,6 +327,7 @@ def test_server_serves_the_page_the_library_and_an_episodes_traces(review_server
     library = json.loads(_get(url + "/api/library")[2])
     assert library["group"] == "tiny_group" and len(library["episodes"]) == 12
     assert library["default_camera"] in library["environments"][ENV_NAME]["cameras"]
+    assert library["policy_views"] == [], "a state-based run's records hold no policy view"
     assert library["environments"][ENV_NAME]["control_dt"] > 0
     episode = json.loads(_get(url + "/api/episode/0")[2])
     assert episode["length"] == len(episode["reward"]) == len(episode["value"]) == len(episode["action"])
@@ -301,6 +339,27 @@ def test_server_serves_the_page_the_library_and_an_episodes_traces(review_server
     with pytest.raises(urllib.error.HTTPError) as error:
         _get(url + "/static/../server.py")
     assert error.value.code in (400, 404)
+
+
+def test_server_serves_what_the_policy_saw_as_a_frame_of_its_own_camera(tmp_path):
+    """A record with an image part lists it as a policy view, and the frame route serves that
+    part's stacked frames as one PNG strip, oldest frame first."""
+    frames = np.zeros((5, 4, 4, 6), np.uint8)
+    frames[..., 0:3] = 10  # the older frame
+    frames[..., 3:6] = 200  # the newest
+    _record(images={"pixels/vision": frames}).save(tmp_path)
+    server = ReviewServer(("127.0.0.1", 0), Library.from_directories("tiny_group", [tmp_path]))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}"
+        assert json.loads(_get(url + "/api/library")[2])["policy_views"] == ["pixels/vision"]
+        status, content_type, body = _get(url + "/frame/0/2?camera=pixels/vision")
+        assert status == 200 and content_type == "image/png"
+        strip = np.asarray(Image.open(io.BytesIO(body)))
+        assert strip.shape == (4 * SCALE, 2 * 4 * SCALE, 3)
+        assert (strip[:, : 4 * SCALE] == 10).all() and (strip[:, 4 * SCALE :] == 200).all()
+    finally:
+        server.shutdown()
 
 
 @RENDERING

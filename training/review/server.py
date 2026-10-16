@@ -5,9 +5,11 @@ Routes:
 
     GET /                                  the page
     GET /static/<file>                     its script and style
-    GET /api/library                       the group, every episode's summary, each environment's control dt and cameras
+    GET /api/library                       the group, every episode's summary, each environment's control dt and cameras,
+                                           and the policy views (image parts) the records hold
     GET /api/episode/<id>                  one episode's per-step traces and facts
-    GET /frame/<id>/<step>?camera=<name>   one JPEG frame
+    GET /frame/<id>/<step>?camera=<name>   one frame: the scene from a model camera (JPEG), or, when ``name`` is an
+                                           image part of the record, what the policy saw (PNG)
 """
 from __future__ import annotations
 
@@ -20,6 +22,7 @@ from typing import Any, Dict, Tuple
 
 from training.evaluation.record import EpisodeRecord
 from training.review.library import Library
+from training.review.policy_view import policy_view
 from training.review.renderer import DEFAULT_CAMERA, Renderers
 
 STATIC = pathlib.Path(__file__).parent / "static"
@@ -40,9 +43,13 @@ class ReviewServer(http.server.ThreadingHTTPServer):
         self.record = functools.lru_cache(maxsize=RECORD_CACHE_SIZE)(library.record)
         self.frame = functools.lru_cache(maxsize=FRAME_CACHE_SIZE)(self._render)
 
-    def _render(self, index: int, step: int, camera: str) -> bytes:
+    def _render(self, index: int, step: int, camera: str) -> Tuple[bytes, str]:
+        """The frame and its content type: the policy's own view if ``camera`` names one of the
+        record's image parts, else the scene from the model's camera."""
         record: EpisodeRecord = self.record(index)
-        return self.renderers.for_environment(record.env_name).frame(record, step, camera)
+        if camera in record.images:
+            return policy_view(record, step, camera), "image/png"
+        return self.renderers.for_environment(record.env_name).frame(record, step, camera), "image/jpeg"
 
     def library_json(self) -> Dict[str, Any]:
         environments = {}
@@ -53,6 +60,7 @@ class ReviewServer(http.server.ThreadingHTTPServer):
             "group": self.library.group,
             "episodes": [episode.as_json() for episode in self.library.episodes],
             "environments": environments,
+            "policy_views": sorted({part for episode in self.library.episodes for part in episode.image_parts}),
             "default_camera": DEFAULT_CAMERA,
         }
 
@@ -98,7 +106,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 self._send_json(self.server.episode_json(int(parts[2])))
             elif parts[0] == "frame" and len(parts) == 3:
                 camera = query.get("camera", [DEFAULT_CAMERA])[0]
-                self._send_bytes(self.server.frame(int(parts[1]), int(parts[2]), camera), "image/jpeg")
+                self._send_bytes(*self.server.frame(int(parts[1]), int(parts[2]), camera))
             else:
                 self.send_error(404, f"no route for {url.path}")
         except (IndexError, ValueError, FileNotFoundError) as error:

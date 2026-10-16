@@ -16,14 +16,16 @@ from __future__ import annotations
 import dataclasses
 import json
 import pathlib
-from typing import Iterator, Tuple
+from typing import Iterator, Mapping, Tuple
 
 import numpy as np
 
 SUFFIX = ".episode.npz"
 # The subdirectory of a run's W&B files its records are written to and read from.
 RECORDS_DIRECTORY = "episodes"
-_METADATA_KEY = "metadata"
+METADATA_KEY = "metadata"
+IMAGE_PARTS_KEY = "image_parts"  # in the metadata: the names of the image parts, in array order
+_IMAGE_ARRAY = "image_{index}"  # the npz entry of the i-th image part (part names hold '/')
 
 
 @dataclasses.dataclass(frozen=True)
@@ -45,6 +47,7 @@ class EpisodeRecord:
     mocap_quat: np.ndarray  # [T, nmocap, 4]
     # What the policy saw and did, and what happened
     observation: np.ndarray  # [T, obs]  the sensors the agent saw (a context run observes {sensors, context})
+    images: Mapping[str, np.ndarray]  # part name -> [T, H, W, C] uint8: the camera frames the policy saw, as stacked; {} for a run without pixels
     action: np.ndarray  # [T, A]
     reward: np.ndarray  # [T]  raw environment reward
     cost: np.ndarray  # [T]
@@ -70,6 +73,11 @@ class EpisodeRecord:
                 raise ValueError(f"EpisodeRecord.{name} must be one value per step, has shape {getattr(self, name).shape}")
         if self.context.ndim != 1:
             raise ValueError(f"EpisodeRecord.context must be one vector, has shape {self.context.shape}")
+        for name, image in self.images.items():
+            if image.ndim != 4 or image.shape[0] != length or image.dtype != np.uint8:
+                raise ValueError(
+                    f"EpisodeRecord.images[{name!r}] must be [T={length}, H, W, C] uint8, has shape {image.shape} dtype {image.dtype}"
+                )
 
     @property
     def length(self) -> int:
@@ -103,16 +111,19 @@ class EpisodeRecord:
             "evaluation_name": self.evaluation_name,
             "environment_steps": self.environment_steps,
             "episode_index": self.episode_index,
+            IMAGE_PARTS_KEY: list(self.images),
         }
         arrays = {name: getattr(self, name) for name in _PER_STEP_FIELDS + ("context",)}
-        np.savez_compressed(path, **arrays, **{_METADATA_KEY: np.asarray(json.dumps(metadata))})
+        images = {_IMAGE_ARRAY.format(index=index): image for index, image in enumerate(self.images.values())}
+        np.savez_compressed(path, **arrays, **images, **{METADATA_KEY: np.asarray(json.dumps(metadata))})
         return path
 
     @classmethod
     def load(cls, path: pathlib.Path) -> "EpisodeRecord":
         with np.load(path) as contents:
-            metadata = json.loads(str(contents[_METADATA_KEY]))
+            metadata = json.loads(str(contents[METADATA_KEY]))
             arrays = {name: contents[name] for name in _PER_STEP_FIELDS + ("context",)}
+            images = {name: contents[_IMAGE_ARRAY.format(index=index)] for index, name in enumerate(metadata[IMAGE_PARTS_KEY])}
         return cls(
             env_name=str(metadata["env_name"]),
             run_name=str(metadata["run_name"]),
@@ -120,6 +131,7 @@ class EpisodeRecord:
             evaluation_name=str(metadata["evaluation_name"]),
             environment_steps=int(metadata["environment_steps"]),
             episode_index=int(metadata["episode_index"]),
+            images=images,
             **arrays,
         )
 
