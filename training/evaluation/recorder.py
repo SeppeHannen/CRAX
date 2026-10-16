@@ -8,6 +8,11 @@ to them and hands both to :meth:`EpisodeRecorder.record`, which cuts each unroll
 at the step its episode ended and writes one record per episode. The directory
 is the one door: whoever owns it (the entry point puts it inside the W&B run
 directory) decides where the records end up.
+
+The recorder sits below the trainers (``training/acting.py`` imports this package),
+so it knows nothing of the contexts package: the two labels it needs — which part
+of the observation dict is the sensors, which ``state.info`` field holds the
+transition's context — are handed in by whoever builds it, who knows the run.
 """
 from __future__ import annotations
 
@@ -18,8 +23,6 @@ from typing import List, Tuple
 import jax
 import numpy as np
 
-from training.contexts.observation import SENSORS_KEY
-from training.contexts.rollout import TRANSITION_CONTEXT_KEY
 from training.evaluation.learner_view import LearnerView
 from training.evaluation.record import EpisodeRecord
 from training.evaluation.scene import TRANSITION_SCENE_KEY
@@ -50,13 +53,15 @@ class EpisodeRecorder:
     run_name: str
     arm: str
     num_episodes: int
+    sensors_key: str  # the part of the observation dict the record keeps as `observation`
+    context_key: str  # the `state.info` field holding the context the transition started from
 
     @property
     def recording(self) -> EvaluationRecording:
         """What the Evaluator has to keep for :meth:`record`: the cost and truncation the
         advantages need, and, both as the transition started from them, the scene for the
         renderer and the context the episode ran in."""
-        return EvaluationRecording(self.num_episodes, (COST_KEY, TRUNCATION_KEY, TRANSITION_SCENE_KEY, TRANSITION_CONTEXT_KEY))
+        return EvaluationRecording(self.num_episodes, (COST_KEY, TRUNCATION_KEY, TRANSITION_SCENE_KEY, self.context_key))
 
     def record(self, evaluation_name: str, environment_steps: int, unroll: Transition, view: LearnerView) -> List[pathlib.Path]:
         """``unroll``: the Evaluator's recorded transitions, leading axes ``[T, K]``;
@@ -80,12 +85,12 @@ class EpisodeRecorder:
                 evaluation_name=evaluation_name,
                 environment_steps=environment_steps,
                 episode_index=k,
-                context=state_extras[TRANSITION_CONTEXT_KEY][0, k],  # one episode, one context: its first transition's
+                context=state_extras[self.context_key][0, k],  # one episode, one context: its first transition's
                 qpos=scene.qpos[steps, k],
                 qvel=scene.qvel[steps, k],
                 mocap_pos=scene.mocap_pos[steps, k],
                 mocap_quat=scene.mocap_quat[steps, k],
-                observation=unroll.observation[SENSORS_KEY][steps, k],  # the context is its own field
+                observation=unroll.observation[self.sensors_key][steps, k],  # the context is its own field
                 action=unroll.action[steps, k],
                 reward=unroll.reward[steps, k],
                 cost=state_extras[COST_KEY][steps, k],

@@ -89,10 +89,11 @@ function buildViewer(viewer) {
   $("viewers").appendChild(article);
   viewer.article = article;
   const lambda = episode.lagrange_multiplier[0];
-  const constantLambda = episode.lagrange_multiplier.every((v) => Math.abs(v - lambda) < 1e-6);
+  const constantLambda = episode.lagrange_multiplier.every((v) => v !== null && Math.abs(v - lambda) < 1e-6);
+  const lambdaText = lambda === null ? "unknown (policy-only checkpoint)" : constantLambda ? lambda.toFixed(3) : "varies (see trace)";
   article.querySelector(".facts").innerHTML =
     `<b>${episode.arm}</b> · ${episode.evaluation_name} · after <b>${episode.environment_steps.toLocaleString()}</b> steps · episode ${episode.episode_index}<br>` +
-    `ω = [${episode.context.map((v) => +v.toFixed(3)).join(", ")}] · λ = ${constantLambda ? lambda.toFixed(3) : "varies (see trace)"} · ` +
+    `ω = [${episode.context.map((v) => +v.toFixed(3)).join(", ")}] · λ = ${lambdaText} · ` +
     `return <b>${episode.episode_return.toFixed(2)}</b> · cost <b>${episode.episode_cost.toFixed(1)}</b> · ${episode.length} steps`;
   episode.reward_cumulative = cumulative(episode.reward);
   episode.cost_cumulative = cumulative(episode.cost);
@@ -138,8 +139,8 @@ function setStep(step) {
     viewer.article.querySelector(".running").innerHTML =
       `<span>step ${t}</span><span class="reward">return so far ${viewer.episode.reward_cumulative[t].toFixed(2)}</span>` +
       `<span class="cost">cost so far ${viewer.episode.cost_cumulative[t].toFixed(1)}</span>` +
-      `<span>V ${viewer.episode.value[t].toFixed(3)}</span><span>V_c ${viewer.episode.cost_value[t].toFixed(3)}</span>` +
-      `<span>A_r − λA_c ${viewer.episode.lagrangian_advantage[t].toFixed(3)}</span>`;
+      `<span>V ${readout(viewer.episode.value[t])}</span><span>V_c ${readout(viewer.episode.cost_value[t])}</span>` +
+      `<span>A_r − λA_c ${readout(viewer.episode.lagrangian_advantage[t])}</span>`;
     Plotly.relayout(viewer.plot, Object.fromEntries(ROWS.map((_, r) => [[`shapes[${r}].x0`, t], [`shapes[${r}].x1`, t]]).flat()));
     prefetch(viewer, t, camera);
   }
@@ -189,6 +190,7 @@ function fill(select, values, labels, keep) {
 
 const unique = (values) => [...new Set(values)];
 const cumulative = (values) => values.reduce((sums, v) => (sums.push((sums.length ? sums[sums.length - 1] : 0) + v), sums), []);
+const readout = (value) => (value === null ? "unknown" : value.toFixed(3));  // null: the learner could not supply it
 
 // A picker releases focus after a choice, so the arrow keys step the episode instead of the picker.
 const picker = (id, action) => { $(id).onchange = (event) => { action(); event.target.blur(); }; };

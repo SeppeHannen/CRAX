@@ -1,4 +1,8 @@
-"""``python -m training.review --group <wandb group>``: serve the review page for a group's episode records."""
+"""Serve the review page for episode records.
+
+    python -m training.review --group <wandb group>      the records every run of the group uploaded
+    python -m training.review --records <directory>      records on disk, e.g. written by training.replay
+"""
 from __future__ import annotations
 
 import argparse
@@ -11,8 +15,10 @@ from training.review.server import ReviewServer
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--group", required=True, help="the W&B group whose runs' episode records to review")
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--group", help="the W&B group whose runs' episode records to review")
+    source.add_argument("--records", type=pathlib.Path, help="a directory of episode records (searched recursively)")
     parser.add_argument("--port", type=int, default=8790)
     parser.add_argument("--wandb_dir", type=pathlib.Path, default=pathlib.Path("wandb"),
                         help="the local W&B directory; a run that trained on this machine is read from here, live")
@@ -23,9 +29,13 @@ def main() -> None:
     parser.add_argument("--no_browser", action="store_true")
     arguments = parser.parse_args()
 
-    directories = group_record_directories(arguments.entity, arguments.project, arguments.group, arguments.wandb_dir, arguments.cache_dir)
-    library = Library.from_directories(arguments.group, directories)
-    print(f"{len(library.episodes)} recorded episodes from {len(directories)} runs of {arguments.group!r}")
+    if arguments.group is not None:
+        directories = group_record_directories(arguments.entity, arguments.project, arguments.group, arguments.wandb_dir, arguments.cache_dir)
+        library = Library.from_directories(arguments.group, directories)
+        print(f"{len(library.episodes)} recorded episodes from {len(directories)} runs of {arguments.group!r}")
+    else:
+        library = Library.from_directories(str(arguments.records), [arguments.records])
+        print(f"{len(library.episodes)} recorded episodes under {arguments.records}")
     server = ReviewServer(("127.0.0.1", arguments.port), library)
     url = f"http://127.0.0.1:{arguments.port}/"
     print(f"review: {url}  (Ctrl-C to stop)")

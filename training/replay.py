@@ -1,59 +1,81 @@
-"""Replay a run's trained policy on chosen contexts and watch it.
+"""Replay a run's trained policy on chosen contexts and record the episodes for the reviewer.
 
-    .venv/bin/python -m training.replay --run <W&B run name or id> \\
-        --contexts level:1 level:2 level:3 --episodes 3 [--output_directory replays]
+    .venv/bin/python -m training.replay --run <W&B run name> --contexts level:3 --episodes 64
+    .venv/bin/python -m training.review --records replays/<run name>
 
 The run's latest checkpoint is fetched from its W&B files (``checkpoints/<step>``,
-where ``train_env`` puts them), the networks are rebuilt from the checkpoint's own
-config, and the policy is rolled out for ``--episodes`` full episodes in every
-context, through the same evaluation stack the trainer scored it with
-(``wrap_for_context_evaluation``) and with the same policy: sampling actions, as
-the run's ``deterministic_eval`` flag says (``--deterministic`` overrides, to see the
-mean action). Each episode becomes an MP4 with its return and cost in the file
-name (``--no-video`` for numbers only, when the question is the distribution over
-many episodes rather than one episode's behaviour); return and cost per episode are
-printed as a table so the pictures can be read against the numbers.
+where ``train_env`` puts them) and the networks are rebuilt from the checkpoint's
+own config. The policy is then rolled out, ``--episodes`` whole episodes at once per
+context, by the same :class:`~training.acting.Evaluator` and evaluation stack the
+trainer scored it with, with the same policy (sampling actions, as the run's
+``deterministic_eval`` says; ``--deterministic`` overrides). The episodes are written
+as :class:`~training.evaluation.record.EpisodeRecord` files, the format the review
+page plays (scene, observation, action, reward, cost per step), so a replayed
+episode is reviewed exactly like one recorded during training.
+
+**What a policy-only checkpoint can and cannot say.** A checkpoint holds the
+normaliser, the policy and the reward critic (``ppo/train.py``), so the learner's view
+carries V(s) and the reward advantage; the cost critic and the multiplier are not
+saved, so V_c, λ and the advantages that need them are NaN in these records and the
+review page shows those traces empty. A whole-learner checkpoint is the open item of
+``docs/acl/design/episode_review.md``.
 
 **A policy is replayed by the code that trained it.** The run's commit is recorded in
-W&B; this checkout must be at that commit, or the replay refuses. Networks, the
-observation's layout and its scaling are all part of the commit, and a checkpoint
-restored into different code is a different policy.
+W&B. This checkout must be at that commit or descend from it without touching the
+code the policy is made of (:data:`POLICY_CODE`): networks, observation, scaling,
+physics. Otherwise the replay refuses: a checkpoint restored into different code is
+a different policy.
 """
 from __future__ import annotations
 
 import argparse
 import dataclasses
+import functools
 import pathlib
 import subprocess
-from typing import List, Sequence
+from typing import Tuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import wandb
-from imageio import v3 as imageio
 
 from crax import envs
-from crax.io import image
+from training import acting
 from training import checkpoint as checkpoint_module
 from training import contexts
 from training.agents.ppo import networks as ppo_networks
+from training.agents.ppo.losses import compute_gae
 from training.config import WANDB_ENTITY, WANDB_PROJECT
 from training.contexts.wrapper import wrap_for_context_evaluation
+from training.evaluation import EpisodeRecorder, LearnerView
+from training.types import Transition
 
-COST_KEY = "cost"
 CHECKPOINTS_DIRECTORY = "checkpoints"
 NETWORK_CONFIG_FILE = "ppo_network_config.json"
+# The code a policy is made of: a commit that differs from the run's in any of these paths
+# would restore the checkpoint into a different policy.
+POLICY_CODE: Tuple[str, ...] = (
+    "crax/",
+    "training/acme/",
+    "training/networks.py",
+    "training/distribution.py",
+    "training/agents/ppo/networks.py",
+    "training/contexts/networks.py",
+    "training/contexts/observation.py",
+    "training/contexts/space.py",
+    "training/contexts/wrapper.py",
+    "training/contexts/distributions/",
+)
 
 
 @dataclasses.dataclass(frozen=True)
-class EpisodeOutcome:
+class ContextOutcome:
+    """Return and cost of the replayed episodes in one context."""
+
     context_spec: str
-    episode: int
-    length: int
-    episode_return: float
-    episode_cost: float
-    video: pathlib.Path | None
+    returns: np.ndarray  # [K]
+    costs: np.ndarray  # [K]
 
 
 def fetch_latest_checkpoint(run: wandb.apis.public.Run, cache: pathlib.Path) -> pathlib.Path:
@@ -70,109 +92,122 @@ def fetch_latest_checkpoint(run: wandb.apis.public.Run, cache: pathlib.Path) -> 
     return target / CHECKPOINTS_DIRECTORY / latest
 
 
-def require_the_runs_commit(run: wandb.apis.public.Run, repository: pathlib.Path) -> None:
-    head = subprocess.run(["git", "-C", str(repository), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
-    if run.commit != head:
+def require_the_runs_policy_code(run_commit: str, repository: pathlib.Path) -> None:
+    """Refuse unless this checkout is the run's commit, or descends from it with :data:`POLICY_CODE` untouched."""
+    git = ["git", "-C", str(repository)]
+    head = subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    if head == run_commit:
+        return
+    is_ancestor = subprocess.run([*git, "merge-base", "--is-ancestor", run_commit, head], capture_output=True).returncode == 0
+    if not is_ancestor:
         raise RuntimeError(
-            f"this checkout is at {head[:12]} but run {run.name} trained at {run.commit[:12]}; a policy is replayed by the code "
-            f"that trained it: `git worktree add ../CRAX-replay {run.commit[:12]}` and run from there"
+            f"this checkout ({head[:12]}) does not descend from the run's commit {run_commit[:12]}; a policy is replayed by the "
+            f"code that trained it: `git worktree add ../CRAX-replay {run_commit[:12]}`"
+        )
+    changed = subprocess.run([*git, "diff", "--name-only", run_commit, head, "--", *POLICY_CODE], capture_output=True, text=True, check=True).stdout
+    if changed.strip():
+        raise RuntimeError(
+            f"this checkout changes the code the policy is made of since the run's commit {run_commit[:12]}:\n{changed}"
+            f"restoring the checkpoint here would be a different policy; replay from `git worktree add ../CRAX-replay {run_commit[:12]}`"
         )
 
 
-def policy_from_checkpoint(checkpoint_directory: pathlib.Path, factory_arguments: argparse.Namespace, deterministic: bool):
-    """The inference function of a checkpoint, with the networks the run used."""
+def networks_from_checkpoint(checkpoint_directory: pathlib.Path, run_config: argparse.Namespace):
+    """The run's networks and the checkpoint's parameters (normaliser, policy, reward critic)."""
     config = checkpoint_module.load_config(checkpoint_directory / NETWORK_CONFIG_FILE)
     parameters = checkpoint_module.load(checkpoint_directory)
-    learner = contexts.Learner(constraint=factory_arguments.constraint, policy_context=factory_arguments.policy_context)
-    space = contexts.suite_contexts(factory_arguments.env_name).space
+    learner = contexts.Learner(constraint=run_config.constraint, policy_context=run_config.policy_context)
+    space = contexts.suite_contexts(run_config.env_name).space
     factory = learner.train_kwargs(space)["network_factory"]
-    network = checkpoint_module.get_network(config, factory.func)
-    return ppo_networks.make_inference_fn(network)(parameters, deterministic=deterministic)
+    return checkpoint_module.get_network(config, factory.func), parameters
 
 
-def replay(
-    run_config: argparse.Namespace, policy, context_spec: str, episodes: int, seed: int, output_directory: pathlib.Path | None,
-    width: int, height: int, camera: str,
-) -> List[EpisodeOutcome]:
-    """Roll the policy out for ``episodes`` whole episodes in one fixed context; one MP4 each
-    when ``output_directory`` is given."""
+def policy_only_learner_view(
+    network: ppo_networks.PPONetworks, parameters, episodes: Transition, discounting: float, reward_scaling: float, gae_lambda: float
+) -> LearnerView:
+    """The learner's view from a policy-only checkpoint: V and the reward advantage by the loss's
+    arithmetic; the cost critic and λ are not in the checkpoint, so their fields are NaN."""
+    normaliser, _, value_parameters = parameters
+    time_first = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), episodes)  # [T, K, ...]
+    values = network.value_network.apply(normaliser, value_parameters, time_first.observation)
+    bootstrap = network.value_network.apply(normaliser, value_parameters, jax.tree_util.tree_map(lambda x: x[-1], time_first.next_observation))
+    truncation = time_first.extras["state_extras"]["truncation"]
+    _, reward_advantage = compute_gae(
+        truncation=truncation, termination=(1 - time_first.discount) * (1 - truncation), rewards=time_first.reward * reward_scaling,
+        values=values, bootstrap_value=bootstrap, lambda_=gae_lambda, discount=discounting,
+    )
+    batch_first = lambda per_step: jnp.swapaxes(per_step, 0, 1)
+    unknown = jnp.full(episodes.reward.shape, jnp.nan)
+    return LearnerView(
+        value=batch_first(values), cost_value=unknown, lagrange_multiplier=unknown,
+        reward_advantage=batch_first(reward_advantage), cost_advantage=unknown, lagrangian_advantage=unknown,
+    )
+
+
+def replay_context(
+    run_config: argparse.Namespace, network: ppo_networks.PPONetworks, parameters, deterministic: bool,
+    context_spec: str, episodes: int, seed: int, recorder: EpisodeRecorder, environment_steps: int,
+) -> ContextOutcome:
+    """Roll the policy out for ``episodes`` whole episodes in one context, at once, and record them."""
     suite = contexts.suite_contexts(run_config.env_name)
     distribution = contexts.parse_distribution(context_spec, suite, total_rounds=1)
     env = envs.get_environment(run_config.env_name, level=run_config.difficulty, **(run_config.env_kwargs or {}))
     env = wrap_for_context_evaluation(env, distribution, episode_length=run_config.episode_length)
-    reset, step = jax.jit(env.reset), jax.jit(env.step)
-    act = jax.jit(policy)
-
-    outcomes: List[EpisodeOutcome] = []
-    key = jax.random.PRNGKey(seed)
-    for episode in range(episodes):
-        key, reset_key = jax.random.split(key)
-        state = reset(jax.random.split(reset_key, 1))
-        frames, rewards, costs = [], [], []
-        for _ in range(run_config.episode_length):
-            key, action_key = jax.random.split(key)
-            action, _ = act(state.obs, action_key)
-            state = step(state, action)
-            rewards.append(float(state.reward[0]))
-            costs.append(float(state.info[COST_KEY][0]))
-            if output_directory is not None:
-                frames.append(image.render_array(env.sys, jax.tree.map(lambda x: x[0], state.pipeline_state), height=height, width=width, camera=camera))
-            if bool(state.done[0]):
-                break
-        video = None
-        if output_directory is not None:
-            video = output_directory / f"{contexts.spec_label(context_spec)}_episode{episode}_return{sum(rewards):.1f}_cost{sum(costs):.0f}.mp4"
-            imageio.imwrite(video, np.stack(frames), fps=25, codec="libx264")
-        outcomes.append(EpisodeOutcome(context_spec, episode, len(rewards), sum(rewards), sum(costs), video))
-        print(f"{context_spec:>10} episode {episode}: {len(rewards):4d} steps, return {sum(rewards):5.1f}, cost {sum(costs):6.1f}" + (f" -> {video.name}" if video else ""), flush=True)
-    return outcomes
+    evaluator = acting.Evaluator(
+        env, functools.partial(ppo_networks.make_inference_fn(network), deterministic=deterministic),
+        num_eval_envs=episodes, episode_length=run_config.episode_length, action_repeat=1,
+        key=jax.random.PRNGKey(seed), recording=recorder.recording,
+    )
+    metrics, recorded = evaluator.run_recorded_evaluation(parameters, training_metrics={}, aggregate_episodes=False)
+    episode_batches = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), recorded)  # [K, T, ...]
+    view = policy_only_learner_view(network, parameters, episode_batches, run_config.discounting, run_config.reward_scaling, run_config.gae_lambda)
+    recorder.record(contexts.spec_label(context_spec), environment_steps, recorded, view)
+    return ContextOutcome(context_spec, np.asarray(metrics["eval/episode_reward"]), np.asarray(metrics["eval/episode_cost"]))
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--run", required=True, help="W&B run name (== id) of a context run trained with --store_model true")
     parser.add_argument("--contexts", nargs="+", required=True, help="context specs, e.g. level:1 level:2 level:3 or uniform")
-    parser.add_argument("--episodes", type=int, default=3, help="episodes per context")
+    parser.add_argument("--episodes", type=int, default=64, help="episodes per context, rolled out in parallel")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--deterministic", action="store_true", help="the mean action instead of the sampling policy the run was evaluated with")
-    parser.add_argument("--no-video", action="store_true", help="numbers only; no rendering (about 50x faster)")
-    parser.add_argument("--output_directory", type=pathlib.Path, default=pathlib.Path("replays"))
-    parser.add_argument("--camera", default="fixedfar")
-    parser.add_argument("--width", type=int, default=640)
-    parser.add_argument("--height", type=int, default=480)
+    parser.add_argument("--output_directory", type=pathlib.Path, default=pathlib.Path("replays"),
+                        help="records go to <output_directory>/<run name>/seed<seed>/ (one replay never overwrites another)")
     parser.add_argument("--entity", default=WANDB_ENTITY)
     parser.add_argument("--project", default=WANDB_PROJECT)
     arguments = parser.parse_args()
 
     repository = pathlib.Path(__file__).resolve().parents[1]
     run = wandb.Api().run(f"{arguments.entity}/{arguments.project}/{arguments.run}")
-    require_the_runs_commit(run, repository)
+    require_the_runs_policy_code(run.commit, repository)
     run_config = argparse.Namespace(**run.config)
-    checkpoint_directory = fetch_latest_checkpoint(run, repository / "replays" / "checkpoints")
+    checkpoint_directory = fetch_latest_checkpoint(run, arguments.output_directory / "checkpoints")
+    environment_steps = int(checkpoint_directory.name)
     deterministic = arguments.deterministic or bool(run_config.deterministic_eval)
     print(
-        f"{run.name}: arm {run.config['arm']!r}, checkpoint {checkpoint_directory.name} ({int(checkpoint_directory.name):,} steps), "
+        f"{run.name}: arm {run.config['arm']!r}, checkpoint at {environment_steps:,} steps, "
         f"{'deterministic' if deterministic else 'sampling'} policy (the run evaluated with deterministic_eval={run_config.deterministic_eval})"
     )
-    policy = policy_from_checkpoint(checkpoint_directory, run_config, deterministic)
+    network, parameters = networks_from_checkpoint(checkpoint_directory, run_config)
+    recorder = EpisodeRecorder(
+        directory=arguments.output_directory / run.name / f"seed{arguments.seed}", env_name=run_config.env_name, run_name=run.name,
+        arm=run.config["arm"], num_episodes=arguments.episodes,
+        sensors_key=contexts.SENSORS_KEY, context_key=contexts.TRANSITION_CONTEXT_KEY,
+    )
 
-    output_directory = None if arguments.no_video else arguments.output_directory / run.name
-    if output_directory is not None:
-        output_directory.mkdir(parents=True, exist_ok=True)
-    outcomes: List[EpisodeOutcome] = []
-    for context_spec in arguments.contexts:
-        outcomes.extend(replay(run_config, policy, context_spec, arguments.episodes, arguments.seed, output_directory, arguments.width, arguments.height, arguments.camera))
-
-    print(f"\n{'context':>10} {'episodes':>8} {'mean return':>12} {'mean cost':>10} {'cost sd':>8} {'under budget':>13}   budget {run_config.safety_bound:g}")
-    for context_spec in arguments.contexts:
-        rows = [outcome for outcome in outcomes if outcome.context_spec == context_spec]
-        costs = np.array([r.episode_cost for r in rows])
+    outcomes = [
+        replay_context(run_config, network, parameters, deterministic, spec, arguments.episodes, arguments.seed, recorder, environment_steps)
+        for spec in arguments.contexts
+    ]
+    print(f"\n{'context':>10} {'episodes':>8} {'return':>8} {'cost':>8} {'cost sd':>8} {'cost max':>9} {'under budget':>13}   budget {run_config.safety_bound:g}")
+    for outcome in outcomes:
+        under = int((outcome.costs <= run_config.safety_bound).sum())
         print(
-            f"{context_spec:>10} {len(rows):8d} {np.mean([r.episode_return for r in rows]):12.1f} {costs.mean():10.1f} {costs.std():8.1f} "
-            f"{int((costs <= run_config.safety_bound).sum()):6d} / {len(rows):<4d}"
+            f"{outcome.context_spec:>10} {len(outcome.costs):8d} {outcome.returns.mean():8.1f} {outcome.costs.mean():8.1f} "
+            f"{outcome.costs.std():8.1f} {outcome.costs.max():9.1f} {under:6d} / {len(outcome.costs):<4d}"
         )
-    if output_directory is not None:
-        print(f"videos in {output_directory}")
+    print(f"records in {recorder.directory}; review with: python -m training.review --records {recorder.directory.parent}")
 
 
 if __name__ == "__main__":

@@ -171,7 +171,7 @@ LEARNERS = {
 def _record_a_run(directory: pathlib.Path, learner: C.Learner) -> C.ContextTrainingSetup:
     setup = C.context_training_setup(ENV_NAME, "uniform", "level:3", learner, num_timesteps=NUM_TIMESTEPS, num_envs=8,
                                      batch_size=8, unroll_length=5, num_minibatches=2)
-    recorder = EpisodeRecorder(directory, ENV_NAME, "tiny_run", setup.arm, num_episodes=2)
+    recorder = EpisodeRecorder(directory, ENV_NAME, "tiny_run", setup.arm, num_episodes=2, sensors_key=C.SENSORS_KEY, context_key=C.TRANSITION_CONTEXT_KEY)
     assert recorder.recording == EvaluationRecording(2, ("cost", "truncation", TRANSITION_SCENE_KEY, C.TRANSITION_CONTEXT_KEY))
     train_ppo_lag(environment=envs.get_environment(ENV_NAME, level=1, backend="mjx"), num_timesteps=NUM_TIMESTEPS, seed=0,
                   progress_fn=lambda *_: None, safety_bound=25.0, initial_lambda_lagr=0.1, **TINY, **setup.train_kwargs(),
@@ -224,7 +224,7 @@ def test_every_evaluation_of_a_run_leaves_its_first_episodes_as_records(recorded
 
 
 def test_recorder_refuses_an_unroll_of_the_wrong_width(tmp_path):
-    recorder = EpisodeRecorder(tmp_path, ENV_NAME, "run", "uniform", num_episodes=2)
+    recorder = EpisodeRecorder(tmp_path, ENV_NAME, "run", "uniform", num_episodes=2, sensors_key=C.SENSORS_KEY, context_key=C.TRANSITION_CONTEXT_KEY)
     with pytest.raises(ValueError, match="recorded 1 episodes"):
         recorder.record("deployment", 0, _unroll(width=1), _view(width=1))
 
@@ -244,7 +244,7 @@ def _view(width: int, steps: int = 3) -> LearnerView:
 def test_trainer_refuses_a_recorder_without_the_agents_learner_view():
     from training.agents.ppo import train as ppo_train
 
-    recorder = EpisodeRecorder(pathlib.Path("/nonexistent"), ENV_NAME, "run", "uniform", num_episodes=1)
+    recorder = EpisodeRecorder(pathlib.Path("/nonexistent"), ENV_NAME, "run", "uniform", num_episodes=1, sensors_key=C.SENSORS_KEY, context_key=C.TRANSITION_CONTEXT_KEY)
     with pytest.raises(ValueError, match="learner_view_fn"):
         ppo_train.train(environment=envs.get_environment(ENV_NAME, level=1, backend="mjx"), num_timesteps=80, episode_length=20,
                         num_envs=4, batch_size=4, num_minibatches=1, unroll_length=5, episode_recorder=recorder)

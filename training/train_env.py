@@ -198,6 +198,7 @@ def main():
                 context_kwargs["episode_recorder"] = EpisodeRecorder(
                     directory=Path(wandb.run.dir) / RECORDS_DIRECTORY, env_name=env_name, run_name=run_name,
                     arm=context_setup.arm, num_episodes=config.record_episodes,
+                    sensors_key=contexts.SENSORS_KEY, context_key=contexts.TRANSITION_CONTEXT_KEY,
                 )
             unsupported = set(context_kwargs) - set(filter_kwargs_for_fn(train_fn_base, context_kwargs))
             if unsupported:

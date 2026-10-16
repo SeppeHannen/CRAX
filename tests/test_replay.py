@@ -1,4 +1,5 @@
-"""A run's policy is replayed by the code that trained it, from its latest checkpoint."""
+"""A run's policy is replayed by the code that trained it (or code that leaves the policy's code
+untouched), from its latest checkpoint."""
 from __future__ import annotations
 
 import dataclasses
@@ -51,16 +52,29 @@ def test_the_latest_checkpoint_is_fetched_once_and_only_that_one(tmp_path: pathl
         replay.fetch_latest_checkpoint(_Run("r2", "bare", "abc", ["config.yaml"]), tmp_path)
 
 
-def test_the_replay_refuses_a_checkout_at_another_commit(tmp_path: pathlib.Path):
+def _commit(repository: pathlib.Path, path: str, text: str) -> str:
+    git = ["git", "-C", str(repository)]
+    (repository / path).parent.mkdir(parents=True, exist_ok=True)
+    (repository / path).write_text(text)
+    subprocess.run([*git, "add", path], check=True)
+    subprocess.run([*git, "commit", "--quiet", "-m", path], check=True)
+    return subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def test_the_replay_runs_at_the_runs_commit_or_a_descendant_that_leaves_the_policy_code_alone(tmp_path: pathlib.Path):
     subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True)
     git = ["git", "-C", str(tmp_path)]
     subprocess.run([*git, "config", "user.email", "t@t"], check=True)
     subprocess.run([*git, "config", "user.name", "t"], check=True)
-    (tmp_path / "a").write_text("a")
-    subprocess.run([*git, "add", "a"], check=True)
-    subprocess.run([*git, "commit", "--quiet", "-m", "first"], check=True)
-    head = subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    trained_at = _commit(tmp_path, "training/contexts/networks.py", "networks v1")
+    replay.require_the_runs_policy_code(trained_at, tmp_path)  # the run's commit itself
 
-    replay.require_the_runs_commit(_Run("r", "run", head, []), tmp_path)
-    with pytest.raises(RuntimeError, match="replayed by the code that trained it"):
-        replay.require_the_runs_commit(_Run("r", "run", "0" * 40, []), tmp_path)
+    _commit(tmp_path, "training/review/page.py", "a tool added later")
+    replay.require_the_runs_policy_code(trained_at, tmp_path)  # descends, policy code untouched
+
+    with pytest.raises(RuntimeError, match="does not descend"):
+        replay.require_the_runs_policy_code("0" * 40, tmp_path)
+
+    _commit(tmp_path, "training/contexts/networks.py", "networks v2")
+    with pytest.raises(RuntimeError, match="training/contexts/networks.py"):
+        replay.require_the_runs_policy_code(trained_at, tmp_path)

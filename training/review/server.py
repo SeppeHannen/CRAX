@@ -18,6 +18,8 @@ import pathlib
 import urllib.parse
 from typing import Any, Dict, Tuple
 
+import numpy as np
+
 from training.evaluation.record import EpisodeRecord
 from training.review.library import Library
 from training.review.renderer import DEFAULT_CAMERA, Renderers
@@ -58,8 +60,11 @@ class ReviewServer(http.server.ThreadingHTTPServer):
 
     def episode_json(self, index: int) -> Dict[str, Any]:
         record: EpisodeRecord = self.record(index)
+        # A learner-view value the agent could not supply (NaN in the record: a policy-only
+        # checkpoint has no cost critic and no λ) travels as null — JSON has no NaN and the
+        # page shows the trace as a gap and the readout as "unknown".
         per_step = {
-            name: getattr(record, name).tolist()
+            name: [None if np.isnan(value) else float(value) for value in getattr(record, name)]
             for name in ("reward", "cost", "value", "cost_value", "lagrange_multiplier",
                          "reward_advantage", "cost_advantage", "lagrangian_advantage")
         }
