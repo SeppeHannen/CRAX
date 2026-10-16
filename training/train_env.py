@@ -4,13 +4,11 @@ Based on mourad_lag.ipynb training approach.
 """
 
 import functools
-import os
 from datetime import datetime
-from pathlib import Path
 
 import wandb
 from crax import envs
-from training import contexts, dashboard
+from training import checkpoint, contexts, dashboard
 from training.config import build_base_parser
 from training.evaluation import RECORDS_DIRECTORY, EpisodeRecorder
 from training.pixels import PixelObservation
@@ -184,10 +182,7 @@ def main():
         )
 
         if config.store_model:
-            root_dir = Path(__file__).parent.parent.resolve()  # repo root, not training/
-            ckpt_root = root_dir / config.model_dir / run_name
-            os.makedirs(ckpt_root, exist_ok=True)
-            cfg["save_checkpoint_path"] = ckpt_root
+            cfg["save_checkpoint_path"] = checkpoint.run_checkpoint_directory()
 
         progress_fn = wandb_progress_fn(verbose=not config.quiet)
 

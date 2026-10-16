@@ -127,6 +127,11 @@ def _mlp_over_parts(
             return scale_to_bounds(values, bounds)
         return preprocess_observations_fn(values, networks.normalizer_select(processor_params, part))
 
+    def scaled(part: str, processor_params: running_statistics.RunningStatisticsState, values: jax.Array) -> jax.Array:
+        if part == CONTEXT_OBSERVATION_KEY:
+            return scale_to_bounds(values, bounds)
+        return preprocess_observations_fn(values, networks.normalizer_select(processor_params, part))
+
     def apply(processor_params: running_statistics.RunningStatisticsState, params: types.Params, observation: Mapping[str, jax.Array]) -> jax.Array:
         pieces = [scaled(part, processor_params, observation[part]) for part in parts]
         if latent_size:
