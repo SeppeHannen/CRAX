@@ -32,7 +32,7 @@ _COMMON = (
     "--env_name", "safe_goal_point", "--alg", "ppo_lag",
     "--deployment_distribution", "level:3",
     "--initial_lambda_lagr", "0.1", "--lagrangian_coef_rate", "1",
-    "--vision", "--vision_obs_mode", "pixels+state",
+    "--vision", "--vision_obs_mode", "pixels+state", "--gpu_memory_fraction", "0.75",  # the epoch program peaks at 19.3 GiB
     "--num_envs", "1024", "--episode_length", "1000",
     "--unroll_length", "20", "--batch_size", "1024", "--num_minibatches", "4", "--num_updates_per_batch", "4",
     "--record_episodes", "4", "--store_model", "true",

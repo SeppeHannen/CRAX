@@ -34,7 +34,7 @@ def main():
         config.vision_camera = morphology_override(env_name, VISION_CAMERA_OVERRIDES) or 'vision'
 
     # Setup GPU environment
-    setup_gpu_environment(vision=config.vision)
+    setup_gpu_environment(vision=config.vision, gpu_memory_fraction=config.gpu_memory_fraction)
     # Every run is tracked in W&B; abort before compiling anything if credentials are missing
     require_wandb_login()
 

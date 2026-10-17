@@ -50,7 +50,7 @@ def main():
     pixel_observation = PixelObservation.from_config(config)
 
     # Setup GPU environment
-    setup_gpu_environment(vision=config.vision)
+    setup_gpu_environment(vision=config.vision, gpu_memory_fraction=config.gpu_memory_fraction)
     # Every run is tracked in W&B; abort before compiling anything if credentials are missing
     require_wandb_login()
 

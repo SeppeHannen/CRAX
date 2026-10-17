@@ -692,6 +692,13 @@ the run's W&B files; watch and compare them with
 (`design/episode_review.md`: why, what a reviewer can do, what a record carries).
 Records of a run on this machine are read live from `wandb/run-*/files/episodes/`.
 
+A context run from pixels adds `--vision --vision_obs_mode pixels+state` (the
+pixels join `{sensors, context}`; `pixels` alone would drop the sensors) and
+`--gpu_memory_fraction 0.75`: under `--vision` JAX is capped at half the GPU so
+MJWarp's renderer has room, and the contextual epoch program at 1024
+environments peaks at 19.3 GiB, over half of a 40 GiB A100. The flag states the
+share in the run's config instead of an environment variable set by hand.
+
 Runs in one `--wandb_group` are one experiment and must share every flag but
 the distribution; the first run creates the group's W&B view.
 

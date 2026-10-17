@@ -258,6 +258,10 @@ def add_shared_training_args(parser: argparse.ArgumentParser) -> argparse.Argume
     parser.add_argument("--vision_frame_stack", type=int, default=3, help="Number of frames to stack channel-wise")
     parser.add_argument("--vision_augment", type=bool_type, nargs="?", const=True, default=True,
                         help="DrQ-style random translation of pixel observations during SGD.")
+    parser.add_argument("--gpu_memory_fraction", type=float, default=None,
+                        help="The share of GPU memory JAX may take (XLA_PYTHON_CLIENT_MEM_FRACTION); the rest is MJWarp's. "
+                             "Default: 0.5 under --vision, JAX's own default (0.75) otherwise. A context run from pixels "
+                             "at 1024 envs peaks at 19.3 GiB, so on a 40 GiB card 0.5 is too tight: pass 0.75.")
 
     # --- Video Recording ---
     parser.add_argument("--cameras", type=str, nargs="+", default=["fixedfar", "vision"], help="Camera names/ids")

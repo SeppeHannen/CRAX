@@ -102,7 +102,7 @@ def print_progress_fn(num_steps: int, metrics: Dict[str, Any], verbose: bool = T
             print(f"  {key}: {arr.reshape(-1).mean().item() if arr.size else value}")
 
 
-def setup_gpu_environment(vision: bool = False):
+def setup_gpu_environment(vision: bool = False, gpu_memory_fraction: Optional[float] = None):
     """Setup GPU environment for MuJoCo and XLA.
 
     Args:
@@ -111,6 +111,10 @@ def setup_gpu_environment(vision: bool = False):
         buffers alongside JAX in the same process. JAX preallocates ~75-90%
         of GPU memory by default. On small GPUs this starves MJWarp. Only
         applied if the user hasn't already set XLA_PYTHON_CLIENT_MEM_FRACTION.
+      gpu_memory_fraction: the share JAX may take, stated by the run
+        (``--gpu_memory_fraction``); overrides the vision cap. Must be set
+        before JAX initialises its backend, which is why it is an argument of
+        this function and not read later.
     """
     # Configure MuJoCo to use the EGL rendering backend (requires GPU)
     os.environ['MUJOCO_GL'] = 'egl'
@@ -120,7 +124,12 @@ def setup_gpu_environment(vision: bool = False):
     xla_flags += ' --xla_gpu_triton_gemm_any=True'
     os.environ['XLA_FLAGS'] = xla_flags
 
-    if vision and 'XLA_PYTHON_CLIENT_MEM_FRACTION' not in os.environ:
+    if gpu_memory_fraction is not None:
+        if not 0.0 < gpu_memory_fraction < 1.0:
+            raise ValueError(f"--gpu_memory_fraction must be in (0, 1), got {gpu_memory_fraction}")
+        os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = str(gpu_memory_fraction)
+        print(f"JAX may take {gpu_memory_fraction:.2f} of GPU memory (XLA_PYTHON_CLIENT_MEM_FRACTION); the rest is MJWarp's.")
+    elif vision and 'XLA_PYTHON_CLIENT_MEM_FRACTION' not in os.environ:
         os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.5'
         print(
             "Vision mode: capped XLA_PYTHON_CLIENT_MEM_FRACTION=0.5 to leave "

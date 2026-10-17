@@ -92,6 +92,20 @@ before anything compiles.
   description), so the dashboards show all three on every constrained arm
   regardless of which teacher runs, and a reward-only agent would show one.
 
+**The signal pass costs no more memory than the loss.** `compute` runs the
+critics over the whole round's data (`[B, T]`, B = batch_size × num_minibatches)
+before SGD, where the loss only ever sees one minibatch. For a state-based run
+that is a few megabytes; for a run from pixels it is the vision encoder over
+every frame of the round at once — 1024 environments × 80 steps — and the first
+convolution's output alone is 2.2 GiB, which exceeded a 40 GiB A100 next to the
+epoch program (vision smoke, 2026-10-17). `ppo_lag_losses.critic_estimates`
+therefore takes `pieces` and maps over that many consecutive pieces of the
+batch; PPO-Lagrange passes `num_minibatches`, so the activations are bounded by
+what the loss itself needs. The estimates are unchanged — GAE runs along time
+within one batch element, so a piece boundary cuts nothing — and the Lagrangian
+advantage is still standardised over the whole batch, as before. Tested against
+the one-pass result.
+
 **Adding a teacher** that wants an existing statistic: write the class, set
 `required_statistics`, read `episodes.statistics[s]`. Nothing else changes.
 **Adding a fold** (Robust PLR's positive value loss, `mean max(x, 0)`): one
