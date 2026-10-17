@@ -150,6 +150,18 @@ The staged-told rows are confounded by the context normaliser (Known defects)
 and are rerun after the fix. **Learner settled: `additive told` is the default
 for every later arm; `scalar blind` stays as the published baseline row.**
 
+**Follow-up (2026-10-17, same arms from pixels + sensors, group
+`goal_point_learners_vision_500M`): the budget still holds under λ(ω) (7 of 10
+told arms within 25, 2 of 5 scalar), the clean staged-told arms are the best
+policies of either run (19–20 goals on level 3 at cost 20–28, 23–24 on Ω), the
+uniform and PLR told arms lost their return (none above 8 goals under budget),
+and every arm swings between evaluations: λ oscillates with a 16–43 M-step
+period. The run changed the observation and, through 1024 envs, the multiplier
+updates per step (8×); it cannot say which did what.** Write-up:
+`experiments/2026-10-17_goal_point_learners_vision_500M.md`, with an
+interactive return–cost trajectory page. Next: state the multiplier rate per
+environment step and rerun rate-matched (item 1–2 there).
+
 **Status (2026-10-15): built, CPU-tested, on branch `contextual-learner`;
 the 500 M experiment ran from `experiment/goal_point_learners_500M`.** Design and what is logged:
 `design/contextual_learner.md`. λ(ω) is a function of the context fitted each
@@ -422,6 +434,24 @@ program costs ~50 s; a per-slot value costs nothing. Throughput at 8192 envs
 every step — both stock).
 
 ## Results so far
+
+**Goal point, the same fifteen arms from pixels + sensors, 500 M steps, one
+seed** (`experiments/2026-10-17_goal_point_learners_vision_500M.md`, Snellius,
+5 h 40 per arm). **The per-context constraint still holds the level-3 budget**
+(7 of 10 told arms within 25; 2 of 5 scalar, one standing still) **and the
+staged curriculum under λ(ω), readable for the first time after the normaliser
+fix, gives the best policy of either run** (staged additive told 19.6 goals /
+cost 20 on level 3, 23.6 / 5 on Ω; staged network told 18.9 / 28). **The
+uniform and PLR told arms lost the return they had** (PLR reward additive 13.8 →
+5.7, network 10.8 → 2.4; none of the eight ends above 8 goals under budget; Ω
+return 21–24.5 → 10–16). **Every arm swings between evaluations two to five
+times more than before** (|Δ return| 1.3–5 goals against a 128-episode sampling
+error of 0.1–0.6): λ oscillates with a 16–43 M-step period (sd/mean 0.16–0.60
+vs 0.02–0.22) and λ at the hardest context runs to 15–58. The multiplier steps
+once per round at the same rate, and this run has 8× the rounds per step (1024
+envs); the observation and the dual-ascent clock changed together, so the pixels
+are not yet read. Interactive trajectory page:
+`experiments/figures/2026-10-17_goal_point_learners_vision_500M/trajectories.html`.
 
 **Goal point, five distributions × three learners, 500 M steps, one seed**
 (`experiments/2026-10-15_goal_point_learners_500M.md`, Snellius). **Under the

@@ -106,7 +106,7 @@ def total_hazards(frame: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
     return steps, total
 
 
-def end_state_figure(frames: Frames, table: pd.DataFrame) -> None:
+def end_state_figure(frames: Frames, table: pd.DataFrame, figures: pathlib.Path = FIGURES) -> None:
     """Every arm as one point in the return–cost plane of level 3 and of Ω: colour says the
     distribution, marker says the learner."""
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.6))
@@ -134,11 +134,11 @@ def end_state_figure(frames: Frames, table: pd.DataFrame) -> None:
     axes[1].legend(handles=distribution_handles + learner_handles, fontsize=7, loc="lower right")
     fig.suptitle(f"End state of the fifteen arms: mean of the last {LAST_EVALUATIONS} evaluations (400–510 M), 128 episodes each, one seed", y=1.0)
     fig.tight_layout()
-    fig.savefig(FIGURES / "end_state.png", bbox_inches="tight")
+    fig.savefig(figures / "end_state.png", bbox_inches="tight")
     plt.close(fig)
 
 
-def level3_figure(frames: Frames) -> None:
+def level3_figure(frames: Frames, figures: pathlib.Path = FIGURES) -> None:
     """Return and cost on level 3 through training, one column per learner, one line per distribution."""
     fig, axes = plt.subplots(2, 3, figsize=(13, 6), sharex=True, sharey="row")
     for column, (learner, learner_label, _) in enumerate(LEARNERS):
@@ -161,11 +161,11 @@ def level3_figure(frames: Frames) -> None:
     axes[0, 0].legend(fontsize=7, loc="upper left")
     fig.suptitle("The frozen policy on level 3 through training, 128 episodes per point, one seed", y=1.0)
     fig.tight_layout()
-    fig.savefig(FIGURES / "level3.png", bbox_inches="tight")
+    fig.savefig(figures / "level3.png", bbox_inches="tight")
     plt.close(fig)
 
 
-def multiplier_figure(frames: Frames) -> None:
+def multiplier_figure(frames: Frames, figures: pathlib.Path = FIGURES) -> None:
     """What the constraint did: the multiplier the batch was weighted by on average (solid) and at the
     round's hardest context (dashed; a per-context arm only), and the training cost it reacted to."""
     fig, axes = plt.subplots(2, 3, figsize=(13, 6), sharex=True, sharey="row")
@@ -194,15 +194,20 @@ def multiplier_figure(frames: Frames) -> None:
     axes[0, 0].legend(fontsize=7, loc="lower right")
     fig.suptitle(f"The multiplier and the training cost it reacts to, {window}-round moving mean, one seed", y=1.0)
     fig.tight_layout()
-    fig.savefig(FIGURES / "multiplier.png", bbox_inches="tight")
+    fig.savefig(figures / "multiplier.png", bbox_inches="tight")
     plt.close(fig)
+
+
+def load_frames(data: pathlib.Path) -> Frames:
+    """The fifteen arms' histories from ``<arm>.parquet`` files written by pull_group_history.py."""
+    return {arm: pd.read_parquet(data / f"{arm.stem}.parquet") for arm in ARMS}
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("data", type=pathlib.Path, help="directory of <arm>.parquet files from pull_group_history.py")
     arguments = parser.parse_args()
-    frames: Frames = {arm: pd.read_parquet(arguments.data / f"{arm.stem}.parquet") for arm in ARMS}
+    frames = load_frames(arguments.data)
     FIGURES.mkdir(parents=True, exist_ok=True)
     table = end_states(frames)
     end_state_figure(frames, table)
