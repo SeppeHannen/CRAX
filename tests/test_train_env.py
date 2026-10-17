@@ -1,6 +1,6 @@
 """The entry point every experiment goes through (``python -m training.train_env``) runs end to
 end for one tiny round on CPU, offline W&B, and leaves what a run must leave under its run
-directory: episode records and a whole-learner checkpoint.
+directory — episode records and a whole-learner checkpoint — handed to the run for upload.
 
 The other tests call ``train()`` directly; only this one exercises the argument parsing, the
 W&B set-up, the recorder and checkpoint wiring and the module's imports as a job on the
@@ -49,3 +49,11 @@ def test_the_entry_point_runs_a_tiny_context_run_and_leaves_records_and_a_whole_
     assert steps, "no checkpoint written"
     assert (steps[-1] / checkpoint.LEARNER_STATE_DIRECTORY).is_dir(), "the checkpoint holds the policy only"
     assert len(checkpoint.load(steps[-1])) == 3, "(normaliser, policy, value): no encoder slot without --vision"
+
+    # W&B uploads only the files it is handed; an offline run's transaction log names exactly those
+    # (verified: a file written into the run directory but not handed does not appear). The vision
+    # smoke of 2026-10-17 finished with every record on disk and none in W&B.
+    handed = next(files.parent.glob("*.wandb")).read_bytes()
+    for path in sorted((files / RECORDS_DIRECTORY).iterdir()):
+        assert path.name.encode() in handed, f"{path.name} was written but not handed to the run"
+    assert f"{steps[-1].name}/{checkpoint.LEARNER_STATE_DIRECTORY}/".encode() in handed, "the learner state was not handed to the run"

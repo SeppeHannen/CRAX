@@ -235,6 +235,7 @@ def main() -> None:
         arm=run.config["arm"], num_episodes=arguments.episodes,
         sensors_key=contexts.SENSORS_KEY, context_key=contexts.TRANSITION_CONTEXT_KEY,
         image_keys=(pixel_observation.key,) if pixel_observation is not None else (),
+        written=lambda path: None,  # a replay's records are local files; there is no run to hand them to
     )
 
     outcomes = [

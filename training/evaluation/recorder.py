@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import dataclasses
 import pathlib
-from typing import List, Tuple
+from typing import Callable, List, Tuple
 
 import jax
 import numpy as np
@@ -57,6 +57,7 @@ class EpisodeRecorder:
     sensors_key: str  # the part of the observation dict the record keeps as `observation`
     context_key: str  # the `state.info` field holding the context the transition started from
     image_keys: Tuple[str, ...]  # the parts of the observation dict that are camera frames; () for a state-based run
+    written: Callable[[pathlib.Path], None]  # told of every record file once it exists (the run hands it to W&B)
 
     @property
     def recording(self) -> EvaluationRecording:
@@ -104,7 +105,9 @@ class EpisodeRecorder:
                 cost_advantage=view.cost_advantage[k, steps],
                 lagrangian_advantage=view.lagrangian_advantage[k, steps],
             )
-            paths.append(record.save(self.directory))
+            path = record.save(self.directory)
+            self.written(path)
+            paths.append(path)
         return paths
 
 

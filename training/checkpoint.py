@@ -27,6 +27,7 @@ from typing import Any, Dict, Tuple, Union
 import jax
 import numpy as np
 from etils import epath
+from training.run_files import hand_to_run
 from flax.training import orbax_utils
 from ml_collections import config_dict
 from orbax import checkpoint as ocp
@@ -55,21 +56,6 @@ def run_checkpoint_directory() -> epath.Path:
     path.mkdir(exist_ok=True)
     return path
 
-
-def _upload_with_run(checkpoint_path: epath.Path) -> None:
-    """Hand a written checkpoint to the active W&B run when it lies in the run's directory.
-
-    W&B uploads only the files it is told about, after they exist (a glob registered
-    before the files appear uploads nothing; verified 2026-10-15), so this is called
-    once per written checkpoint. A checkpoint written elsewhere — the transfer
-    benchmark's working directory, which its own safe phases restore from — stays local.
-    """
-    if wandb.run is None:
-        return
-    run_directory = epath.Path(wandb.run.dir).resolve()
-    if run_directory not in checkpoint_path.resolve().parents:
-        return
-    wandb.run.save(str(checkpoint_path / '**'), base_path=str(run_directory), policy='now')
 
 
 def _get_function_kwargs(func: Any) -> Dict[str, Any]:
@@ -175,7 +161,7 @@ def save(
 
     config_path = ckpt_path / config_fname
     config_path.write_text(config.to_json())
-    _upload_with_run(ckpt_path)
+    hand_to_run(ckpt_path)  # a checkpoint elsewhere (the transfer benchmark's working directory) stays local
 
 
 LEARNER_STATE_DIRECTORY = 'learner'
@@ -198,7 +184,7 @@ def save_learner_state(path: Union[str, epath.Path], step: int, learner_state: A
         directory.mkdir(parents=True)
     orbax_checkpointer = ocp.PyTreeCheckpointer()
     orbax_checkpointer.save(directory, learner_state, force=True, save_args=orbax_utils.save_args_from_target(learner_state))
-    _upload_with_run(directory)  # written after save()'s upload was registered, so it needs its own
+    hand_to_run(directory)  # written after save()'s upload was registered, so it needs its own
 
 
 def load_learner_state(path: Union[str, epath.Path], like: Any) -> Any:

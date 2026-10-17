@@ -122,7 +122,7 @@ def test_a_replayed_episode_carries_the_learners_own_view_from_the_checkpointed_
     checkpoint_directory = sorted(p for p in (tmp_path / "checkpoints").iterdir() if p.is_dir())[-1]
     learner = replay.learner_from_checkpoint(checkpoint_directory, run_config)
     recorder = EpisodeRecorder(tmp_path / "records", ENV_NAME, "tiny_run", "replay", num_episodes=3,
-                               sensors_key=contexts.SENSORS_KEY, context_key=contexts.TRANSITION_CONTEXT_KEY, image_keys=())
+                               sensors_key=contexts.SENSORS_KEY, context_key=contexts.TRANSITION_CONTEXT_KEY, image_keys=(), written=lambda path: None)
     outcome = replay.replay_context(run_config, learner, False, "level:2", episodes=3, seed=1, recorder=recorder,
                                     environment_steps=int(checkpoint_directory.name))
     assert outcome.costs.shape == (3,)

@@ -13,6 +13,7 @@ from training import checkpoint, contexts, dashboard
 from training.config import build_base_parser
 from training.evaluation import RECORDS_DIRECTORY, EpisodeRecorder
 from training.pixels import PixelObservation
+from training.run_files import hand_to_run
 from training.run_utils import (
     collect_rollout_metrics, record_episode_video, setup_gpu_environment,
     get_algorithm_train_fn, filter_kwargs_for_fn, wandb_progress_fn,
@@ -200,6 +201,7 @@ def main():
                     arm=context_setup.arm, num_episodes=config.record_episodes,
                     sensors_key=contexts.SENSORS_KEY, context_key=contexts.TRANSITION_CONTEXT_KEY,
                     image_keys=(pixel_observation.key,) if pixel_observation is not None else (),
+                    written=hand_to_run,
                 )
             unsupported = set(context_kwargs) - set(filter_kwargs_for_fn(train_fn_base, context_kwargs))
             if unsupported:
