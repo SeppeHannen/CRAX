@@ -37,7 +37,8 @@ function refreshPickers() {
   const arm = $("arm").value;
   const ofArm = state.library.episodes.filter((e) => e.arm === arm);
   const steps = unique(ofArm.map((e) => e.environment_steps)).sort((a, b) => a - b);
-  fill($("evaluation"), steps, steps.map((s) => `${s.toLocaleString()} steps`), $("evaluation").value);
+  // Keep the chosen evaluation across arms; on first load show the trained policy (the last evaluation), not step 0.
+  fill($("evaluation"), steps, steps.map((s) => `${s.toLocaleString()} steps`), $("evaluation").value || steps[steps.length - 1]);
   fill($("compare"), ["", ...steps], ["—", ...steps.map((s) => `${s.toLocaleString()} steps`)], $("compare").value);
   const targets = unique(ofArm.map((e) => e.evaluation_name));
   fill($("target"), targets, targets, $("target").value);

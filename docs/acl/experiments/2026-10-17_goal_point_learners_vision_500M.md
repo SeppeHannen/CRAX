@@ -189,9 +189,20 @@ hide a distribution or learner. It shows what the lines above cannot: on
   title is about what happened, not why.
 - **What the pixels verifiably did**: the policy is given them (the records hold
   the frames; `training.review`, camera *policy: pixels/vision*), the encoder's
-  latent reaches every head, and the composition trains at 26.8 k SPS. Whether
-  the policy *uses* them — whether the wall-pressing episodes of 2026-10-16 are
-  gone — is a question for the records of the staged additive arm, not yet read.
+  latent reaches every head, and the composition trains at 26.8 k SPS. The
+  sensors are still there in full (`pixels+state`: 62 values — inertial sensors,
+  goal and hazard lidar, goal compass, compasses to the 8 nearest hazards); the
+  camera is the only input that carries a hazard's kind.
+- **The wall-pressing failure is not gone, and the camera was in frame.**
+  Reviewed 2026-10-17 (records of the two additive-told arms, level 3, last five
+  evaluations). PLR reward additive told is near-motionless on level 3 — 1–5
+  goals in 12 of 20 episodes, λ(ω) at the level-3 context 6–19 while the staged
+  arm's is 0.7–1.1 — and its catastrophic episode (501 M, episode 3, cost 630)
+  is the 2026-10-16 failure exactly: the robot drives into a gap closed by two
+  solid hazards and keeps trying the same blocked path for the rest of the
+  episode, the two blockers visible in the policy's own frames throughout.
+  Seeing the wall did not make the policy go round it. The staged arm's 20
+  episodes score 11–28 goals, none over 46.
 - **The normaliser fix is verified** on the one row that could show it.
 
 ## What this changes in the plan
