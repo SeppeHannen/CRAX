@@ -138,8 +138,20 @@ constraint, which stays as their baseline. An *arm* is now the training
 distribution under a learner (`uniform scalar blind`, `staged:1,2,3
 additive told`); the dashboard groups lines by it.
 
-**Status (2026-10-15): built, CPU-tested, on branch `contextual-learner`,
-uncommitted additions awaiting review.** Design and what is logged:
+**Result (2026-10-15, 500 M, group `goal_point_learners_500M`, one seed; 15
+arms on Snellius): the per-context constraint puts every uniform and PLR arm
+on budget on level 3 (cost 16–25) and no scalar arm is (33–78); the told
+policy keeps 19–24.5 goals on Ω while doing so; level-3 return is the price,
+4.5–13.8 across arms, and `additive` ends above `network` on every
+unconfounded distribution. The told arms meet the budget by standing still first (51–128 M)
+and learn to move within it afterwards — the 100 M smoke's motionless end state
+was a waypoint.** Write-up: `experiments/2026-10-15_goal_point_learners_500M.md`.
+The staged-told rows are confounded by the context normaliser (Known defects)
+and are rerun after the fix. **Learner settled: `additive told` is the default
+for every later arm; `scalar blind` stays as the published baseline row.**
+
+**Status (2026-10-15): built, CPU-tested, on branch `contextual-learner`;
+the 500 M experiment ran from `experiment/goal_point_learners_500M`.** Design and what is logged:
 `design/contextual_learner.md`. λ(ω) is a function of the context fitted each
 round to the targets PPO-Lagrange's integrator names for every transition, in
 one of two classes: `network`, a small MLP, and `additive`, f(Σ h_i(ω_i)) with
@@ -171,13 +183,13 @@ training context carries no direction): λ(L2) inherited 0.27 of 0.51, λ(L3)
 
 **The arms** and what each must show:
 
-| arm | learner | policy | must show |
-|---|---|---|---|
-| `uniform` | scalar | blind | the baseline, rerun at the new λ rate |
-| `staged:1,2,3` | scalar | blind | cost on level 3 and on uniform leaves the budget |
-| `uniform` | per context | told ω | matches or beats its scalar twin |
-| `staged:1,2,3` | per context | told ω | cost on level 3 and on uniform stays near the budget, return holds |
-| `staged:1,2,3` | per context | blind | the multipliers spread across contexts while the behaviour does not |
+| arm | learner | policy | must show | 2026-10-15 |
+|---|---|---|---|---|
+| `uniform` | scalar | blind | the baseline, rerun at the new λ rate | level 3: 9.9 / 58 |
+| `staged:1,2,3` | scalar | blind | cost on level 3 and on uniform leaves the budget | 8.0 / 78, λ 29 and rising |
+| `uniform` | per context | told ω | matches or beats its scalar twin | additive 9.2 / 20, network 5.7 / 16: on budget, less return |
+| `staged:1,2,3` | per context | told ω | cost on level 3 and on uniform stays near the budget, return holds | confounded (normaliser), rerun |
+| `staged:1,2,3` | per context | blind | the multipliers spread across contexts while the behaviour does not | not run yet |
 
 **The multiplier's learning rate** drops from 10 to 1 in every new arm
 (`--lagrangian_coef_rate`; Tristan, 2026-10-14: at 10 it overshot 100× after
@@ -410,6 +422,22 @@ program costs ~50 s; a per-slot value costs nothing. Throughput at 8192 envs
 every step — both stock).
 
 ## Results so far
+
+**Goal point, five distributions × three learners, 500 M steps, one seed**
+(`experiments/2026-10-15_goal_point_learners_500M.md`, Snellius). **Under the
+per-context constraint with a told policy every uniform and PLR arm ends at the
+budget on level 3** (cost 16–25, under budget in 6–10 of the last ten
+evaluations) **and under the scalar constraint none does** (33–78, 0–3 of ten).
+The told policy holds 19–24.5 goals on Ω at the same time; level-3 return is
+the price and ranges 4.5–13.8, with PLR reward additive the best policy of the
+fifteen on both targets (13.8 / 24.5 on level 3, 24.5 / 20 on Ω). Every told arm
+first meets the level-3 budget by standing still (51–128 M, return 0.2–2.7) and
+then learns to move within it; λ at the hardest context peaks at 6–10 early and
+releases over 300–400 rounds. Scalar PLR reward collapsed to standing still
+(λ 8.5, mass drifting to sparse layouts); scalar staged is on the rate-10 road
+at a slower clock (λ 29, return falling through the last four evaluations). The
+scalar baselines at rate 1 do not reproduce the rate-10 ordering of 2026-10-11
+with one seed; the told arms' level-3 cost is consistent across eight arms.
 
 **Goal point, the three PLR scores, 500 M steps, one seed**
 (`experiments/2026-10-11_goal_point_plr_scores_500M.md`). **PLR Lagrangian
@@ -701,6 +729,28 @@ share in the run's config instead of an environment variable set by hand.
 
 Runs in one `--wandb_group` are one experiment and must share every flag but
 the distribution; the first run creates the group's W&B view.
+
+**An experiment is defined once and launched anywhere** (`training/experiments/`;
+branch `snellius`). A definition file exports an `Experiment` — the group, the
+common flags and the arms (`scripts/experiments/goal_point_learners_500M.py` is
+the model) — and two launchers read it: the local chain and the Snellius
+submitter, one SLURM job per arm, all at once. Both create the group's view
+before any job starts. A job runs a pushed commit, never a working tree; W&B
+records it, and checkpoints go into the run's W&B files (`checkpoints/`).
+
+```bash
+# local, sequential, detached
+setsid nohup .venv/bin/python -m training.experiments.local scripts/experiments/<name>.py \
+  > runs/logs/<group>_chain.log 2>&1 < /dev/null & disown
+# Snellius: one A100 per arm; --dry-run prints the job scripts. Setup once:
+#   bash scripts/snellius/install_environment.sh (on the login node), ~/.netrc for W&B
+.venv/bin/python -m training.experiments.snellius scripts/experiments/<name>.py --partition gpu_a100 --time 05:00:00
+# watch: ssh snellius squeue -u $USER; logs in ~/crax-logs/<group>/<arm>_<job>.out
+```
+
+A 500 M goal-point arm takes 1 h 50 on an A100 (93 k SPS) and costs ~240 SBU
+(128 SBU per GPU-hour; H100 192). The budget on account `tesr109122` expires
+2026-10-31.
 
 Every context run is evaluated on the deployment distribution
 (`evaluation/deployment/*`, level 3 by default) and on uniform (`evaluation/uniform/*`),
