@@ -591,7 +591,25 @@ def train(
     ):
         optimizer_state, params, key = carry
         key, key_loss = jax.random.split(key)
-        
+
+        if augment_pixels:
+            # DrQ random translation, one shift per trajectory held across its steps. Applied
+            # here, to the minibatch, rather than to the whole round's data in `sgd_step`: the
+            # distribution of shifts is the same (every trajectory draws a fresh shift each
+            # pass either way), and the translated copy held in memory is one minibatch of
+            # frames, not the round's. At 655 360 transitions of 64x64x9 pixels the round's
+            # copy alone was ~48 GB (2026-10-18).
+            key, key_rt = jax.random.split(key)
+            r_translate = functools.partial(_random_translate_pixels, key=key_rt)
+            data = types.Transition(
+                observation=r_translate(data.observation),
+                action=data.action,
+                reward=data.reward,
+                discount=data.discount,
+                next_observation=r_translate(data.next_observation),
+                extras=data.extras,
+            )
+
         if use_aux_in_loss:
             # Custom loss function with aux_state support
             (_, metrics), params, optimizer_state = gradient_update_fn(
@@ -623,18 +641,6 @@ def train(
     ):
         optimizer_state, params, key = carry
         key, key_perm, key_grad = jax.random.split(key, 3)
-
-        if augment_pixels:
-            key, key_rt = jax.random.split(key)
-            r_translate = functools.partial(_random_translate_pixels, key=key_rt)
-            data = types.Transition(
-                observation=r_translate(data.observation),
-                action=data.action,
-                reward=data.reward,
-                discount=data.discount,
-                next_observation=r_translate(data.next_observation),
-                extras=data.extras,
-            )
 
         def convert_data(x: jnp.ndarray):
             x = jax.random.permutation(key_perm, x)
