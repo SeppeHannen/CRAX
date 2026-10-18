@@ -134,7 +134,13 @@ is on `contextual-review`; the four worktrees are removed.
    CLI flag to its last effect, written when the review of that change starts:
    (i) the contextual learner — `--constraint`, `--policy_context`, the
    `{sensors, context}` observation, λ(ω) in two forms, the Ω-bounds scaling
-   (`design/contextual_learner.md` is the design; the walk is still to write);
+   (`design/contextual_learner.md` is the design; the walk is still to write).
+   One question the experiments raised is settled in this walk: the additive
+   λ(ω) moves each round by a fixed Adam budget (300 steps at 0.01) toward
+   the integrator's targets, so `--lagrangian_coef_rate` sets how far the
+   targets are but not how far λ moves — halving the rate slowed the scalar
+   λ's drift 10× and the additive's 1.2× (`experiments/2026-10-18_…`). Is
+   that the design we want, or should the fit's step scale with the rate?;
    (ii) the experiment launcher — `training/experiments`, a definition file,
    `local` and `snellius`, run-directory checkpoints, `run_files.hand_to_run`;
    (iii) the whole-learner checkpoint and the replay — `save_learner_state`,
@@ -154,13 +160,16 @@ is on `contextual-review`; the four worktrees are removed.
    (pixel wrapper dict, augmentation per minibatch, `--lagrangian_coef_rate`
    per round) are raised before anything of task 1b is built, since 1b's
    candidates all change the benchmark too.
-5. **Loose ends with a home**: the over-budget fraction logged by the
-   evaluator (task 1b, *to build*); the additive constraint's per-round step
-   governed by its fit's constants, not the rate flag (`experiments/2026-10-18`,
-   plan item 2 — decide, then either fix or document); the Markdown preview
-   broken in Giuseppe's VS Code (two preview extensions active; not the
-   repository's); the review server and the rendered previews on ports 8790
-   and 8791 are stopped when no longer needed.
+5. **Not part of the merge, noted so they are not lost.** The evaluator logs
+   each evaluation's mean and standard deviation of episode cost over its 128
+   episodes, and nothing else about their distribution; the fraction of
+   episodes over the budget and over 4× it — the numbers the tail question
+   rests on — can today only be had by replaying a checkpoint and counting.
+   Logging them every evaluation is the first thing task 1b builds. The
+   Markdown preview fails on every document in Giuseppe's VS Code (two preview
+   extensions active; the files render elsewhere) and is his machine's, not
+   the repository's. The review server on port 8790 is stopped when the vision
+   records are no longer being watched (`pkill -f training.review`).
 
 ### 1. The CMDP becomes contextual: the policy sees its context and the constraint holds per context, so a curriculum can no longer move it
 
