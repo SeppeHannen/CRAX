@@ -159,8 +159,15 @@ and every arm swings between evaluations: λ oscillates with a 16–43 M-step
 period. The run changed the observation and, through 1024 envs, the multiplier
 updates per step (8×); it cannot say which did what.** Write-up:
 `experiments/2026-10-17_goal_point_learners_vision_500M.md`, with an
-interactive return–cost trajectory page. Next: state the multiplier rate per
-environment step and rerun rate-matched (item 1–2 there).
+interactive return–cost trajectory page.
+
+**Rate-matched rerun (2026-10-18, six arms, 750 M, rate ⅛ per round): the
+swings stayed, so they are the pixel policy's, not the multiplier's; two runs
+of the same arms disagree at 500 M by as much as the distributions do (no
+ranking from one seed); PLR additive told keeps level 3 at the budget with a
+moving policy (9.4 goals / cost 18, 8 of 10).** Write-up:
+`experiments/2026-10-18_goal_point_learners_vision_750M.md`. Next: the sensors
+control at 1024 environments (batch shape vs encoder), then seeds.
 
 **Status (2026-10-15): built, CPU-tested, on branch `contextual-learner`;
 the 500 M experiment ran from `experiment/goal_point_learners_500M`.** Design and what is logged:
@@ -434,6 +441,24 @@ program costs ~50 s; a per-slot value costs nothing. Throughput at 8192 envs
 every step — both stock).
 
 ## Results so far
+
+**Goal point, six arms from pixels with the dual ascent matched per step to the
+sensors run, 750 M, one seed** (`experiments/2026-10-18_goal_point_learners_vision_750M.md`).
+**The evaluation-to-evaluation swings of 2026-10-17 are not the multiplier's:**
+at rate ⅛ per round the scalar arms' λ moves per 655 k steps exactly as with
+sensors, and level-3 return still jumps 1.8–4.1 goals between evaluations
+(sensors 0.8–1.4; sampling error 0.2–0.4); per-round training cost varies
+0.41–1.00 of its mean against 0.09–0.32. **Two runs of the same six arms
+differing only in the rate disagree at the 500 M mark by 5–10 goals**, as much
+as the distributions differ: no distribution ranking under vision from one
+seed. **The per-context constraint holds with a moving policy**: PLR additive
+told 9.4 goals / cost 18 on level 3, under budget 8 of the last 10, 17.5 on Ω;
+scalar uniform and PLR at 18–20 goals pay cost 57–68. The additive λ(ω)'s
+movement per round is set by its fit's Adam constants, not by
+`--lagrangian_coef_rate` (its step noise fell 1.2× where the scalar's fell
+10×). Candidates for the swings: the shared encoder (DrQ augmentation) or the
+1024-environment batch; the sensors-only control at 1024 environments
+separates them.
 
 **Goal point, the same fifteen arms from pixels + sensors, 500 M steps, one
 seed** (`experiments/2026-10-17_goal_point_learners_vision_500M.md`, Snellius,

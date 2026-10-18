@@ -33,7 +33,9 @@ def file_stem_of(run: wandb.apis.public.Run) -> str:
 
 
 def _scalars(row: Mapping[str, object]) -> dict:
-    return {key: value for key, value in row.items() if not isinstance(value, (dict, list))}
+    """The numeric entries of a logged row: histograms (dicts), lists and strings (a run name a
+    performance tracker logs) are not scalars and a sampled history mixes them with NaN."""
+    return {key: value for key, value in row.items() if isinstance(value, (int, float)) and not isinstance(value, bool)}
 
 
 def every_row(run: wandb.apis.public.Run) -> pd.DataFrame:
