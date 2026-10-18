@@ -106,11 +106,61 @@ task delivers. Every experiment is a `--wandb_group` of arms on
 `safe_goal_point` at 500 M steps, on the sensor observation
 (`decisions/2026-10-18_vision_set_aside.md`).
 
-**Order as of 2026-10-18.** Task 1 is done. Task 1b — the cost tail — is the
-short-term focus and comes before tasks 2 and 3: a constraint on the mean cost
-is set by the rare catastrophic episode, so until that episode is understood,
-every arm's cost and the caution it buys are statements about the tail, not
-about the curriculum.
+**Order as of 2026-10-18.** Task 0 first: everything built since 2026-10-14
+lives on one unreviewed branch and `main` is five weeks behind it; nothing new
+is decided or built until that is merged. Then task 1b — the cost tail —
+before tasks 2 and 3: a constraint on the mean cost is set by the rare
+catastrophic episode, so until that episode is understood, every arm's cost
+and the caution it buys are statements about the tail, not about the
+curriculum. Task 1 is done.
+
+### 0. The work since 2026-10-14 is reviewed and on `main`, so the next step starts from a stable position
+
+**Where things stand.** Branch `contextual-review` (`38b8951`, pushed) holds
+every branch's content: `contextual-learner`, `episode-review`, `snellius`,
+`experiment/goal_point_learners_500M`, and `replay-checkpoint` (by content;
+that branch's first commit rendered MP4s and was reworked). It is 34 commits
+and 96 files over `origin/main`, which last merged `episode-review`
+(PR #1). One upstream file is touched (`crax/envs/wrappers/pixel_observation_gpu.py`,
+11 lines). CPU tests: 12 files, all passing as of 2026-10-17 (`92 passed`); the
+entry point has a subprocess test since 2026-10-17. The local checkout `CRAX`
+is on `contextual-review`; the four worktrees are removed.
+
+**What is left, in order.**
+
+1. **Giuseppe reviews, by the data flow** (`AGENTS.md`, *Pull-request
+   write-ups*). The branch is one PR against `main` but several logical
+   changes; the review is organised as walks, one per change, each from its
+   CLI flag to its last effect, written when the review of that change starts:
+   (i) the contextual learner — `--constraint`, `--policy_context`, the
+   `{sensors, context}` observation, λ(ω) in two forms, the Ω-bounds scaling
+   (`design/contextual_learner.md` is the design; the walk is still to write);
+   (ii) the experiment launcher — `training/experiments`, a definition file,
+   `local` and `snellius`, run-directory checkpoints, `run_files.hand_to_run`;
+   (iii) the whole-learner checkpoint and the replay — `save_learner_state`,
+   `training.replay`, the records with the policy's frames, the review page's
+   policy camera; (iv) the vision composition — `training/pixels.py`,
+   `contexts/networks.py`'s encoder, `--gpu_memory_fraction`, the per-minibatch
+   critic pass and augmentation. Feedback goes into the branch as commits.
+2. **The full CPU suite passes at the merge commit**: `JAX_PLATFORMS=cpu
+   MUJOCO_GL=egl .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+   (about 15 minutes; the review's frame test needs the GL context).
+3. **Merge to `main`** as one merge commit, push, and delete the five merged
+   branches on the remote (`contextual-learner`, `episode-review`, `snellius`,
+   `experiment/goal_point_learners_500M`, `replay-checkpoint`) and locally.
+   `contextual-review` is then `main`.
+4. **The Tristan conversation**: the list below has grown by six items this
+   week (19–24); the three that change his files or the benchmark's meaning
+   (pixel wrapper dict, augmentation per minibatch, `--lagrangian_coef_rate`
+   per round) are raised before anything of task 1b is built, since 1b's
+   candidates all change the benchmark too.
+5. **Loose ends with a home**: the over-budget fraction logged by the
+   evaluator (task 1b, *to build*); the additive constraint's per-round step
+   governed by its fit's constants, not the rate flag (`experiments/2026-10-18`,
+   plan item 2 — decide, then either fix or document); the Markdown preview
+   broken in Giuseppe's VS Code (two preview extensions active; not the
+   repository's); the review server and the rendered previews on ports 8790
+   and 8791 are stopped when no longer needed.
 
 ### 1. The CMDP becomes contextual: the policy sees its context and the constraint holds per context, so a curriculum can no longer move it
 
@@ -796,6 +846,36 @@ Upstream bugs found, and places where our changes alter the benchmark:
     still observes the flat vector. The post-training rollout and video
     (stock environment) cannot feed such a policy, so a context run requires
     `--skip_rollout --skip_video`.
+19. `GpuPixelObservationWrapper` in `pixels+state` mode over a dict
+    observation collapsed the inner parts under `'state'`; it now keeps them
+    and adds `pixels/<camera>` next to them (2026-10-16). A stock run's flat
+    observation still becomes `{'state', 'pixels/…}`; only the dict case
+    changed. `crax/envs/wrappers/pixel_observation_gpu.py`.
+20. The DrQ random translation is applied per minibatch (`minibatch_step`)
+    instead of to the whole round's data (`sgd_step`): the same distribution
+    of shifts, one per trajectory per pass, and the translated copy in memory
+    is one minibatch rather than the round — at 655 360 transitions of pixels
+    the round's copy alone was ~48 GB (2026-10-18). `training/agents/ppo/train.py`.
+21. `--lagrangian_coef_rate` is applied once per round, so the same value
+    moves λ eight times as far per environment step at 1024 environments and
+    4 minibatches as at 8192 and 32 (`design/training_round.md`). Should the
+    flag be defined per environment step? We matched by hand (rate ⅛) for now.
+22. `checkpoint.load` restored a GPU-trained checkpoint with its saved
+    `cuda:0` sharding on a machine without a GPU (Brax 0.12.3 maps the
+    restore args over the step metadata, which never matches the tree, and
+    falls back); fixed by mapping over `metadata.item_metadata`
+    (2026-10-16). `training/checkpoint.py`.
+23. `requirements-pinned.txt` pins jax 0.6.0; the working environment is
+    jax 0.10.1 (`scripts/snellius/requirements.lock` is what Snellius runs).
+24. The goal-point hazard lidar is one array over all hazards, closeness of
+    the nearest centre per sector: a flat disc and a solid cylinder give the
+    same reading, and the episodes that cost 10× the budget are the agent
+    pressing into a gap closed by two solids it cannot distinguish from
+    passable ones (`decisions/2026-10-18_vision_set_aside.md` §2). A camera
+    did not change the failure (§4). Did he see evaluation-to-evaluation
+    swings of 2–5 goals in his vision training? Task 1b's candidates (kind
+    and extent in the lidar; memory; a contact-duration cost) each change the
+    benchmark and are his call.
 
 ## Vocabulary
 
