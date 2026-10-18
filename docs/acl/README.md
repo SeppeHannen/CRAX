@@ -166,8 +166,17 @@ swings stayed, so they are the pixel policy's, not the multiplier's; two runs
 of the same arms disagree at 500 M by as much as the distributions do (no
 ranking from one seed); PLR additive told keeps level 3 at the budget with a
 moving policy (9.4 goals / cost 18, 8 of 10).** Write-up:
-`experiments/2026-10-18_goal_point_learners_vision_750M.md`. Next: the sensors
-control at 1024 environments (batch shape vs encoder), then seeds.
+`experiments/2026-10-18_goal_point_learners_vision_750M.md`.
+
+**Vision set aside (2026-10-18).** The sensors control at the pixel runs'
+small round (group `goal_point_learners_sensors_small_round`) swings *less*
+than at the large round (0.4–0.6 goals on the non-staged arms): the round is
+exonerated, the camera is the cause. Vision did not remove the failure it was
+adopted for (the agent pressing into a gap closed by two solid hazards, with
+both in frame) and adds a variance one seed cannot carry. **Experiments run on
+the sensor observation; vision is future work; the tail failure is the next
+problem, on sensors.** The chronology and the reasoning:
+`decisions/2026-10-18_vision_set_aside.md`.
 
 **Status (2026-10-15): built, CPU-tested, on branch `contextual-learner`;
 the 500 M experiment ran from `experiment/goal_point_learners_500M`.** Design and what is logged:
@@ -562,6 +571,13 @@ is the mechanism, seen twice.
 
 ## Decisions
 
+- **Vision is set aside; experiments run on the sensor observation**
+  (2026-10-18). Adopted on 2026-10-16 because the lidar cannot tell a passable
+  gap from a closed one; the pixel policy kept the same failure with the wall
+  in frame, and its evaluations swing 2–5 goals between evaluations where the
+  sensor policy's move about one — the round size and the multiplier's rate
+  were each ruled out by a control. Future work: the same experiments from
+  pixels once that variance is understood. `decisions/2026-10-18_vision_set_aside.md`.
 - **Ω is the environment's physics and layout, not its cost threshold** (with
   Tristan, 2026-09-22). A run keeps one threshold. The threshold, `max_height`,
   `max_gap` and foot-mask spaces stay as pipeline smoke tests; experiments use
@@ -863,6 +879,8 @@ docs/acl/
     hazard_activation.md             how a hazard COUNT becomes a value: union model, activation, parking, the four consumers
     context_spaces_by_suite.md       Ω for each of the nine suites
     dashboard.md                     what a reviewer needs from W&B; the metric registry; the generated view
+  decisions/                         one file per decision that closes a line of work: the chronology and the reasoning
+    2026-10-18_vision_set_aside.md   why vision was adopted, what it did and did not change, why sensors for the thesis
   experiments/                       one file per experiment: question, commands, results
     2026-09-20_uniform_vs_staged_velocity_ant.md      the 50 M / 500 M result
     2026-09-22_velocity_suites_staged_vs_uniform.md   the other five agents (CPU part; deferred)

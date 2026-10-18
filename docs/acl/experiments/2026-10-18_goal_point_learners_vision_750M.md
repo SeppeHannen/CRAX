@@ -139,17 +139,59 @@ Mean of the last five evaluations (650–750 M); "≤ budget" counts the last te
   constraint is reacting to a policy that changes faster than it does. That is
   the same picture as 2026-10-17 with the integrator's own noise removed.
 
+### The control: sensors at the small round do not swing, so the round is not the cause
+
+Added 2026-10-18 evening (group `goal_point_learners_sensors_small_round`: the
+six arms with the sensor observation at the pixel runs' batch shape — 1024
+environments, 4 minibatches, an 81 920-transition round — and rate ⅛, 500 M,
+3 h 07–19 each on an A100, ~2,000 SBU). The round's size governs every per-round
+statistic the method computes (`design/training_round.md`); this run holds the
+observation fixed and shrinks only the round.
+
+| arm | sensors, 655 k round | **sensors, 82 k round** | pixels, 82 k round |
+|---|---|---|---|
+| uniform scalar blind | 0.99 | 1.75 | 1.76 |
+| uniform additive told | 1.35 | **0.60** | 4.13 |
+| PLR reward scalar blind | 1.31 | **0.63** | 2.17 |
+| PLR reward additive told | 0.82 | **0.44** | 2.99 |
+| staged scalar blind | 1.23 | 1.78 † | 2.99 |
+| staged additive told | 0.92 | 2.11 † | 3.98 |
+
+Mean |Δ level-3 return| between consecutive evaluations, last 15; sampling
+error 0.2–0.5 in every cell. † the level-3 stage switch falls inside the window
+(staged scalar: cost 167, 136 → 8, 1 across it).
+
+- **The small round makes the sensor policy smoother, not rougher**, on the
+  four arms without a stage switch (0.4–0.6 against 0.8–1.4). λ is as quiet as
+  at the large round (sd/mean 0.05–0.11), the per-round training cost's spread
+  rose by the expected √8 (0.09 → 0.18 on uniform scalar), and the per-round
+  training return is as steady as before (0.03–0.06 of its mean; the pixel
+  runs: 0.25–0.31). Everything the small round changes was present here and
+  nothing swung.
+- **What remains different between this control and the pixel runs is the
+  camera** — the shared encoder, its augmentation redrawn every pass, the
+  36 864-value input next to 62 sensor values. The swing is the pixel policy's.
+- Two side readings, one seed: the told arms are more motionless at the small
+  round (PLR additive told 3.3 goals / cost 15, uniform additive told 5.5 / 17,
+  both 10 of 10 under budget — on budget by standing still at 500 M); and staged
+  scalar blind lands on budget after its switch (7.9 / 25, 7 of 10) for the
+  second run in a row, against the 2026-10-15 arm's wind-up to λ 29.
+
+The pixel run at the large round (`goal_point_learners_vision_large_round.py`)
+was defined for the other outcome and is not run: its 3-round smoke on an H100
+measured a 97 GiB epoch program at 32 minibatches (11 GiB per 81 920
+transitions of frames, ~18 bytes per pixel: XLA holds float32 copies across the
+program), so the full round does not fit any card we have, and the control says
+it would not have helped.
+
 ## What this changes in the plan
 
-1. **The swings are the pixel policy's; find out what about it.** Two
-   candidates this run cannot separate: the observation (a shared encoder
-   trained with DrQ random translation at learning rate 5·10⁻⁴ feeding every
-   head), and the batch shape (1024 environments: 16 SGD steps on 81 920
-   transitions per round, 82 episodes per round, against 128 on 655 360). The
-   cheap control is **sensors only at 1024 environments, 4 minibatches, rate ⅛**:
-   six arms, ~2 h each, ~1,500 SBU. If those swing, it is the batch shape and
-   the vision runs need 8192 environments (an H100, or a smaller image); if they
-   do not, it is the encoder, and `--vision_augment false` is the next arm.
+1. **Vision is set aside** (`decisions/2026-10-18_vision_set_aside.md`). The
+   swings are the camera's, the camera did not remove the wall-pressing failure
+   it was adopted for, and the variance it adds is one the thesis' one-seed
+   arms cannot carry. Experiments return to the sensor observation; the pixel
+   composition stays in the code for future work, where `--vision_augment
+   false` and the encoder's learning rate are the first two arms.
 2. **The additive constraint's movement per round is the fit's, not the
    flag's.** `SOLVE_ITERATIONS` and `SOLVE_LEARNING_RATE` set how far λ(ω)
    moves each round; `--lagrangian_coef_rate` sets only how far the targets
