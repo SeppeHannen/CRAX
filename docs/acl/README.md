@@ -101,9 +101,16 @@ something to push against:
 The thesis studies the link between automated curriculum learning and
 generalisation; the scope was set with the supervisors on 2026-10-14 and the
 design is `research_design_brief.md`. The supervisor wants first results the
-week of 2026-10-21. Three tasks follow, in order; each heading states what the
+week of 2026-10-21. The tasks follow in order; each heading states what the
 task delivers. Every experiment is a `--wandb_group` of arms on
-`safe_goal_point` at 500 M steps.
+`safe_goal_point` at 500 M steps, on the sensor observation
+(`decisions/2026-10-18_vision_set_aside.md`).
+
+**Order as of 2026-10-18.** Task 1 is done. Task 1b — the cost tail — is the
+short-term focus and comes before tasks 2 and 3: a constraint on the mean cost
+is set by the rare catastrophic episode, so until that episode is understood,
+every arm's cost and the caution it buys are statements about the tail, not
+about the curriculum.
 
 ### 1. The CMDP becomes contextual: the policy sees its context and the constraint holds per context, so a curriculum can no longer move it
 
@@ -223,6 +230,46 @@ training context carries no direction): λ(L2) inherited 0.27 of 0.51, λ(L3)
 (`--lagrangian_coef_rate`; Tristan, 2026-10-14: at 10 it overshot 100× after
 a stage switch). Old arms are not comparable to new ones, which is why the two
 baselines are rerun rather than reused.
+
+### 1b. The cost tail: one failure sets the multiplier, and the policy is made to see it, remember it, or be charged for it differently
+
+**What is known** (`decisions/2026-10-18_vision_set_aside.md` §1–2, 4). On
+level 3 the typical episode of the best policy costs 13–15 against a budget of
+25; the mean of 17.6 is carried by 0.5 % of episodes over 100 (worst 247; the
+scalar baseline 6.8 % over 100, worst 1374). Those episodes are one failure:
+the agent drives into a gap closed by two solid hazards that stand between it
+and the goal and presses the same path for the rest of the episode, 3 cost per
+step. The constraint on the mean is set by that tail, and the policy pays for
+it with caution in every other episode. The hazard lidar cannot carry the fact
+that decides it (centre distance per sector, no kind, no extent); a camera that
+can did not change it — the failure needs the policy to know it has tried, or
+the cost to say that it is pressing, not only an observation that shows a wall.
+
+**The question.** Which change to the learner or the task removes the tail
+without changing what the constraint means — and does the budget then hold
+with a policy that moves, at a return that the tail was costing?
+
+**Candidates, in order; each one arm set against the current learner, same
+six arms as the controls** (`uniform`, `plr`, `staged:1,2,3` × `scalar blind`,
+`additive told`), judged on three numbers from 384 replayed level-3 episodes:
+the fraction over 4× the budget, the median cost, and the return under budget.
+
+| | change | what it gives the policy | changes the benchmark? |
+|---|---|---|---|
+| a | hazard kind and extent in the observation: the lidar as two arrays (passable, solid) and each compass with its hazard's size | the fact that decides the episode, in the sensor the policy already reads | observation space; Tristan |
+| b | memory: a recurrent policy (or the last k actions and costs appended to the observation) | that it has pressed this wall for 200 steps and should turn | policy class; Tristan's trainer |
+| c | a cost that rises with sustained contact (the per-step cost multiplied by the length of the current contact run) | pressing distinguished from brushing in the signal the constraint reads | the cost function; changes the CMDP and is flagged as such |
+
+(a) is first: it is the cheapest, it is the direct fix of §2's finding, and if
+it fails the failure is not perceptual. **Not** a cost cap and **not** a
+stuckness terminator: both end the episodes the measurement is about and
+change what the budget means. Every candidate's observation or cost change is
+raised with Tristan before it runs; the sensor-only variant of the vision
+composition (`{sensors, context}`) is the base.
+
+**To build:** the over-budget fraction and the cost quantiles logged by the
+evaluator every evaluation (plan item 6 of 2026-10-15, still owed), so the
+tail is a dashboard line and not a replay afterwards; then candidate (a).
 
 ### 2. Each arm is scored on a held-out region that tests one type of generalisation
 

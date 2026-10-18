@@ -6,8 +6,8 @@ round, one eighth of the sensors run's — and their policies moved 2–5 goals 
 25 M apart where the sensors run's moved about one (``design/training_round.md``, the round's
 size). This run is the sensors-only observation of 2026-10-15 in exactly the pixel runs' batch
 shape and multiplier rate, six arms, 500 M steps. If these swing, the round is the cause; if not,
-the camera is. The companion is the pixel run at the sensors run's round
-(``goal_point_learners_vision_large_round.py``).
+the camera is. Result (2026-10-18): they do not swing; the camera is the cause
+(``docs/acl/decisions/2026-10-18_vision_set_aside.md``).
 
     .venv/bin/python -m training.experiments.snellius scripts/experiments/goal_point_learners_sensors_small_round.py \\
         --partition gpu_a100 --time 05:00:00
