@@ -102,14 +102,14 @@ NUM_TIMESTEPS = 8 * 5 * 2 * 4
 def _train_and_checkpoint(checkpoints: pathlib.Path, learner: contexts.Learner) -> argparse.Namespace:
     """A tiny PPO-Lagrange run under ``learner`` whose checkpoints go to ``checkpoints``; returns the
     run's config as :func:`replay.main` sees it (the W&B config, every CLI flag by name)."""
-    setup = contexts.context_training_setup(ENV_NAME, "uniform", "level:3", learner, num_timesteps=NUM_TIMESTEPS, num_envs=8,
-                                            batch_size=8, unroll_length=5, num_minibatches=2)
+    setup = contexts.context_training_setup(ENV_NAME, "uniform", "level:3", learner, environment_overrides={}, num_timesteps=NUM_TIMESTEPS,
+                                            num_envs=8, batch_size=8, unroll_length=5, num_minibatches=2)
     train_ppo_lag(environment=envs.get_environment(ENV_NAME, level=1, backend="mjx"), num_timesteps=NUM_TIMESTEPS, seed=0,
                   progress_fn=lambda *_: None, safety_bound=25.0, initial_lambda_lagr=0.1, **TINY, **setup.train_kwargs(),
                   save_checkpoint_path=str(checkpoints))
     return argparse.Namespace(
         env_name=ENV_NAME, difficulty=1, env_kwargs={"backend": "mjx"}, episode_length=TINY["episode_length"],
-        constraint=learner.constraint, policy_context=learner.policy_context,
+        constraint=learner.constraint, policy_context=learner.policy_context, memory_time_constant=learner.memory_time_constant,
         discounting=0.97, reward_scaling=1.0, gae_lambda=0.95, vision=False,
     )
 

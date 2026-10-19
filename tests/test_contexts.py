@@ -5,6 +5,7 @@ Run with: JAX_PLATFORMS=cpu pytest tests/test_contexts.py -v
 """
 from __future__ import annotations
 
+import argparse
 import dataclasses
 from typing import Dict
 
@@ -591,6 +592,62 @@ def test_observation_is_the_sensors_and_the_running_episodes_context(env, suite)
         assert ended > 0, "no episode ended; the at-done case was not exercised"
 
 
+def test_memory_is_the_exponential_trace_of_sensors_action_and_cost_and_starts_empty_with_each_episode(env, suite):
+    """With a memory the observation gains a third part. Checked against a NumPy reference of
+    the trace m_t = (1 − 1/τ) m_{t−1} + (1/τ)(sensors_t, action_{t−1}, cost_t): equal on every
+    step, zero at the first reset, and zero again in every slot whose episode just ended — on
+    both stacks, which differ in nothing but the distribution and the phase spread."""
+    time_constant = 4
+    decay = 1.0 - 1.0 / time_constant
+    for wrap in (C.wrap_for_context_training, C.wrap_for_context_evaluation):
+        wrapped = wrap(env, C.UniformDistribution(suite.space), episode_length=EPISODE_LENGTH, memory_time_constant=time_constant)
+        step = jax.jit(wrapped.step)
+        state = jax.jit(wrapped.reset)(jax.random.split(jax.random.PRNGKey(0), NUM_SLOTS))
+        assert set(state.obs) == {C.SENSORS_KEY, C.CONTEXT_OBSERVATION_KEY, C.MEMORY_OBSERVATION_KEY}
+        assert state.obs[C.MEMORY_OBSERVATION_KEY].shape == (NUM_SLOTS, env.observation_size + env.action_size + 1)
+        assert not np.asarray(state.obs[C.MEMORY_OBSERVATION_KEY]).any()
+        reference = np.zeros((NUM_SLOTS, env.observation_size + env.action_size + 1), np.float32)
+        ended = 0
+        for t in range(EPISODE_LENGTH + 2):
+            action = jax.random.uniform(jax.random.PRNGKey(t), (NUM_SLOTS, env.action_size), minval=-1.0, maxval=1.0)
+            state = step(state, action)
+            observed = np.concatenate(
+                [np.asarray(state.obs[C.SENSORS_KEY]), np.asarray(action), np.asarray(state.info["cost"])[:, None]], axis=1
+            )
+            reference = decay * reference + (1.0 - decay) * observed
+            done = np.asarray(state.done) > 0
+            reference[done] = 0.0
+            ended += int(done.sum())
+            np.testing.assert_allclose(np.asarray(state.obs[C.MEMORY_OBSERVATION_KEY]), reference, atol=1e-5)
+        assert ended > 0, "no episode ended; the at-done case was not exercised"
+    with pytest.raises(ValueError, match="at least 2"):
+        C.wrap_for_context_training(env, C.UniformDistribution(suite.space), episode_length=EPISODE_LENGTH, memory_time_constant=1)
+
+
+def test_networks_read_every_labelled_part_the_policy_all_but_the_context_unless_told():
+    """A new labelled part (here the memory) is read by the policy and both critics without a
+    change to the factory; only the context is withheld from a blind policy."""
+    from training.acme import running_statistics, specs
+
+    observation_size = {C.SENSORS_KEY: (6,), C.CONTEXT_OBSERVATION_KEY: (2,), C.MEMORY_OBSERVATION_KEY: (9,)}
+    normalizer = running_statistics.init_state({key: specs.Array(shape, jnp.float32) for key, shape in observation_size.items()})
+    base = {C.SENSORS_KEY: jax.random.normal(jax.random.PRNGKey(1), (3, 6)), C.CONTEXT_OBSERVATION_KEY: jnp.ones((3, 2)),
+            C.MEMORY_OBSERVATION_KEY: jnp.ones((3, 9))}
+    other_memory = {**base, C.MEMORY_OBSERVATION_KEY: -jnp.ones((3, 9))}
+    networks = C.make_contextual_ppo_networks(
+        observation_size, action_size=2, preprocess_observations_fn=running_statistics.normalize,
+        policy_observes_context=False, context_bounds={"low": (-2.0, -2.0), "high": (2.0, 2.0)},
+    )
+    keys = jax.random.split(jax.random.PRNGKey(2), 3)
+    for network, key in ((networks.policy_network, keys[0]), (networks.value_network, keys[1]), (networks.cost_value_network, keys[2])):
+        params = network.init(key)
+        assert not np.allclose(network.apply(normalizer, params, base), network.apply(normalizer, params, other_memory)), "every network reads the memory"
+    with pytest.raises(KeyError, match="'sensors'"):
+        C.make_contextual_ppo_networks(
+            {C.CONTEXT_OBSERVATION_KEY: (2,)}, action_size=2, policy_observes_context=False, context_bounds={"low": (-2.0, -2.0), "high": (2.0, 2.0)},
+        )
+
+
 def test_networks_read_the_context_where_the_learner_allows_it():
     """Blind policy: a function of the sensors only. Told policy and both critics: the
     context changes their output."""
@@ -860,9 +917,18 @@ def test_lagrangian_advantage_takes_lambda_per_transition_in_the_datas_layout():
 
 def test_learner_names_the_arm_and_hands_the_trainer_what_realises_it():
     told = C.Learner(constraint="additive", policy_context="told")
-    assert C.arm_label("staged:1,2,3", told) == "staged:1,2,3 additive told"
-    assert C.run_name_fragment("staged:1,2,3", told) == "staged123_additive_told"
-    assert C.arm_label("uniform", C.DEFAULT_LEARNER) == "uniform scalar blind"
+    assert C.arm_label("staged:1,2,3", told, {}) == "staged:1,2,3 additive told"
+    assert C.run_name_fragment("staged:1,2,3", told, {}) == "staged123_additive_told"
+    assert C.arm_label("uniform", C.DEFAULT_LEARNER, {}) == "uniform scalar blind"
+    # A memory and an environment override are part of what differs between arms, so of the label
+    remembering = C.Learner(constraint="additive", policy_context="told", memory_time_constant=32)
+    assert remembering.label == "additive told memory32"
+    assert C.arm_label("uniform", remembering, {"hazard_lidar": "surface_by_kind"}) == "uniform additive told memory32 hazard_lidar=surface_by_kind"
+    assert C.run_name_fragment("uniform", remembering, {"hazard_lidar": "surface_by_kind"}) == "uniform_additive_told_memory32_hazard_lidar_surface_by_kind"
+    with pytest.raises(ValueError, match="at least 2"):
+        C.Learner(constraint="additive", policy_context="told", memory_time_constant=1)
+    flags = argparse.Namespace(constraint="scalar", policy_context="blind", memory_time_constant=None)
+    assert C.Learner.from_flags(flags) == C.DEFAULT_LEARNER
     kwargs = told.train_kwargs(C.suite_contexts(LIFT).space)
     assert isinstance(kwargs["lagrange_constraint"], C.AdditiveConstraint)
     assert kwargs["network_factory"].keywords == {
@@ -875,6 +941,7 @@ def test_learner_names_the_arm_and_hands_the_trainer_what_realises_it():
         C.DEFAULT_LEARNER.per_context_constraint(C.suite_contexts(LIFT).space)
     with pytest.raises(ValueError):
         C.Learner(constraint="per_episode", policy_context="told")
+    tiny = dict(environment_overrides={}, num_timesteps=10, num_envs=1, batch_size=1, unroll_length=1, num_minibatches=1)
     with pytest.raises(ValueError, match="need a context distribution"):
-        C.context_training_setup(ENV_NAME, C.NO_DISTRIBUTION, "level:3", told, num_timesteps=10, num_envs=1, batch_size=1, unroll_length=1, num_minibatches=1)
-    assert C.context_training_setup(ENV_NAME, C.NO_DISTRIBUTION, "level:3", C.DEFAULT_LEARNER, num_timesteps=10, num_envs=1, batch_size=1, unroll_length=1, num_minibatches=1) is None
+        C.context_training_setup(ENV_NAME, C.NO_DISTRIBUTION, "level:3", told, **tiny)
+    assert C.context_training_setup(ENV_NAME, C.NO_DISTRIBUTION, "level:3", C.DEFAULT_LEARNER, **tiny) is None

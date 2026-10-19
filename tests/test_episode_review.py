@@ -217,8 +217,8 @@ LEARNERS = {
 
 
 def _record_a_run(directory: pathlib.Path, learner: C.Learner) -> C.ContextTrainingSetup:
-    setup = C.context_training_setup(ENV_NAME, "uniform", "level:3", learner, num_timesteps=NUM_TIMESTEPS, num_envs=8,
-                                     batch_size=8, unroll_length=5, num_minibatches=2)
+    setup = C.context_training_setup(ENV_NAME, "uniform", "level:3", learner, environment_overrides={}, num_timesteps=NUM_TIMESTEPS,
+                                     num_envs=8, batch_size=8, unroll_length=5, num_minibatches=2)
     recorder = EpisodeRecorder(directory, ENV_NAME, "tiny_run", setup.arm, num_episodes=2, sensors_key=C.SENSORS_KEY, context_key=C.TRANSITION_CONTEXT_KEY,
                                image_keys=(), written=lambda path: None)
     assert recorder.recording == EvaluationRecording(2, ("cost", "truncation", TRANSITION_SCENE_KEY, C.TRANSITION_CONTEXT_KEY))

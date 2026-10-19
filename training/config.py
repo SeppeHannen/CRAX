@@ -132,6 +132,10 @@ def add_shared_training_args(parser: argparse.ArgumentParser) -> argparse.Argume
                         help="What the policy observes of its context ω: 'blind' = its sensors only; 'told' = the context "
                              "vector too, so it can hold a different reward–cost trade-off per context. The critics "
                              "always observe ω in a context run.")
+    parser.add_argument("--memory_time_constant", type=int, default=None,
+                        help="Give the policy and the critics a memory: an exponential trace of (sensors, action, cost) "
+                             "with this time constant in steps, as a third observation part 'memory' "
+                             "(training/contexts/memory.py). Default: none, a reactive policy over the present observation.")
     parser.add_argument("--record_episodes", type=int, default=0,
                         help="Keep this many of every evaluation's episodes whole, per evaluation distribution, with "
                              "the learner's view of each step (critics, λ, advantages), as episode records in the run's "

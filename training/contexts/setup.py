@@ -19,15 +19,19 @@ the suite registers (metrics ``evaluation/<name>/...``). The
 what the policy observes. Nothing here is suite-specific: levels and regions
 are resolved through the registry.
 
-An **arm** of an experiment is a training distribution under a learner; the
-label ``"<training spec> <constraint> <policy context>"`` names it in the run
-name and in the W&B config (``arm``), which the dashboard groups lines by.
+An **arm** of an experiment is everything that may differ between the runs of
+one group: the training distribution, the learner, and any environment
+overrides the run was given (``--env_kwargs``, e.g. a variant of the suite's
+sensors). The label ``"<training spec> <learner> <key>=<value> ..."`` names it
+in the run name and in the W&B config (``arm``), which the dashboard groups
+lines by.
 """
 from __future__ import annotations
 
 import dataclasses
 import math
-from typing import Any, Dict, Optional, Tuple
+import re
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 from training.contexts.distribution import ContextDistribution
 from training.contexts.distributions import FixedContext, PrioritizedLevelReplay, StagedContexts, UniformDistribution
@@ -83,14 +87,21 @@ def spec_label(spec: str) -> str:
     return spec.replace(":", "").replace(",", "")
 
 
-def arm_label(training_spec: str, learner: Learner) -> str:
-    """The arm as the dashboard legend shows it: ``"staged:1,2,3 additive told"``."""
-    return f"{training_spec} {learner.label}"
+EnvironmentOverrides = Mapping[str, Any]
+"""The environment constructor arguments a run overrides (``--env_kwargs``); ``{}`` for the suite's defaults."""
 
 
-def run_name_fragment(training_spec: str, learner: Learner) -> str:
-    """The arm in a run name: ``staged123_additive_told``."""
-    return f"{spec_label(training_spec)}_{learner.label.replace(' ', '_')}"
+def arm_label(training_spec: str, learner: Learner, environment_overrides: EnvironmentOverrides) -> str:
+    """The arm as the dashboard legend shows it: ``"staged:1,2,3 additive told"``,
+    ``"uniform additive told memory32 hazard_lidar=surface_by_kind"``."""
+    overrides = "".join(f" {key}={value}" for key, value in sorted(environment_overrides.items()))
+    return f"{training_spec} {learner.label}{overrides}"
+
+
+def run_name_fragment(training_spec: str, learner: Learner, environment_overrides: EnvironmentOverrides) -> str:
+    """The arm in a run name: ``staged123_additive_told``, ``uniform_additive_told_memory32_hazard_lidar_surface_by_kind``."""
+    overrides = "".join(f"_{key}_{value}" for key, value in sorted(environment_overrides.items()))
+    return re.sub(r"[^A-Za-z0-9_]", "", f"{spec_label(training_spec)}_{learner.label.replace(' ', '_')}{overrides}")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -102,6 +113,7 @@ class ContextTrainingSetup:
     deployment_spec: str
     distribution: ContextDistribution
     learner: Learner
+    environment_overrides: EnvironmentOverrides
     evaluations: Tuple[Evaluation, ...]
     num_envs: int
     steps_per_round: int
@@ -109,7 +121,11 @@ class ContextTrainingSetup:
 
     @property
     def arm(self) -> str:
-        return arm_label(self.training_spec, self.learner)
+        return arm_label(self.training_spec, self.learner, self.environment_overrides)
+
+    @property
+    def run_name_fragment(self) -> str:
+        return run_name_fragment(self.training_spec, self.learner, self.environment_overrides)
 
     def train_kwargs(self) -> Dict[str, Any]:
         """Keyword arguments for ``train(...)`` (any CRAX PPO-family trainer; a per-context
@@ -119,11 +135,12 @@ class ContextTrainingSetup:
         episodes' return, cost and length (``episodic/*``) once per round, the
         same cadence as every other training-side metric on the dashboard.
         """
+        memory = self.learner.memory_time_constant
         return {
-            "wrap_env_fn": make_wrap_env_fn(self.distribution),
+            "wrap_env_fn": make_wrap_env_fn(self.distribution, memory),
             "round_hook": ContextRoundHook(self.distribution, num_slots=self.num_envs),
             "evaluation_wrap_env_fns": {
-                evaluation.name: make_evaluation_wrap_env_fn(evaluation.distribution) for evaluation in self.evaluations
+                evaluation.name: make_evaluation_wrap_env_fn(evaluation.distribution, memory) for evaluation in self.evaluations
             },
             "training_metrics_steps": self.steps_per_round,
             **self.learner.train_kwargs(self.suite.space),
@@ -142,6 +159,7 @@ class ContextTrainingSetup:
             "deployment_distribution": self.deployment_spec,
             "constraint": self.learner.constraint,
             "policy_context": self.learner.policy_context,
+            "memory_time_constant": self.learner.memory_time_constant,
             "arm": self.arm,
             "evaluations": {evaluation.name: evaluation.label for evaluation in self.evaluations},
             "num_rounds": self.total_rounds,
@@ -179,6 +197,7 @@ def context_training_setup(
     deployment_spec: str,
     learner: Learner,
     *,
+    environment_overrides: EnvironmentOverrides,
     num_timesteps: int,
     num_envs: int,
     batch_size: int,
@@ -188,7 +207,8 @@ def context_training_setup(
 ) -> Optional[ContextTrainingSetup]:
     """The setup for one run, or ``None`` when ``training_spec`` is ``"none"`` (a stock run,
     which has no context for the learner to be contextual about: refused unless the
-    learner is the default, scalar and blind)."""
+    learner is the default, scalar and blind). ``environment_overrides`` are the run's
+    ``--env_kwargs``; they name the arm with the distribution and the learner."""
     if training_spec == NO_DISTRIBUTION:
         if learner != DEFAULT_LEARNER:
             raise ValueError(
@@ -205,6 +225,7 @@ def context_training_setup(
         deployment_spec=deployment_spec,
         distribution=parse_distribution(training_spec, suite, total_rounds),
         learner=learner,
+        environment_overrides=dict(environment_overrides),
         evaluations=evaluations_for(suite, deployment_spec, total_rounds),
         num_envs=num_envs,
         steps_per_round=steps_per_round,

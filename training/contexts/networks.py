@@ -2,14 +2,16 @@
 observation it is allowed to see.
 
 The observation is ``{"sensors": o, "context": ω}`` (:mod:`observation`), plus
+``"memory"`` when the learner keeps a trace (:mod:`memory`) and
 ``"pixels/<camera>"`` parts when the run trains from pixels (``--vision``;
 ``GpuPixelObservationWrapper`` adds them outermost). The critics always read every
 part: the cost critic has to estimate cost per context for a per-context
 constraint to be about something, and a critic exists only in training, so what
-a deployed robot would know is no concern. The policy reads the sensors and the
-pixels, and the context too when it is *told* — the input it needs to hold a
+a deployed robot would know is no concern. The policy reads every part but the
+context, and the context too when it is *told* — the input it needs to hold a
 different reward–cost trade-off per context
-(``docs/acl/design/contextual_learner.md`` §2).
+(``docs/acl/design/contextual_learner.md`` §2). A new labelled part is read by
+every network without a change here.
 
 Each network is Brax's MLP over the concatenation of its parts, each scaled its
 own way: the sensors by the trainer's running observation normaliser, whose
@@ -42,9 +44,6 @@ from training.contexts.observation import CONTEXT_OBSERVATION_KEY, SENSORS_KEY
 from training.contexts.space import Bounds, scale_to_bounds
 from training.pixels import is_pixel_part
 
-SENSORS_ONLY: Tuple[str, ...] = (SENSORS_KEY,)
-SENSORS_AND_CONTEXT: Tuple[str, ...] = (SENSORS_KEY, CONTEXT_OBSERVATION_KEY)
-
 # The sizes PPO-Lagrange's default factory uses (training/agents/ppo_lag/train.py).
 POLICY_HIDDEN_LAYER_SIZES: Tuple[int, ...] = (32,) * 4
 VALUE_HIDDEN_LAYER_SIZES: Tuple[int, ...] = (256,) * 5
@@ -58,8 +57,8 @@ def make_contextual_ppo_networks(
     policy_observes_context: bool,
     context_bounds: Mapping[str, Sequence[float]],
 ) -> PPONetworks:
-    """Policy over the sensors (and the context when ``policy_observes_context``);
-    reward and cost critics over sensors and context.
+    """Policy over every labelled part but the context (and the context too when
+    ``policy_observes_context``); reward and cost critics over every labelled part.
 
     Both keywords are bound by :meth:`training.contexts.learner.Learner.train_kwargs`;
     the trainer supplies the positional arguments. ``context_bounds`` is Ω's bounds,
@@ -72,7 +71,8 @@ def make_contextual_ppo_networks(
             f"context_bounds has {len(bounds.low)} dimensions, the context observation {observation_size[CONTEXT_OBSERVATION_KEY][-1]}"
         )
     encoder, latent_size = _vision_encoder(observation_size)
-    policy_reads = SENSORS_AND_CONTEXT if policy_observes_context else SENSORS_ONLY
+    critics_read = labelled_parts(observation_size)
+    policy_reads = critics_read if policy_observes_context else tuple(part for part in critics_read if part != CONTEXT_OBSERVATION_KEY)
     action_distribution = distribution.NormalTanhDistribution(event_size=action_size)
     return PPONetworks(
         policy_network=_mlp_over_parts(
@@ -80,16 +80,26 @@ def make_contextual_ppo_networks(
             layer_sizes=(*POLICY_HIDDEN_LAYER_SIZES, action_distribution.param_size), squeeze_output=False,
         ),
         value_network=_mlp_over_parts(
-            observation_size, SENSORS_AND_CONTEXT, preprocess_observations_fn, bounds, latent_size,
+            observation_size, critics_read, preprocess_observations_fn, bounds, latent_size,
             layer_sizes=(*VALUE_HIDDEN_LAYER_SIZES, 1), squeeze_output=True,
         ),
         cost_value_network=_mlp_over_parts(
-            observation_size, SENSORS_AND_CONTEXT, preprocess_observations_fn, bounds, latent_size,
+            observation_size, critics_read, preprocess_observations_fn, bounds, latent_size,
             layer_sizes=(*VALUE_HIDDEN_LAYER_SIZES, 1), squeeze_output=True,
         ),
         parametric_action_distribution=action_distribution,
         encoder_network=encoder,
     )
+
+
+def labelled_parts(observation_size: Mapping[str, Tuple[int, ...]]) -> Tuple[str, ...]:
+    """The observation's vector parts — every part that is not a camera's pixels — in a fixed
+    order: the sensors, the context, then any other part by name."""
+    parts = {part for part in observation_size if not is_pixel_part(part)}
+    for required in (SENSORS_KEY, CONTEXT_OBSERVATION_KEY):
+        if required not in parts:
+            raise KeyError(f"a context run's observation has a {required!r} part; this one has {sorted(observation_size)}")
+    return (SENSORS_KEY, CONTEXT_OBSERVATION_KEY, *sorted(parts - {SENSORS_KEY, CONTEXT_OBSERVATION_KEY}))
 
 
 def _vision_encoder(observation_size: Mapping[str, Tuple[int, ...]]) -> Tuple[Optional[networks.FeedForwardNetwork], int]:
@@ -121,11 +131,6 @@ def _mlp_over_parts(
     :data:`networks.VISION_LATENT_KEY`."""
     module = networks.MLP(layer_sizes=list(layer_sizes), activation=linen.swish, kernel_init=jax.nn.initializers.lecun_uniform())
     input_size = sum(observation_size[part][-1] for part in parts) + latent_size
-
-    def scaled(part: str, processor_params: running_statistics.RunningStatisticsState, values: jax.Array) -> jax.Array:
-        if part == CONTEXT_OBSERVATION_KEY:
-            return scale_to_bounds(values, bounds)
-        return preprocess_observations_fn(values, networks.normalizer_select(processor_params, part))
 
     def scaled(part: str, processor_params: running_statistics.RunningStatisticsState, values: jax.Array) -> jax.Array:
         if part == CONTEXT_OBSERVATION_KEY:

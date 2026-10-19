@@ -69,6 +69,7 @@ POLICY_CODE: Tuple[str, ...] = (
     "training/networks.py",
     "training/distribution.py",
     "training/agents/ppo/networks.py",
+    "training/contexts/memory.py",
     "training/contexts/networks.py",
     "training/contexts/observation.py",
     "training/contexts/space.py",
@@ -149,7 +150,7 @@ def learner_from_checkpoint(checkpoint_directory: pathlib.Path, run_config: argp
     """The run's learner: networks from the checkpoint's config under the run's :class:`contexts.Learner`,
     the policy tuple and the learner state from its files, the constraint from the run's flags."""
     config = checkpoint_module.load_config(checkpoint_directory / NETWORK_CONFIG_FILE)
-    spec = contexts.Learner(constraint=run_config.constraint, policy_context=run_config.policy_context)
+    spec = contexts.Learner.from_flags(run_config)
     space = contexts.suite_contexts(run_config.env_name).space
     network = checkpoint_module.get_network(config, spec.train_kwargs(space)["network_factory"].func)
     # PPO-Lagrange's constraint for this learner: λ(ω) if it holds one, else the agent's own scalar λ.
@@ -185,7 +186,10 @@ def replay_context(
     """Roll the policy out for ``episodes`` whole episodes in one context, at once, and record them."""
     suite = contexts.suite_contexts(run_config.env_name)
     distribution = contexts.parse_distribution(context_spec, suite, total_rounds=1)
-    env = wrap_for_context_evaluation(environment_of(run_config), distribution, episode_length=run_config.episode_length)
+    env = wrap_for_context_evaluation(
+        environment_of(run_config), distribution, episode_length=run_config.episode_length,
+        memory_time_constant=run_config.memory_time_constant,
+    )
     pixel_observation = PixelObservation.from_config(run_config)
     if pixel_observation is not None:
         # Outermost, over the fully batched stack, as the trainer's `_maybe_wrap_env` does.

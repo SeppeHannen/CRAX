@@ -78,6 +78,7 @@ from crax.envs.wrappers.training import EpisodeWrapper, VmapWrapper
 from crax.envs.context import CONTEXT_KEY
 
 from training.contexts.distribution import ContextDistribution, DistributionParameters
+from training.contexts.memory import MemoryObservationWrapper
 from training.contexts.observation import ContextObservationWrapper
 from training.contexts.rollout import SLOT_INDEX_KEY, TRANSITION_CONTEXT_KEY
 from training.contexts.space import Contexts
@@ -289,13 +290,17 @@ def _wrap_with_contexts(
     action_repeat: int,
     randomization_fn: Optional[Callable],
     spread_initial_phase: bool,
+    memory_time_constant: Optional[int],
 ) -> Wrapper:
     if randomization_fn is not None:
         raise NotImplementedError("randomization_fn is not supported with context distributions")
     env = VmapWrapper(env)
     env = EpisodeWrapper(env, episode_length, action_repeat)
     env = ContextualAutoResetWrapper(env, distribution, spread_initial_phase=spread_initial_phase)
-    return ContextObservationWrapper(env)
+    env = ContextObservationWrapper(env)
+    if memory_time_constant is not None:
+        env = MemoryObservationWrapper(env, memory_time_constant)
+    return env
 
 
 def wrap_for_context_training(
@@ -304,6 +309,7 @@ def wrap_for_context_training(
     episode_length: int,
     action_repeat: int = 1,
     randomization_fn: Optional[Callable] = None,
+    memory_time_constant: Optional[int] = None,
 ) -> Wrapper:
     """The **training** stack: per-slot contexts, slots spread over the episode.
 
@@ -312,11 +318,16 @@ def wrap_for_context_training(
 
         ContextObservationWrapper(ContextualAutoResetWrapper(EpisodeWrapper(VmapWrapper(env))))
 
+    and, when the learner keeps a memory (``memory_time_constant``), the
+    :class:`~training.contexts.memory.MemoryObservationWrapper` outside that.
     ``randomization_fn`` (Brax domain randomisation of the physics `System`) is
     accepted for signature compatibility with ``wrap`` but not supported
     together with contexts: contexts are the mechanism for varying the task.
     """
-    return _wrap_with_contexts(env, distribution, episode_length, action_repeat, randomization_fn, spread_initial_phase=True)
+    return _wrap_with_contexts(
+        env, distribution, episode_length, action_repeat, randomization_fn, spread_initial_phase=True,
+        memory_time_constant=memory_time_constant,
+    )
 
 
 def wrap_for_context_evaluation(
@@ -325,26 +336,32 @@ def wrap_for_context_evaluation(
     episode_length: int,
     action_repeat: int = 1,
     randomization_fn: Optional[Callable] = None,
+    memory_time_constant: Optional[int] = None,
 ) -> Wrapper:
     """The **evaluation** stack: the training stack without the phase spread, so
     every evaluation episode starts at step 0 and runs its full length. The
     Evaluator sums an episode's reward and cost until its first ``done``; a
     head start would cut that sum short by the head start."""
-    return _wrap_with_contexts(env, distribution, episode_length, action_repeat, randomization_fn, spread_initial_phase=False)
+    return _wrap_with_contexts(
+        env, distribution, episode_length, action_repeat, randomization_fn, spread_initial_phase=False,
+        memory_time_constant=memory_time_constant,
+    )
 
 
-def make_wrap_env_fn(distribution: ContextDistribution) -> Callable[..., Wrapper]:
-    """A training ``wrap_env_fn`` for ``train(...)`` that installs this distribution.
+def make_wrap_env_fn(distribution: ContextDistribution, memory_time_constant: Optional[int]) -> Callable[..., Wrapper]:
+    """A training ``wrap_env_fn`` for ``train(...)`` that installs this distribution (and the
+    learner's memory, when it keeps one).
 
     Every CRAX trainer accepts ``wrap_env_fn(env, episode_length=, action_repeat=,
     randomization_fn=)`` in place of the default ``crax.envs.training.wrap``. This
     is the only hook needed to switch the auto-reset wrapper::
 
-        train(environment=env, wrap_env_fn=make_wrap_env_fn(distribution), ...)
+        train(environment=env, wrap_env_fn=make_wrap_env_fn(distribution, None), ...)
     """
-    return functools.partial(wrap_for_context_training, distribution=distribution)
+    return functools.partial(wrap_for_context_training, distribution=distribution, memory_time_constant=memory_time_constant)
 
 
-def make_evaluation_wrap_env_fn(distribution: ContextDistribution) -> Callable[..., Wrapper]:
-    """An evaluation ``wrap_env_fn`` for ``train(evaluation_wrap_env_fns={name: ...})``."""
-    return functools.partial(wrap_for_context_evaluation, distribution=distribution)
+def make_evaluation_wrap_env_fn(distribution: ContextDistribution, memory_time_constant: Optional[int]) -> Callable[..., Wrapper]:
+    """An evaluation ``wrap_env_fn`` for ``train(evaluation_wrap_env_fns={name: ...})``; the
+    stacks differ in nothing but the distribution and the phase spread, so the memory is the same."""
+    return functools.partial(wrap_for_context_evaluation, distribution=distribution, memory_time_constant=memory_time_constant)

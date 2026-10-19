@@ -3,18 +3,20 @@
 A context run's learner is named by how it holds the **constraint** — one λ for
 the whole training distribution (``scalar``), or a function of the context
 λ(ω) in one of two function classes (``network``, ``additive``;
-``training/contexts/constraints/``) — and by what the **policy** observes — its
-sensors only (blind), or its context too (told). The critics observe the
-context in every context run. The reasons are
-``docs/acl/design/contextual_learner.md``; this module turns the two words into
-the trainer arguments that realise them and into the arm label the dashboard
-groups runs by.
+``training/contexts/constraints/``) — by what the **policy** observes — its
+sensors only (blind), or its context too (told) — and by whether it keeps a
+**memory**: an exponential trace of what it sensed, did and was charged, with
+the given time constant in steps (:mod:`training.contexts.memory`), or none.
+The critics observe the context in every context run. The reasons are
+``docs/acl/design/contextual_learner.md``; this module turns the words into the
+trainer arguments that realise them and into the arm label the dashboard groups
+runs by.
 """
 from __future__ import annotations
 
 import dataclasses
 import functools
-from typing import Any, Dict, Literal, Tuple, get_args
+from typing import Any, Dict, Literal, Optional, Protocol, Tuple, get_args
 
 from training.agents.ppo_lag.constraint import LagrangeConstraint
 from training.contexts.constraints import AdditiveConstraint, NetworkConstraint
@@ -27,23 +29,48 @@ CONSTRAINTS: Tuple[str, ...] = get_args(Constraint)
 POLICY_CONTEXTS: Tuple[str, ...] = get_args(PolicyContext)
 
 
+class LearnerFlags(Protocol):
+    """The three CLI flags that name a learner, as parsed arguments or as a W&B run's config."""
+
+    constraint: str
+    policy_context: str
+    memory_time_constant: Optional[int]
+
+
 @dataclasses.dataclass(frozen=True)
 class Learner:
-    """How the constraint is held and what the policy observes."""
+    """How the constraint is held, what the policy observes, and whether it remembers.
+
+    ``memory_time_constant``: the τ of the exponential trace the observation carries as
+    its ``memory`` part, in steps; ``None`` for a reactive policy over the present
+    observation alone.
+    """
 
     constraint: Constraint
     policy_context: PolicyContext
+    memory_time_constant: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.constraint not in CONSTRAINTS:
             raise ValueError(f"constraint must be one of {CONSTRAINTS}, got {self.constraint!r}")
         if self.policy_context not in POLICY_CONTEXTS:
             raise ValueError(f"policy_context must be one of {POLICY_CONTEXTS}, got {self.policy_context!r}")
+        if self.memory_time_constant is not None and self.memory_time_constant < 2:
+            raise ValueError(f"memory_time_constant is a number of steps of at least 2, or None; got {self.memory_time_constant}")
+
+    @classmethod
+    def from_flags(cls, flags: LearnerFlags) -> "Learner":
+        """The learner a run's flags name (``--constraint``, ``--policy_context``,
+        ``--memory_time_constant``); the one reading of those flags, for the entry point,
+        the experiment launcher and a replay from the run's W&B config alike."""
+        return cls(constraint=flags.constraint, policy_context=flags.policy_context, memory_time_constant=flags.memory_time_constant)
 
     @property
     def label(self) -> str:
-        """The two words, as they appear in the arm label and the run name."""
-        return f"{self.constraint} {self.policy_context}"
+        """The words, as they appear in the arm label and the run name: ``"additive told"``,
+        ``"additive told memory32"``."""
+        memory = f" memory{self.memory_time_constant}" if self.memory_time_constant is not None else ""
+        return f"{self.constraint} {self.policy_context}{memory}"
 
     @property
     def holds_constraint_per_context(self) -> bool:

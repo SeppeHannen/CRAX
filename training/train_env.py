@@ -31,7 +31,9 @@ def main():
     env_name = config.env_name
     alg_name = config.alg
     difficulty = config.difficulty
-    learner = contexts.Learner(constraint=config.constraint, policy_context=config.policy_context)
+    learner = contexts.Learner.from_flags(config)
+    # The constructor arguments the run overrides, as given; part of the arm's identity.
+    environment_overrides = dict(config.env_kwargs or {})
     if config.context_distribution != contexts.NO_DISTRIBUTION:
         if config.vision and config.vision_obs_mode != "pixels+state":
             raise ValueError(
@@ -62,11 +64,24 @@ def main():
         print(f"{'=' * 50}\n")
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-        if config.context_distribution == contexts.NO_DISTRIBUTION:
+        # Context-distribution training (docs/acl): per-slot contexts, one
+        # compiled call per round, evaluation on w and Uniform(Ω). None when off.
+        context_setup = contexts.context_training_setup(
+            env_name,
+            config.context_distribution,
+            config.deployment_distribution,
+            learner,
+            environment_overrides=environment_overrides,
+            num_timesteps=int(config.num_timesteps),
+            num_envs=config.num_envs,
+            batch_size=config.batch_size,
+            unroll_length=config.unroll_length,
+            num_minibatches=config.num_minibatches,
+        )
+        if context_setup is None:
             run_name = f"{env_name}_Level_{difficulty}_{alg_name}_seed{seed}_{timestamp}"
         else:
-            arm = contexts.run_name_fragment(config.context_distribution, learner)
-            run_name = f"{env_name}_ctx_{arm}_{alg_name}_seed{seed}_{timestamp}"
+            run_name = f"{env_name}_ctx_{context_setup.run_name_fragment}_{alg_name}_seed{seed}_{timestamp}"
 
         # Build vision kwargs. Pixel-obs wrapping happens inside the training function
         vision_kwargs = None
@@ -140,19 +155,6 @@ def main():
         print(f"Training environment '{env_name}' instantiated with difficulty {difficulty}.")
         print(f"Evaluation environment '{env_name}' instantiated with difficulty {difficulty}.")
 
-        # Context-distribution training (docs/acl): per-slot contexts, one
-        # compiled call per round, evaluation on w and Uniform(Ω). None when off.
-        context_setup = contexts.context_training_setup(
-            env_name,
-            config.context_distribution,
-            config.deployment_distribution,
-            learner,
-            num_timesteps=int(config.num_timesteps),
-            num_envs=config.num_envs,
-            batch_size=config.batch_size,
-            unroll_length=config.unroll_length,
-            num_minibatches=config.num_minibatches,
-        )
         if config.record_episodes < 0:
             raise ValueError(f"--record_episodes must be 0 or more, got {config.record_episodes}")
         if context_setup is None and config.record_episodes > 0:

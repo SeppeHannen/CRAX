@@ -15,6 +15,8 @@ import pathlib
 import subprocess
 import sys
 
+import pytest
+
 from training import checkpoint
 from training.evaluation import RECORDS_DIRECTORY, records_under
 
@@ -26,15 +28,26 @@ TINY_RUN = (
     "--num_timesteps", "160", "--num_evals", "2", "--num_eval_envs", "4", "--episode_length", "20",
     "--record_episodes", "2", "--store_model", "true", "--skip_rollout", "--skip_video", "--quiet", "--seeds", "0",
 )
+# The cost-tail experiment's combined arm (scripts/experiments/goal_point_cost_tail_500M.py): the
+# by-kind surface lidar (78 sensors) and a memory trace as a third observation part.
+GEOMETRY_AND_MEMORY = ("--env_kwargs", '{"hazard_lidar": "surface_by_kind"}', "--memory_time_constant", "4")
 
 
-def test_the_entry_point_runs_a_tiny_context_run_and_leaves_records_and_a_whole_learner_checkpoint(tmp_path: pathlib.Path):
+@pytest.mark.parametrize("extra_flags, sensors, run_name_fragment", [
+    ((), 62, "_ctx_uniform_additive_told_ppo_lag_"),
+    (GEOMETRY_AND_MEMORY, 78, "_ctx_uniform_additive_told_memory4_hazard_lidar_surface_by_kind_ppo_lag_"),
+])
+def test_the_entry_point_runs_a_tiny_context_run_and_leaves_records_and_a_whole_learner_checkpoint(
+    tmp_path: pathlib.Path, extra_flags, sensors, run_name_fragment
+):
     environment = {
         **os.environ, "JAX_PLATFORMS": "cpu", "WANDB_MODE": "offline", "WANDB_DIR": str(tmp_path), "WANDB_SILENT": "true",
         "WANDB_API_KEY": os.environ.get("WANDB_API_KEY", "0" * 40),  # the login check reads a key; offline mode never uses it
         "PYTHONPATH": str(pathlib.Path(__file__).resolve().parents[1]),
     }
-    completed = subprocess.run([sys.executable, "-m", "training.train_env", *TINY_RUN], env=environment, capture_output=True, text=True, timeout=900)
+    completed = subprocess.run(
+        [sys.executable, "-m", "training.train_env", *TINY_RUN, *extra_flags], env=environment, capture_output=True, text=True, timeout=900
+    )
     assert completed.returncode == 0, completed.stderr[-4000:]
 
     run_directories = list((tmp_path / "wandb").glob("offline-run-*/files"))
@@ -44,6 +57,8 @@ def test_the_entry_point_runs_a_tiny_context_run_and_leaves_records_and_a_whole_
     records = list(records_under(files / RECORDS_DIRECTORY))
     assert len(records) == 2 * 3 * 2, "2 episodes x 3 evaluation targets x 2 evaluations"
     assert all(record.images == {} for record in records), "a state-based run records no frames"
+    assert all(record.observation.shape[1] == sensors for record in records), "the record holds the sensors the arm observed"
+    assert all(run_name_fragment in record.run_name for record in records), records[0].run_name
 
     steps = sorted(path for path in (files / checkpoint.RUN_CHECKPOINTS_DIRECTORY).iterdir() if path.is_dir())
     assert steps, "no checkpoint written"

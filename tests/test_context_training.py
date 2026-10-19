@@ -44,6 +44,22 @@ REWARD, COST, LAGRANGIAN = Signal.REWARD_ADVANTAGE, Signal.COST_ADVANTAGE, Signa
 # --------------------------------------------------------------------------- #
 
 
+def test_cost_tail_reads_a_population_of_episode_costs_against_the_budget():
+    from training.evaluation import CostTail
+
+    tail = CostTail(budget=25.0)
+    costs = np.array([0.0, 10.0, 20.0, 30.0, 50.0, 100.0, 101.0, 500.0])
+    assert tail.metrics(costs) == {
+        "episode_cost_median": 40.0,  # between 30 and 50
+        "episode_cost_over_budget": 5 / 8,  # strictly over 25
+        "episode_cost_over_4x_budget": 2 / 8,  # strictly over 100
+    }
+    with pytest.raises(ValueError, match="nonnegative"):
+        CostTail(budget=-1.0)
+    with pytest.raises(ValueError, match="one cost per episode"):
+        tail.metrics(np.zeros((2, 3)))
+
+
 def test_distribution_specs_parse_and_reject_garbage():
     suite = C.suite_contexts(ENV_NAME)
     assert isinstance(C.parse_distribution("uniform", suite, 10), C.UniformDistribution)
@@ -63,7 +79,7 @@ def test_distribution_specs_parse_and_reject_garbage():
 def test_setup_evaluates_on_every_region_the_suite_registers():
     """w and r always; then one evaluator per `EvaluationRegion`, named and labelled by the
     region itself. A suite with no regions gets exactly two."""
-    common = dict(num_timesteps=1000, num_envs=4, batch_size=4, unroll_length=5, num_minibatches=2)
+    common = dict(environment_overrides={}, num_timesteps=1000, num_envs=4, batch_size=4, unroll_length=5, num_minibatches=2)
     velocity = C.context_training_setup(ENV_NAME, "uniform", "level:3", C.DEFAULT_LEARNER, **common)
     goal = C.context_training_setup("safe_goal_point", "uniform", "level:3", C.DEFAULT_LEARNER, **common)
     assert [e.name for e in velocity.evaluations] == [C.DEPLOYMENT_EVALUATION, C.UNIFORM_EVALUATION]
@@ -233,6 +249,7 @@ def _run(
         training_spec,
         "level:3",
         learner,
+        environment_overrides={},
         num_timesteps=NUM_TIMESTEPS,
         num_envs=TINY["num_envs"],
         batch_size=TINY["batch_size"],
@@ -488,6 +505,13 @@ def test_end_to_end_per_context_constraint_with_a_told_policy(form):
     assert all(_histogram_masses(m[f"{CURRICULUM}experienced/{dimension}"]).sum() == pytest.approx(1.0) for _, m in history if f"{CURRICULUM}experienced/{dimension}" in m)
     evaluations = [m for _, m in history if f"evaluation/{C.DEPLOYMENT_EVALUATION}/episode_reward" in m]
     assert len(evaluations) == 3 and all(f"evaluation/{C.UNIFORM_EVALUATION}/episode_cost" in m for m in evaluations)
+    # PPO-Lagrange hands every evaluator its budget, so each evaluation reports the tail of its episode costs
+    for metrics in evaluations:
+        for target in (C.DEPLOYMENT_EVALUATION, C.UNIFORM_EVALUATION):
+            over = float(metrics[f"evaluation/{target}/episode_cost_over_budget"])
+            catastrophic = float(metrics[f"evaluation/{target}/episode_cost_over_4x_budget"])
+            assert 0.0 <= catastrophic <= over <= 1.0
+            assert float(metrics[f"evaluation/{target}/episode_cost_median"]) >= 0.0
     substantial = [s for s in compile_seconds if s > 1.0]
     assert len(substantial) <= 4, f"unexpected recompiles: {substantial}"
 
@@ -508,7 +532,7 @@ def test_per_context_constraint_needs_ppo_lagrange():
     """PPO-PID has no `lagrange_constraint` argument: the setup's kwargs are refused by the trainer
     (the CLI turns this into its 'does not accept' message before anything runs)."""
     told = C.Learner(constraint="additive", policy_context="told")
-    setup = C.context_training_setup("safe_lift_ant", "uniform", "level:3", told, num_timesteps=NUM_TIMESTEPS,
+    setup = C.context_training_setup("safe_lift_ant", "uniform", "level:3", told, environment_overrides={}, num_timesteps=NUM_TIMESTEPS,
                                      num_envs=TINY["num_envs"], batch_size=TINY["batch_size"],
                                      unroll_length=TINY["unroll_length"], num_minibatches=TINY["num_minibatches"])
     with pytest.raises(TypeError, match="lagrange_constraint"):
