@@ -19,14 +19,21 @@ code, with the context normaliser fix. Everything else is the sensors run of 202
 on level 3 and on Ω by return, mean cost and the tail the evaluator now logs (median, share over
 the budget, share over 4× it), then on several thousand replayed level-3 and level-1 episodes.
 
+A fifth arm, added 2026-10-19 after the four had run: the surface lidar under PLR (reward score),
+the best policy of 2026-10-15, so that the lidar's effect is read on the same distribution as the
+replayed centre-lidar policy it is compared with (the four arms' control stood still this seed).
+
     .venv/bin/python -m training.experiments.snellius scripts/experiments/goal_point_cost_tail_500M.py \\
-        --partition gpu_a100 --time 03:00:00
+        --partition gpu_a100 --time 03:00:00            # the four arms, 2026-10-19 16:00
+    .venv/bin/python -m training.experiments.snellius scripts/experiments/goal_point_cost_tail_500M.py \\
+        --partition gpu_a100 --time 03:00:00 --only plr_geometry
     # or, one after another on this machine (~1.6 h each at 85 k SPS):
     setsid nohup .venv/bin/python -m training.experiments.local scripts/experiments/goal_point_cost_tail_500M.py \\
         > runs/logs/goal_point_cost_tail_500M_chain.log 2>&1 < /dev/null & disown
 """
 from training.experiments import Arm, Experiment
 
+UNIFORM = ("--context_distribution", "uniform")
 GEOMETRY = ("--env_kwargs", '{"hazard_lidar": "surface_by_kind"}')
 MEMORY = ("--memory_time_constant", "32")
 
@@ -34,7 +41,7 @@ EXPERIMENT = Experiment(
     group="goal_point_cost_tail_500M",
     common=(
         "--env_name", "safe_goal_point", "--alg", "ppo_lag",
-        "--context_distribution", "uniform", "--deployment_distribution", "level:3",
+        "--deployment_distribution", "level:3",
         "--constraint", "additive", "--policy_context", "told",
         "--initial_lambda_lagr", "0.1", "--lagrangian_coef_rate", "1",
         "--num_envs", "8192", "--episode_length", "1000",
@@ -44,9 +51,10 @@ EXPERIMENT = Experiment(
         "--measure_performance", "--skip_rollout", "--skip_video",
     ),
     arms=(
-        Arm("control", ()),
-        Arm("geometry", GEOMETRY),
-        Arm("memory", MEMORY),
-        Arm("geometry_memory", (*GEOMETRY, *MEMORY)),
+        Arm("control", UNIFORM),
+        Arm("geometry", (*UNIFORM, *GEOMETRY)),
+        Arm("memory", (*UNIFORM, *MEMORY)),
+        Arm("geometry_memory", (*UNIFORM, *GEOMETRY, *MEMORY)),
+        Arm("plr_geometry", ("--context_distribution", "plr", *GEOMETRY)),
     ),
 )

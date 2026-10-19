@@ -60,6 +60,7 @@ ARM_COLOURS: Mapping[str, str] = {
     "uniform additive told hazard_lidar=surface_by_kind": "#2ca02c",
     "uniform additive told memory32": "#ff7f0e",
     "uniform additive told memory32 hazard_lidar=surface_by_kind": "#d62728",
+    "plr additive told hazard_lidar=surface_by_kind": "#8c6d31",
     BUDGET_ARM: "#c7c7c7",
 }
 

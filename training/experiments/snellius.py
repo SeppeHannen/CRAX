@@ -122,10 +122,18 @@ def submit(cluster: Cluster, script: str) -> str:
 
 
 def submit_experiment(
-    cluster: Cluster, resources: Resources, experiment: Experiment, commit: str, *, dry_run: bool
+    cluster: Cluster, resources: Resources, experiment: Experiment, commit: str, *, dry_run: bool, only: Sequence[str] = ()
 ) -> Sequence[Tuple[Job, str]]:
-    """Prepare the group, the checkout and the log directory, then submit every job. Returns (job, job id) pairs."""
+    """Prepare the group, the checkout and the log directory, then submit every job — or, with
+    ``only``, just the jobs with those labels (an experiment that gained an arm after its first
+    submission). Returns (job, job id) pairs."""
     jobs = experiment.jobs()
+    if only:
+        labels = {job.label for job in jobs}
+        unknown = set(only) - labels
+        if unknown:
+            raise ValueError(f"{experiment.group!r} has no jobs {sorted(unknown)}; it has {sorted(labels)}")
+        jobs = tuple(job for job in jobs if job.label in only)
     scripts = [job_script(cluster, resources, experiment, job, commit) for job in jobs]
     if dry_run:
         for script in scripts:
@@ -149,6 +157,8 @@ def main() -> None:
     parser.add_argument("--time", required=True, help="wall-time limit per job, HH:MM:SS")
     parser.add_argument("--host", default="snellius", help="ssh host alias of the cluster")
     parser.add_argument("--dry-run", action="store_true", help="print the job scripts; submit nothing, create nothing")
+    parser.add_argument("--only", nargs="+", default=(), metavar="LABEL",
+                        help="submit only the jobs with these labels (an arm added to an experiment already run)")
     arguments = parser.parse_args()
 
     repository = pathlib.Path(__file__).resolve().parents[2]
@@ -157,7 +167,7 @@ def main() -> None:
     cluster = Cluster.connect(arguments.host)
     resources = Resources(partition=arguments.partition, time=arguments.time)
     print(f"{experiment.group}: {len(experiment.jobs())} jobs at commit {commit} on {cluster.host} ({resources.partition}, {resources.time})")
-    submit_experiment(cluster, resources, experiment, commit, dry_run=arguments.dry_run)
+    submit_experiment(cluster, resources, experiment, commit, dry_run=arguments.dry_run, only=tuple(arguments.only))
 
 
 if __name__ == "__main__":
