@@ -44,7 +44,7 @@ from training import performance
 from training import pmap
 from training import rounds
 from training import types
-from training.evaluation import EpisodeRecorder, LearnerViewFunction
+from training.evaluation import CostTail, EpisodeRecorder, LearnerViewFunction
 from training.acme import running_statistics
 from training.acme import specs
 from training.agents.ppo import checkpoint
@@ -279,6 +279,8 @@ def train(
         # episode review (docs/acl/design/episode_review.md)
         learner_view_fn: Optional[LearnerViewFunction] = None,
         episode_recorder: Optional[EpisodeRecorder] = None,
+        # the shape of each evaluation's episode-cost distribution (training/evaluation/cost_tail.py)
+        cost_tail: Optional[CostTail] = None,
 ):
     """PPO training.
 
@@ -392,6 +394,10 @@ def train(
         (docs/acl/design/episode_review.md). Supplied by the entry point from
         `--record_episodes`, like `round_hook`; refused before anything compiles
         when the agent has no `learner_view_fn`.
+      cost_tail: if given, every evaluator also reports the median episode cost
+        and the fractions of episodes over the budget and over four times it.
+        Supplied by the agent that holds the constraint (ppo_lag/train.py), which
+        is the one that knows the episodic budget.
 
     Returns:
       Tuple of (make_policy function, network params, metrics)
@@ -940,6 +946,7 @@ def train(
                 action_repeat=action_repeat,
                 key=eval_key,
                 recording=episode_recorder.recording if episode_recorder is not None else None,
+                cost_tail=cost_tail,
             )
 
     if learner_view_fn is not None:

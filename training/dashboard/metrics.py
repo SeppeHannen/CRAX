@@ -148,6 +148,7 @@ COST_PARTS_PANEL = "Training cost per episode, by part"
 EVALUATION_COST_PARTS_PANEL = "Evaluation cost per episode, by part"
 LAMBDA_SPREAD_PANEL = "Spread of the per-context multipliers λ(ω) over the round's transitions"
 LAMBDA_FIT_PANEL = "How closely λ(ω) follows the integrator: fit error against the targets' own spread"
+COST_TAIL_PANEL = "Share of episodes over the budget"
 
 # Wording shared by several descriptions.
 EVALUATION_POPULATION = "{num_eval_envs} episodes of the frozen policy on {evaluation}"
@@ -165,6 +166,15 @@ KEPT: Tuple[Metric, ...] = (
            f"the reward (defined above) summed over one episode (≤ {{episode_length}} steps), mean over {EVALUATION_POPULATION}."),
     Metric("{evaluation}/episode_cost", "Cost per episode", "cost per episode", Group.VERDICT,
            f"the cost (defined above) summed over one episode, mean over {EVALUATION_POPULATION}."),
+    Metric("{evaluation}/episode_cost_median", "Cost of the typical episode", "cost per episode", Group.VERDICT,
+           f"the median episode cost over the {EVALUATION_POPULATION}. Read against the mean above: a mean at the budget "
+           f"with a median well under it is a policy whose cost comes from a few large failures, not from every episode."),
+    Metric("{evaluation}/episode_cost_over_budget", "over the budget", "fraction of episodes", Group.VERDICT,
+           f"the fraction of the {EVALUATION_POPULATION} whose cost exceeds the budget {{budget}} — the constraint read per "
+           f"episode rather than in the mean.", panel=COST_TAIL_PANEL),
+    Metric("{evaluation}/episode_cost_over_4x_budget", "over four times the budget", "fraction of episodes", Group.VERDICT,
+           f"the fraction of the {EVALUATION_POPULATION} whose cost exceeds four times the budget {{budget}}: the catastrophic "
+           f"tail. A few such episodes can carry a large part of the mean cost, and with it the multiplier.", panel=COST_TAIL_PANEL),
     # Mechanism: what the student trained on and how the constraint reacted.
     Metric("training_curriculum/intended/{dimension}", "Contexts intended (the distribution in force)", "share of draws per bin", Group.MECHANISM,
            f"heatmap over rounds: the share at each value of {{dimension}} of {NUM_INTENDED_DRAWS} draws from the distribution the "

@@ -184,9 +184,13 @@ def test_verdict_panels_are_return_and_cost_as_plain_metric_panels():
     assert [plot.title for plot in plots] == [
         "Return per episode on the deployment task (level:3)", "Return per episode on all of Ω (uniform)",
         "Cost per episode on the deployment task (level:3)", "Cost per episode on all of Ω (uniform)",
+        "Cost of the typical episode on the deployment task (level:3)", "Cost of the typical episode on all of Ω (uniform)",
+        "Share of episodes over the budget on the deployment task (level:3)", "Share of episodes over the budget on all of Ω (uniform)",
     ]
     for plot in plots:
         assert plot.series == plot.logged and plot.expressions == ()
+    # the two tail fractions share one panel
+    assert plots[-1].series == ("evaluation/uniform/episode_cost_over_budget", "evaluation/uniform/episode_cost_over_4x_budget")
 
 
 def test_budget_run_logs_the_budget_under_every_cost_key_of_the_group():
@@ -254,8 +258,10 @@ def test_runs_are_coloured_by_arm_not_by_palette_order():
         by_arm[path[0]["value"]] = colour
     assert by_arm == dict(dashboard.view.ARM_COLOURS)
     told = contexts.Learner(constraint="additive", policy_context="told")
-    assert {contexts.arm_label("uniform", contexts.DEFAULT_LEARNER), contexts.arm_label("staged:1,2,3", told),
-            contexts.arm_label("plr:cost", contexts.DEFAULT_LEARNER)} <= set(by_arm)
+    remembering = contexts.Learner(constraint="additive", policy_context="told", memory_time_constant=32)
+    assert {contexts.arm_label("uniform", contexts.DEFAULT_LEARNER, {}), contexts.arm_label("staged:1,2,3", told, {}),
+            contexts.arm_label("plr:cost", contexts.DEFAULT_LEARNER, {}),
+            contexts.arm_label("uniform", remembering, {"hazard_lidar": "surface_by_kind"})} <= set(by_arm)
 
 
 def test_run_facts_round_trip_through_json():

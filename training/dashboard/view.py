@@ -56,6 +56,10 @@ ARM_COLOURS: Mapping[str, str] = {
     "uniform additive told": "#6b4c9a",
     "staged:1,2,3 additive told": "#0f7f8c",
     "plr additive told": "#bd9e39",
+    # The cost-tail ablation (plan task 1b): the sensor variant and the memory, each alone and together
+    "uniform additive told hazard_lidar=surface_by_kind": "#2ca02c",
+    "uniform additive told memory32": "#ff7f0e",
+    "uniform additive told memory32 hazard_lidar=surface_by_kind": "#d62728",
     BUDGET_ARM: "#c7c7c7",
 }
 

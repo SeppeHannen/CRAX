@@ -9,14 +9,18 @@ view of every step (``docs/acl/design/episode_review.md``).
 * :mod:`record` — :class:`EpisodeRecord`, the artifact one recorded episode becomes.
 * :mod:`recorder` — :class:`EpisodeRecorder`, which turns an evaluation's recorded
   transitions and the learner's view into records on disk.
+* :mod:`cost_tail` — :class:`CostTail`, the statistics of an evaluation's episode
+  costs beyond their mean (median, fraction over the budget and over four times it).
 """
 
+from training.evaluation.cost_tail import CostTail
 from training.evaluation.learner_view import LearnerView, LearnerViewFunction
 from training.evaluation.record import RECORDS_DIRECTORY, EpisodeRecord, records_under
 from training.evaluation.recorder import EpisodeRecorder, EvaluationRecording
 from training.evaluation.scene import TRANSITION_SCENE_KEY, Scene, SceneWrapper
 
 __all__ = [
+    "CostTail",
     "EpisodeRecord",
     "EpisodeRecorder",
     "EvaluationRecording",

@@ -13,7 +13,7 @@ from crax import base
 from crax import envs
 from training import rounds
 from training import types
-from training.evaluation import EpisodeRecorder, LearnerViewFunction
+from training.evaluation import CostTail, EpisodeRecorder, LearnerViewFunction
 from training.agents.ppo_lag import losses as ppo_lag_losses
 from training.agents.ppo_lag.constraint import LagrangeConstraint, ScalarConstraint
 from training.agents.ppo import networks as ppo_networks
@@ -277,4 +277,5 @@ def train(
         evaluation_wrap_env_fns=evaluation_wrap_env_fns,
         learner_view_fn=learner_view_fn,
         episode_recorder=episode_recorder,
+        cost_tail=CostTail(budget=safety_bound),
     )

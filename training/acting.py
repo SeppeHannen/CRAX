@@ -18,6 +18,7 @@ import time
 from typing import Callable, Optional, Sequence, Tuple
 
 from crax import envs
+from training.evaluation.cost_tail import CostTail
 from training.evaluation.recorder import EvaluationRecording
 from training.evaluation.scene import SceneWrapper
 from training.types import Metrics
@@ -94,6 +95,7 @@ class Evaluator:
       action_repeat: int,
       key: PRNGKey,
       recording: Optional[EvaluationRecording] = None,
+      cost_tail: Optional[CostTail] = None,
   ):
     """Init.
 
@@ -109,8 +111,14 @@ class Evaluator:
         recorded per step, and returned by `run_recorded_evaluation`
         (docs/acl/design/episode_review.md). The scene the renderer needs is
         written into the state by `SceneWrapper`, so it can be one of them.
+      cost_tail: if given, each evaluation also reports the shape of its
+        episode-cost distribution (`eval/episode_cost_median`,
+        `eval/episode_cost_over_budget`, `eval/episode_cost_over_4x_budget`;
+        training/evaluation/cost_tail.py). Needs the environment to report a
+        `cost` episode metric.
     """
     self._key = key
+    self._cost_tail = cost_tail
     self._eval_walltime = 0.0
     if recording is not None and recording.num_episodes > num_eval_envs:
       raise ValueError(f'cannot record {recording.num_episodes} episodes from {num_eval_envs} evaluation environments')
@@ -175,6 +183,13 @@ class Evaluator:
               fn(value) if aggregate_episodes else value
           )
           for name, value in eval_metrics.episode_metrics.items()
+      })
+    if self._cost_tail is not None:
+      if 'cost' not in eval_metrics.episode_metrics:
+        raise KeyError("a cost tail needs the environment's `cost` episode metric; this environment reports none")
+      metrics.update({
+          f'eval/{name}': value
+          for name, value in self._cost_tail.metrics(np.asarray(eval_metrics.episode_metrics['cost'])).items()
       })
     metrics['eval/avg_episode_length'] = np.mean(eval_metrics.episode_steps)
     metrics['eval/std_episode_length'] = np.std(eval_metrics.episode_steps)
