@@ -12,7 +12,7 @@ Usage:
 
 import os
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Literal, Optional, Sequence, Tuple, get_args
 
 import jax
 import mujoco
@@ -36,6 +36,25 @@ from crax.envs.env_utils import (
 )
 from crax.envs.hazards import HazardGroup, _type_defaults_from_registry, compute_hazard_costs
 from crax.io import mjcf
+
+HazardLidar = Literal["centre", "surface_by_kind"]
+"""How the hazard lidar reads the hazards (``SafeGoal.__init__``, ``hazard_lidar``).
+
+``centre`` (the benchmark's): one array of ``lidar_bins`` sectors; a hazard's reading is the
+closeness of its *centre*, ``(max_dist − d) / max_dist``, in the sector its centre falls in
+(aliased into the two neighbours); the maximum over hazards of every kind. Kind, extent and
+clearance are not in it: a flat disc the agent may cross and a solid cylinder it cannot read
+the same.
+
+``surface_by_kind``: two arrays of ``lidar_bins`` sectors, the first over the passable
+hazards (not collidable), the second over the solid ones. A hazard's reading is the
+closeness of its *surface*, ``(max_dist − max(d − r, 0)) / max_dist`` with ``r`` its
+footprint radius (the keepout radius placement uses), and it fills every sector within the
+angle it subtends, ``asin(r / d)``, fading over one sector beyond. What a range sensor would
+return, per kind: two solid surfaces 0.1 m away on either side read as a closed gap.
+Adopted for plan task 1b (``docs/acl/README.md``); changes the observation from 62 to 78 entries.
+"""
+HAZARD_LIDARS: Tuple[str, ...] = get_args(HazardLidar)
 
 
 class SafeGoal(PipelineEnv, ABC):
@@ -112,6 +131,7 @@ class SafeGoal(PipelineEnv, ABC):
             lidar_max_dist: float = 3.0,
             lidar_alias: bool = True,
             hazard_compass_k: int = 8,
+            hazard_lidar: HazardLidar = "centre",
             # Placement settings
             placement_extents: Tuple[float, float, float, float] = (-2.5, -2.5, 2.5, 2.5),
             agent_keepout: Optional[float] = None,
@@ -325,6 +345,11 @@ class SafeGoal(PipelineEnv, ABC):
         self._lidar_num_bins = lidar_bins
         self._lidar_max_dist = lidar_max_dist
         self._hazard_compass_k = hazard_compass_k
+        if hazard_lidar not in HAZARD_LIDARS:
+            raise ValueError(f"{type(self).__name__}: hazard_lidar must be one of {HAZARD_LIDARS}, got {hazard_lidar!r}")
+        self._hazard_lidar: HazardLidar = hazard_lidar
+        # What the surface lidar needs per hazard: its footprint and whether it is solid.
+        self._hazard_is_solid = jp.array([h.collidable for h in hazards], dtype=jp.bool_)
 
         # Placement
         self._placement_extents = placement_extents
@@ -938,10 +963,15 @@ class SafeGoal(PipelineEnv, ABC):
 
         # Process all hazards using scan to handle variable number of hazards
         hazard_mocap_ids_array = jp.array(self._hazard_mocap_ids, dtype=jp.int32)
-        init_carry = (hazard_lidar_obs, agent_pos, agent_z_angle, cos_a, sin_a)
-        (hazard_lidar_obs, _, _, _, _), _ = jax.lax.scan(
-            process_hazard_lidar, init_carry, (hazard_mocap_ids_array, activation)
-        )
+        if self._hazard_lidar == "centre":
+            init_carry = (hazard_lidar_obs, agent_pos, agent_z_angle, cos_a, sin_a)
+            (hazard_lidar_obs, _, _, _, _), _ = jax.lax.scan(
+                process_hazard_lidar, init_carry, (hazard_mocap_ids_array, activation)
+            )
+        else:
+            hazard_lidar_obs = self._surface_lidar_by_kind(
+                data.mocap_pos[hazard_mocap_ids_array], activation, agent_pos, cos_a, sin_a
+            )
 
         # === HAZARD COMPASSES ===
         # Create individual compass observations for each hazard
@@ -1008,12 +1038,48 @@ class SafeGoal(PipelineEnv, ABC):
             gyro,  # (3,)
             magnetometer,  # (3,)
             goal_lidar_obs,  # (16,) - Goal Lidar
-            hazard_lidar_obs,  # (16,) - Hazard Lidar
+            hazard_lidar_obs,  # (16,) - Hazard Lidar; (32,) passable then solid under hazard_lidar="surface_by_kind"
             goal_comp,  # (2,) - Goal compass
             hazard_compasses_flat,  # (16,) - Individual hazard compasses (8 hazards * 2 each)
         ])
 
         return obs
+
+    def _surface_lidar_by_kind(
+        self, hazard_positions: jp.ndarray, activation: jp.ndarray, agent_pos: jp.ndarray, cos_a: jp.ndarray, sin_a: jp.ndarray
+    ) -> jp.ndarray:
+        """The ``surface_by_kind`` hazard lidar (:data:`HazardLidar`): ``[2 * lidar_bins]``, the
+        passable hazards' sectors then the solid hazards', each sector the closeness of the
+        nearest surface of that kind within the sector.
+
+        ``hazard_positions`` ``[H, 3]`` world positions, ``activation`` ``[H]`` 0/1; an inactive
+        hazard reads as nothing.
+        """
+        num_bins = self._lidar_num_bins
+        bin_size = 2.0 * jp.pi / num_bins
+        sector_centres = (jp.arange(num_bins) + 0.5) * bin_size  # [B]
+
+        relative = hazard_positions[:, :2] - agent_pos[:2]  # [H, 2] world frame
+        forward = relative[:, 0] * cos_a + relative[:, 1] * sin_a
+        left = -relative[:, 0] * sin_a + relative[:, 1] * cos_a
+        centre_distance = jp.sqrt(forward**2 + left**2 + 1e-12)  # [H]
+        bearing = jp.mod(jp.arctan2(left, forward), 2.0 * jp.pi)  # [H]
+        radius = self._hazard_keepouts  # [H] footprint radius
+
+        surface_distance = jp.maximum(centre_distance - radius, 0.0)
+        closeness = jp.clip((self._lidar_max_dist - surface_distance) / self._lidar_max_dist, 0.0, 1.0) * activation  # [H]
+        half_angle = jp.arcsin(jp.clip(radius / centre_distance, 0.0, 1.0))  # [H] the arc the footprint subtends
+
+        # [H, B]: angular distance from each sector's centre to the hazard's bearing, wrapped
+        offset = jp.abs(jp.mod(sector_centres[None, :] - bearing[:, None] + jp.pi, 2.0 * jp.pi) - jp.pi)
+        # Full reading inside the arc, fading to 0 over one sector beyond it
+        coverage = jp.clip(1.0 - (offset - half_angle[:, None]) / bin_size, 0.0, 1.0)
+        readings = closeness[:, None] * coverage  # [H, B]
+
+        solid = self._hazard_is_solid[:, None]
+        passable_lidar = jp.max(jp.where(solid, 0.0, readings), axis=0)
+        solid_lidar = jp.max(jp.where(solid, readings, 0.0), axis=0)
+        return jp.concatenate([passable_lidar, solid_lidar])
 
     def _get_metrics(self, data: mjx.Data, reward: jp.ndarray, cost: jp.ndarray,
                      dist_goal: jp.ndarray, last_dist_goal: jp.ndarray, ctrl_cost: jp.ndarray) -> Dict:
@@ -1031,11 +1097,16 @@ class SafeGoal(PipelineEnv, ABC):
         }
 
     @property
+    def hazard_lidar_arrays(self) -> int:
+        """How many ``lidar_bins``-sector arrays the hazard lidar is: one (``centre``) or one per kind (``surface_by_kind``)."""
+        return 1 if self._hazard_lidar == "centre" else 2
+
+    @property
     def observation_size(self) -> int:
         """Returns the size of the observation vector."""
         return (
                 12 +  # Sensor data (3 each for accel, vel, gyro, mag)
-                self._lidar_num_bins * 2 +  # Goal and hazard lidars
+                self._lidar_num_bins * (1 + self.hazard_lidar_arrays) +  # Goal lidar and the hazard lidar's arrays
                 2 +  # Goal compass
                 self._hazard_compass_k * 2  # Hazard compasses
         )

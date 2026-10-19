@@ -28,6 +28,7 @@ from training import contexts as C
 from training import dashboard
 from training.acting import Evaluator
 from training.agents.ppo.train import _evaluation_metric_name
+from training.evaluation import CostTail
 from crax.envs.difficulty import get_supported_levels
 
 SUITES = C.registered_environments()
@@ -69,7 +70,7 @@ def _logged_keys(env_name: str) -> List[str]:
     for evaluation in C.evaluations_for(suite, deployment_spec="level:3", total_rounds=1):
         evaluation_env = C.wrap_for_context_evaluation(env, evaluation.distribution, episode_length=EPISODE_LENGTH)
         evaluator = Evaluator(evaluation_env, zero_policy, num_eval_envs=NUM_SLOTS, episode_length=EPISODE_LENGTH,
-                              action_repeat=1, key=jax.random.PRNGKey(1))
+                              action_repeat=1, key=jax.random.PRNGKey(1), cost_tail=CostTail(budget=25.0))
         keys += [_evaluation_metric_name(key, evaluation.name) for key in evaluator.run_evaluation(None, training_metrics={})]
     return keys
 
@@ -78,6 +79,7 @@ def _logged_keys(env_name: str) -> List[str]:
 def test_every_key_the_suite_logs_is_registered(env_name):
     keys = _logged_keys(env_name)
     assert "episodic/cost" in keys and f"evaluation/{C.DEPLOYMENT_EVALUATION}/episode_reward" in keys
+    assert f"evaluation/{C.DEPLOYMENT_EVALUATION}/episode_cost_over_4x_budget" in keys
     unregistered = []
     for key in keys:
         try:
@@ -215,3 +217,52 @@ def test_driving_into_the_fence_is_free_and_invisible():
         assert float(state.info["cost"]) == 0.0
         assert float(jnp.max(state.obs[hazard_lidar])) == 0.0
     assert abs(position[0]) > env._placement_extents[2], "the robot never reached the fence"
+
+
+def test_the_surface_lidar_by_kind_tells_a_solid_wall_from_a_passable_disc():
+    """`hazard_lidar="surface_by_kind"` (crax/envs/safe_goal.py, plan task 1b) replaces the 16 hazard
+    sectors by 16 passable + 16 solid; everything else in the observation is the centre lidar's.
+    A solid cylinder just ahead reads near 1 in the solid array's forward sectors and 0 in the
+    passable array; the same scene with the hazard's kind swapped reads the other way round —
+    the fact the centre lidar cannot carry (its reading is identical under the swap)."""
+    centre = envs.get_environment("safe_goal_point", level=3).unwrapped
+    surface = envs.get_environment("safe_goal_point", level=3, hazard_lidar="surface_by_kind").unwrapped
+    bins = centre._lidar_num_bins
+    assert (centre.observation_size, surface.observation_size) == (12 + 2 * bins + 2 + 16, 12 + 3 * bins + 2 + 16)
+    key = jax.random.PRNGKey(3)
+    from_centre, from_surface = jax.jit(centre.reset)(key), jax.jit(surface.reset)(key)
+    np.testing.assert_allclose(from_centre.obs[: 12 + bins], from_surface.obs[: 12 + bins])  # sensors and goal lidar
+    np.testing.assert_allclose(from_centre.obs[12 + 2 * bins :], from_surface.obs[12 + 3 * bins :])  # compasses
+
+    # One solid cylinder dead ahead, its surface 0.11 m from the agent's centre (yaw 0); every other hazard inactive
+    hazards = surface._hazard_manager.hazards
+    solid = next(i for i, h in enumerate(hazards) if h.collidable and h.hazard_type == "cylinder")
+    activation = jnp.zeros((len(hazards),)).at[solid].set(1.0)
+    data = from_surface.pipeline_state
+    hazard_xy = data.mocap_pos[surface._hazard_mocap_ids[solid], :2]
+    agent_xy = hazard_xy - jnp.array([float(surface._hazard_keepouts[solid]) + 0.11, 0.0])
+    data = data.replace(xpos=data.xpos.at[surface._agent_body, :2].set(agent_xy), qpos=data.qpos.at[2].set(0.0))
+    passable_part, solid_part = slice(12 + bins, 12 + 2 * bins), slice(12 + 2 * bins, 12 + 3 * bins)
+    forward = np.array([0, bins - 1])  # the two sectors either side of the heading
+
+    obs = np.asarray(surface._get_obs(data, activation))
+    expected = (3.0 - 0.11) / 3.0
+    np.testing.assert_allclose(obs[solid_part][forward], expected, atol=0.01)
+    assert not np.asarray(obs[passable_part]).any()
+
+    # Swap the kind of that one hazard: the reading moves from the solid array to the passable one…
+    swapped = surface._hazard_is_solid.at[solid].set(False)
+    surface._hazard_is_solid = swapped
+    try:
+        obs_swapped = np.asarray(surface._get_obs(data, activation))
+    finally:
+        surface._hazard_is_solid = swapped.at[solid].set(True)
+    np.testing.assert_allclose(obs_swapped[passable_part][forward], expected, atol=0.01)
+    assert not np.asarray(obs_swapped[solid_part]).any()
+    # …and the centre lidar reads the same for both kinds (it is one array over all hazards): the
+    # centre is 0.41 m ahead, closeness (3 − 0.41) / 3.
+    obs_centre = np.asarray(centre._get_obs(from_centre.pipeline_state.replace(xpos=data.xpos, qpos=data.qpos), activation))
+    np.testing.assert_allclose(obs_centre[12 + bins : 12 + 2 * bins][forward], (3.0 - 0.41) / 3.0, atol=0.01)
+
+    with pytest.raises(ValueError, match="hazard_lidar"):
+        envs.get_environment("safe_goal_point", level=3, hazard_lidar="raycast")
