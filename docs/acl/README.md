@@ -326,9 +326,43 @@ change what the budget means. Every candidate's observation or cost change is
 raised with Tristan before it runs; the sensor-only variant of the vision
 composition (`{sensors, context}`) is the base.
 
-**To build:** the over-budget fraction and the cost quantiles logged by the
-evaluator every evaluation (plan item 6 of 2026-10-15, still owed), so the
-tail is a dashboard line and not a replay afterwards; then candidate (a).
+**Measured 2026-10-19 on the 384 replayed level-3 episodes of PLR additive
+told** (`scripts/analysis/goal_point_cost_tail.py` reproduces the table on new
+replays). Solid contact is 0.44 % of steps and 76 % of all cost; the disc
+proximity cost is minor. The catastrophic episode is **not** sustained
+pressing: the worst (cost 247) has 68 touches between steps 263 and 936 and
+its longest contiguous contact is 10 steps — the agent is pushed back,
+re-approaches, touches again, jittering in a 0.25 m spot with the goal 1.5 m
+beyond a 0.25 m gap between a solid cylinder and a solid cube. The median
+interval between touches is 32 steps (35 % within 8, 54 % within 32, 64 %
+within 64). Three consequences: candidate (c) is dead (contact is
+intermittent); the present observation is *not* constant while stuck (the
+accelerometer spikes at each touch), so the missing fact is the
+accumulation over 30–100 steps, which a stack of the last 8 frames would hold
+in one re-approach of three; and kind alone does not say the gap is too
+narrow — surface clearance does. Repeated contact on one solid set (≥ 3
+touches within 100 steps) occurs in 26 % of the told arms' episodes and 50 %
+of the blind arms', and is escaped about half the time in both; the learner
+changed how often the trap is entered, not how it is left.
+
+**Built 2026-10-19 (uncommitted, awaiting review), one experiment:**
+
+| | what | where |
+|---|---|---|
+| tail metrics | every evaluation logs the median episode cost and the share of episodes over the budget and over 4× it, from the budget PPO-Lagrange knows | `training/evaluation/cost_tail.py`; `acting.Evaluator(cost_tail=)`; registry |
+| (a) geometry | `hazard_lidar="surface_by_kind"`: two 16-sector arrays, passable and solid, closeness of the nearest *surface* over the arc each footprint subtends (62 → 78 sensors); the benchmark's `centre` lidar stays the default | `crax/envs/safe_goal.py` `HazardLidar`; `--env_kwargs` |
+| (b) memory | `--memory_time_constant 32`: one exponential trace of (sensors, action, cost) as a third observation part `memory`, zeroed at each episode start; τ = the median inter-touch interval; the policy and both critics read it | `training/contexts/memory.py`; `Learner.memory_time_constant` |
+| the arm | an arm now carries its environment overrides: `uniform additive told memory32 hazard_lidar=surface_by_kind` | `setup.arm_label` |
+
+The experiment is `scripts/experiments/goal_point_cost_tail_500M.py`: the
+settled learner (`uniform additive told`) as control, (a), (b), and both — a
+2 × 2 on the colleague's suggestion of 2026-10-19, 500 M, one seed, otherwise
+the 2026-10-15 setup. Read on level 3 and Ω: goals, mean cost, the three tail
+lines; then several thousand replayed level-3 and level-1 episodes through the
+trap counter, which separates *entering* a trap from *escaping* one. Not
+built: a recurrent policy (next if the trace is not enough), scripted trap
+layouts, PID. The trace includes the cost, which a deployed robot is not
+told; the accelerometer in the same trace is its proxy (Tristan, item 25).
 
 ### 2. Each arm is scored on a held-out region that tests one type of generalisation
 
@@ -885,6 +919,16 @@ Upstream bugs found, and places where our changes alter the benchmark:
     swings of 2–5 goals in his vision training? Task 1b's candidates (kind
     and extent in the lidar; memory; a contact-duration cost) each change the
     benchmark and are his call.
+25. Built for task 1b (2026-10-19), both opt-in and off by default, so the
+    benchmark's runs are unchanged: `hazard_lidar="surface_by_kind"` on
+    goal-point (78-dimensional observation, two arrays by kind, surface
+    closeness over the subtended arc) and `--memory_time_constant` (an
+    exponential trace of sensors, action **and cost** as a third observation
+    part). The cost in the trace is information a deployed robot does not
+    have; is that acceptable for the benchmark, or should the trace carry
+    sensors and action only? Also: the evaluator now logs the median episode
+    cost and the share of episodes over 1× and 4× the budget whenever the
+    agent hands it a budget (`CostTail`); PPO-Lagrange does, the others could.
 
 ## Vocabulary
 

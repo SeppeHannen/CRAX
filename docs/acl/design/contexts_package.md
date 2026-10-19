@@ -23,13 +23,14 @@ training/contexts/
   training_curriculum.py       the training_curriculum/* metrics: intended (q), sampled, experienced (q̂), <objective>_value_loss, distribution/*
   round_hook.py                ContextRoundHook(RoundHook): store rollout + signals, lay out per slot, close episodes, update φ, attach it, return the round's metrics
   observation.py               ContextObservationWrapper: obs = {"sensors": o, "context": ω}, outermost in both stacks (design/contextual_learner.md §2)
-  networks.py                  make_contextual_ppo_networks: policy over sensors (+ context when told), critics over sensors + context
+  memory.py                    MemoryObservationWrapper: obs gains "memory", an exponential trace of (sensors, action, cost) with time constant τ, zero at each episode start; outside the context labelling when the learner keeps one (plan task 1b)
+  networks.py                  make_contextual_ppo_networks: policy over every labelled part but the context (+ context when told), critics over every labelled part
   constraints/                 λ(ω) as a function of the context, two classes behind one ppo_lag LagrangeConstraint (design/contextual_learner.md §1):
     fitted.py                  the integrator's targets and the metrics both share
     network.py                 NetworkConstraint: softplus(MLP(ω̃))
     additive.py                AdditiveConstraint: f(Σ h_i(ω_i)), monotone per factor, additive difficulty
-  learner.py                   Learner(constraint, policy_context) -> train(network_factory=, lagrange_constraint=); the arm label
-  setup.py                     '--context_distribution' / '--deployment_distribution' specs + the Learner -> train(**kwargs); arm_label
+  learner.py                   Learner(constraint, policy_context, memory_time_constant) -> train(network_factory=, lagrange_constraint=); Learner.from_flags, the one reading of the three CLI flags
+  setup.py                     '--context_distribution' / '--deployment_distribution' specs + the Learner + the run's --env_kwargs -> train(**kwargs); arm_label (distribution, learner, environment overrides)
 tests/test_contexts.py            wrapper mechanics, round layout, episode tracker, PLR unit tests (CPU, ~40 s)
 tests/test_context_training.py    specs, rollout, metrics, tiny PPO-Lag runs per distribution incl. plr (CPU, ~4 min)
 ```
