@@ -123,7 +123,15 @@ class EpisodeRecord:
         with np.load(path) as contents:
             metadata = json.loads(str(contents[METADATA_KEY]))
             arrays = {name: contents[name] for name in _PER_STEP_FIELDS + ("context",)}
-            images = {name: contents[_IMAGE_ARRAY.format(index=index)] for index, name in enumerate(metadata[IMAGE_PARTS_KEY])}
+            # The image arrays the file holds; the metadata names them in order. A record of a
+            # state-based run holds none (records from before 2026-10-17 carry no names either).
+            image_arrays = sorted(name for name in contents.files if name.startswith(_IMAGE_ARRAY.format(index="")))
+            if image_arrays and IMAGE_PARTS_KEY not in metadata:
+                raise ValueError(f"{path} holds image arrays {image_arrays} but its metadata does not name the parts")
+            part_names = metadata[IMAGE_PARTS_KEY] if image_arrays else []
+            if len(part_names) != len(image_arrays):
+                raise ValueError(f"{path} names {len(part_names)} image parts but holds {len(image_arrays)} image arrays")
+            images = {name: contents[_IMAGE_ARRAY.format(index=index)] for index, name in enumerate(part_names)}
         return cls(
             env_name=str(metadata["env_name"]),
             run_name=str(metadata["run_name"]),

@@ -30,6 +30,7 @@ from training.agents.ppo import networks as ppo_networks
 from training.agents.ppo_lag import losses as ppo_lag_losses
 from training.agents.ppo_lag.train import train as train_ppo_lag
 from training.evaluation import TRANSITION_SCENE_KEY, EpisodeRecord, EpisodeRecorder, LearnerView, SceneWrapper, records_under
+from training.evaluation.record import IMAGE_PARTS_KEY, METADATA_KEY
 from training.evaluation.scene import Scene
 from training.evaluation.recorder import EvaluationRecording, _episode_length
 from training.review.library import Library
@@ -82,6 +83,25 @@ def test_record_keeps_the_frames_the_policy_saw_by_part_name():
         _record(images={"pixels/vision": frames.astype(np.float32)})
     with pytest.raises(ValueError, match=r"T=5"):
         _record(images={"pixels/vision": frames[:4]})
+
+
+def test_a_record_written_before_frames_were_recorded_still_loads(tmp_path):
+    """Records of 2026-10-15/16 name no image parts in their metadata and hold no image arrays;
+    they load with no images. A file that holds image arrays its metadata does not name is refused."""
+    import json
+
+    path = _record().save(tmp_path)
+    with np.load(path) as contents:
+        arrays = {name: contents[name] for name in contents.files}
+    metadata = json.loads(str(arrays.pop(METADATA_KEY)))
+    del metadata[IMAGE_PARTS_KEY]
+    old = tmp_path / "old.episode.npz"
+    np.savez_compressed(old, **arrays, **{METADATA_KEY: np.asarray(json.dumps(metadata))})
+    assert EpisodeRecord.load(old).images == {}
+    inconsistent = tmp_path / "inconsistent.episode.npz"
+    np.savez_compressed(inconsistent, **arrays, image_0=np.zeros((5, 2, 2, 3), np.uint8), **{METADATA_KEY: np.asarray(json.dumps(metadata))})
+    with pytest.raises(ValueError, match="does not name"):
+        EpisodeRecord.load(inconsistent)
 
 
 def test_record_refuses_arrays_of_the_wrong_length_or_shape():

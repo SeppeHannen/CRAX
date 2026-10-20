@@ -12,7 +12,7 @@ from __future__ import annotations
 import io
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Union
 
 import mujoco
 import numpy as np
@@ -23,6 +23,9 @@ from training.evaluation.record import EpisodeRecord
 
 DEFAULT_CAMERA = "fixedfar"
 WIDTH, HEIGHT = 640, 480
+
+Camera = Union[str, mujoco.MjvCamera]
+"""One of the model's cameras by name, or a free camera the caller positions (``mujoco.MjvCamera``)."""
 
 
 class SceneRenderer:
@@ -47,20 +50,20 @@ class SceneRenderer:
         self._render_thread = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"render-{env_name}")
         self._renderer: mujoco.Renderer = self._render_thread.submit(mujoco.Renderer, self.model, height=height, width=width).result()
 
-    def frame(self, record: EpisodeRecord, step: int, camera: str) -> bytes:
+    def frame(self, record: EpisodeRecord, step: int, camera: Camera) -> bytes:
         """The JPEG of ``record`` at ``step`` from ``camera``."""
         if record.env_name != self.env_name:
             raise ValueError(f"this renderer draws {self.env_name}; the record is of {record.env_name}")
         if not 0 <= step < record.length:
             raise IndexError(f"step {step} outside the episode's {record.length} steps")
-        if camera not in self.cameras:
+        if isinstance(camera, str) and camera not in self.cameras:
             raise ValueError(f"no camera {camera!r}; {self.env_name} has {self.cameras}")
         pixels = self._render_thread.submit(self._render, record, step, camera).result()
         buffer = io.BytesIO()
         Image.fromarray(pixels).save(buffer, format="JPEG", quality=88)
         return buffer.getvalue()
 
-    def _render(self, record: EpisodeRecord, step: int, camera: str) -> np.ndarray:
+    def _render(self, record: EpisodeRecord, step: int, camera: Camera) -> np.ndarray:
         self._data.qpos[:] = record.qpos[step]
         self._data.qvel[:] = record.qvel[step]
         self._data.mocap_pos[:] = record.mocap_pos[step]
