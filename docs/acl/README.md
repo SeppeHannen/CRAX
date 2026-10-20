@@ -106,25 +106,32 @@ task delivers. Every experiment is a `--wandb_group` of arms on
 `safe_goal_point` at 500 M steps, on the sensor observation
 (`decisions/2026-10-18_vision_set_aside.md`).
 
-**Order as of 2026-10-18.** Task 0 first: everything built since 2026-10-14
+**Order as of 2026-10-20.** Task 0 first: everything built since 2026-10-14
 lives on one unreviewed branch and `main` is five weeks behind it; nothing new
-is decided or built until that is merged. Then task 1b — the cost tail —
-before tasks 2 and 3: a constraint on the mean cost is set by the rare
-catastrophic episode, so until that episode is understood, every arm's cost
-and the caution it buys are statements about the tail, not about the
-curriculum. Task 1 is done.
+is decided or built until that is merged. Tasks 1 and 1b are done; tasks 2 and
+3 follow the merge.
 
 ### 0. The work since 2026-10-14 is reviewed and on `main`, so the next step starts from a stable position
 
-**Where things stand.** Branch `contextual-review` (`38b8951`, pushed) holds
-every branch's content: `contextual-learner`, `episode-review`, `snellius`,
-`experiment/goal_point_learners_500M`, and `replay-checkpoint` (by content;
-that branch's first commit rendered MP4s and was reworked). It is 34 commits
-and 96 files over `origin/main`, which last merged `episode-review`
-(PR #1). One upstream file is touched (`crax/envs/wrappers/pixel_observation_gpu.py`,
-11 lines). CPU tests: 12 files, all passing as of 2026-10-17 (`92 passed`); the
-entry point has a subprocess test since 2026-10-17. The local checkout `CRAX`
-is on `contextual-review`; the four worktrees are removed.
+**Where things stand.** Branch **`cost-tail`** (pushed) is the review branch:
+`contextual-review` (everything from 2026-10-14 to 10-18 — `contextual-learner`,
+`episode-review`, `snellius`, `experiment/goal_point_learners_500M`,
+`replay-checkpoint` by content) plus task 1b (2026-10-19/20: the cost-tail
+metrics, the memory trace, the surface lidar, the experiment and its analysis
+tooling, the progress update). It is one PR against `origin/main`, which last
+merged `episode-review` (PR #1). One upstream file is touched
+(`crax/envs/wrappers/pixel_observation_gpu.py`, 11 lines); `crax/envs/safe_goal.py`
+gains an opt-in constructor option. CPU tests: all passing at `fd8a8ec`
+(`147 passed, 1 xfailed`, plus the later record-loader test). The local
+checkout `CRAX` is on `cost-tail`; no worktrees.
+
+**The thesis data is archived** outside the repository in
+`../crax-data/thesis_archive/` (`MANIFEST.md` lists it): the final checkpoint of
+every one of the 20 policies of the two 500 M experiments (each run also holds
+its 19 earlier checkpoints in W&B), and every replayed episode record of
+2026-10-16 .. 20 (16,376 episodes; what the figures, the videos and the review
+page read). The `../crax-data/replays_*` paths the scripts use are symlinks
+into it.
 
 **What is left, in order.**
 
@@ -147,29 +154,30 @@ is on `contextual-review`; the four worktrees are removed.
    `training.replay`, the records with the policy's frames, the review page's
    policy camera; (iv) the vision composition — `training/pixels.py`,
    `contexts/networks.py`'s encoder, `--gpu_memory_fraction`, the per-minibatch
-   critic pass and augmentation. Feedback goes into the branch as commits.
+   critic pass and augmentation; (v) the cost tail — `CostTail` from
+   PPO-Lagrange's budget to the evaluator and the registry; `--memory_time_constant`
+   through `Learner.from_flags`, the stacks and `labelled_parts`;
+   `hazard_lidar="surface_by_kind"` in `safe_goal.py`; the arm label carrying
+   `--env_kwargs`; the analysis tooling (`return_cost_mass_page.py`,
+   `goal_point_cost_tail.py`, `side_by_side_video.py`, the deck builder).
+   Feedback goes into the branch as commits.
 2. **The full CPU suite passes at the merge commit**: `JAX_PLATFORMS=cpu
    MUJOCO_GL=egl .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
    (about 15 minutes; the review's frame test needs the GL context).
-3. **Merge to `main`** as one merge commit, push, and delete the five merged
+3. **Merge to `main`** as one merge commit, push, and delete the six merged
    branches on the remote (`contextual-learner`, `episode-review`, `snellius`,
-   `experiment/goal_point_learners_500M`, `replay-checkpoint`) and locally.
-   `contextual-review` is then `main`.
-4. **The Tristan conversation**: the list below has grown by six items this
-   week (19–24); the three that change his files or the benchmark's meaning
-   (pixel wrapper dict, augmentation per minibatch, `--lagrangian_coef_rate`
-   per round) are raised before anything of task 1b is built, since 1b's
-   candidates all change the benchmark too.
-5. **Not part of the merge, noted so they are not lost.** The evaluator logs
-   each evaluation's mean and standard deviation of episode cost over its 128
-   episodes, and nothing else about their distribution; the fraction of
-   episodes over the budget and over 4× it — the numbers the tail question
-   rests on — can today only be had by replaying a checkpoint and counting.
-   Logging them every evaluation is the first thing task 1b builds. The
-   Markdown preview fails on every document in Giuseppe's VS Code (two preview
-   extensions active; the files render elsewhere) and is his machine's, not
-   the repository's. The review server on port 8790 is stopped when the vision
-   records are no longer being watched (`pkill -f training.review`).
+   `experiment/goal_point_learners_500M`, `replay-checkpoint`,
+   `contextual-review`) and locally. `cost-tail` is then `main`.
+4. **The Tristan conversation**: items 19–25 below; the four that change his
+   files or the benchmark's meaning (pixel wrapper dict, augmentation per
+   minibatch, `--lagrangian_coef_rate` per round, the surface lidar and memory
+   as opt-ins) first.
+5. **Not part of the merge, noted so they are not lost.** The Markdown preview
+   fails on every document in Giuseppe's VS Code (two preview extensions
+   active; the files render elsewhere) and is his machine's, not the
+   repository's. The deck builder needs `python-pptx`, which is not a project
+   dependency (a scratch venv was used); the mass-grid PNGs and the videos are
+   regenerated by their scripts from the archived records.
 
 ### 1. The CMDP becomes contextual: the policy sees its context and the constraint holds per context, so a curriculum can no longer move it
 
@@ -345,7 +353,24 @@ touches within 100 steps) occurs in 26 % of the told arms' episodes and 50 %
 of the blind arms', and is escaped about half the time in both; the learner
 changed how often the trap is entered, not how it is left.
 
-**Built 2026-10-19 (uncommitted, awaiting review), one experiment:**
+**Result (2026-10-19/20, five arms, 500 M, one seed, Snellius): the surface
+lidar by kind removes most of the tail and the policy spends the budget;
+memory does not.** Under the surface lidar the median level-3 cost is the mean
+(22 / 24–26), neither geometry arm ever stood still, and they end as the best
+level-3 policies so far (uniform 13.6 goals, PLR 15.3); the control stood
+still from 230 M and memory alone kept the tail (2.7 % over 4×). Replayed to
+2048 episodes: the centre-lidar policy's ≥ 50 episodes are 4.8 % of episodes
+and 29 % of all cost (worst 956); PLR under the surface lidar 2.6 % and 8 %
+(worst 159); episodes entering a trap 23 % → 8 %, traps escaped 50 % → 61 %
+— avoidance, not escape. Write-up:
+`experiments/2026-10-19_goal_point_cost_tail_500M.md`; the interactive
+return–cost mass figure and the replay table are its instruments.
+**Decision: the surface lidar by kind is the observation of every later
+arm; the memory trace stays available and off.** Progress update for the
+supervisors: `progress_update_2026-10-21.md`.
+
+**Built 2026-10-19 (branch `cost-tail`, commits 22f7720…fd8a8ec, awaiting
+review), one experiment:**
 
 | | what | where |
 |---|---|---|
@@ -591,6 +616,22 @@ every step — both stock).
 
 ## Results so far
 
+**Goal point, the cost tail: five arms on the observation, 500 M, one seed**
+(`experiments/2026-10-19_goal_point_cost_tail_500M.md`, Snellius). **The
+catastrophic episode was a perception failure.** The hazard lidar as two
+arrays by kind reading surface closeness (62 → 78 sensors) makes the level-3
+median cost equal the mean (22 vs 24–26), the share of episodes over 4× the
+budget 0.2–0.8 % at 128 episodes and 0.3–0.5 % at 2048 (was 1.1 %, worst 956
+→ 159), and gives the best level-3 policies so far (PLR 15.3 goals, uniform
+13.6) without a motionless phase. A memory trace (τ = 32) alone leaves the tail
+and slows learning; with the lidar it costs return. The remaining catastrophic
+episodes are the same trap, three times rarer: the lidar makes the agent avoid
+the gap, not escape it (traps escaped 50 → 61 %). PLR > uniform held under both
+lidars, one seed each. **Verified on the way**: the 2026-10-15 run's
+128-episode final evaluation (cost 22.9) and the replay of the same checkpoint
+(17.6–19.4) are the same stack — the difference is one 1000-cost episode in the
+sample.
+
 **Goal point, six arms from pixels with the dual ascent matched per step to the
 sensors run, 750 M, one seed** (`experiments/2026-10-18_goal_point_learners_vision_750M.md`).
 **The evaluation-to-evaluation swings of 2026-10-17 are not the multiplier's:**
@@ -766,6 +807,16 @@ is the mechanism, seen twice.
   change (plan item 1). Any other PPO-family trainer needs the same two lines.
 
 ## Known defects
+
+- **A 128-episode cost mean cannot carry a policy with the gap trap** (found
+  2026-10-19). One episode in a hundred costs 150–1000 under the centre lidar;
+  whether one lands in the evaluation's 128 episodes moves the mean by 5–8 and
+  the sd from 14 to 108 between evaluations 25 M apart. Every `evaluation/*/
+  episode_cost` of 2026-10-15, 10-17 and 10-18 carries that noise; the medians
+  and over-budget shares the evaluator logs since 2026-10-19 do not, and
+  replays of 2048 episodes are the numbers to quote. Not a pipeline fault:
+  reproduced the 10-15 run's final evaluation from its checkpoint with the
+  trainer's key chain (24.8, sd 89, one episode of 1014; fresh keys 17.4–18.6).
 
 - **A told policy under `staged` was blind to any context but the current
   stage's** (found 2026-10-15, fixed 2026-10-16 on `experiment/goal_point_learners_500M`).
