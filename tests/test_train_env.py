@@ -28,14 +28,14 @@ TINY_RUN = (
     "--num_timesteps", "160", "--num_evals", "2", "--num_eval_envs", "4", "--episode_length", "20",
     "--record_episodes", "2", "--store_model", "true", "--skip_rollout", "--skip_video", "--quiet", "--seeds", "0",
 )
-# The cost-tail experiment's combined arm (scripts/experiments/goal_point_cost_tail_500M.py): the
-# by-kind surface lidar (78 sensors) and a memory trace as a third observation part.
-GEOMETRY_AND_MEMORY = ("--env_kwargs", '{"hazard_lidar": "surface_by_kind"}', "--memory_time_constant", "4")
+# The observation of every arm since the cost-tail experiment (scripts/experiments/goal_point_cost_tail_500M.py):
+# the by-kind surface lidar (78 sensors).
+GEOMETRY = ("--env_kwargs", '{"hazard_lidar": "surface_by_kind"}')
 
 
 @pytest.mark.parametrize("extra_flags, sensors, run_name_fragment", [
     ((), 62, "_ctx_uniform_additive_told_ppo_lag_"),
-    (GEOMETRY_AND_MEMORY, 78, "_ctx_uniform_additive_told_memory4_hazard_lidar_surface_by_kind_ppo_lag_"),
+    (GEOMETRY, 78, "_ctx_uniform_additive_told_hazard_lidar_surface_by_kind_ppo_lag_"),
 ])
 def test_the_entry_point_runs_a_tiny_context_run_and_leaves_records_and_a_whole_learner_checkpoint(
     tmp_path: pathlib.Path, extra_flags, sensors, run_name_fragment

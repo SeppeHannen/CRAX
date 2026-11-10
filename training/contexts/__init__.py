@@ -31,7 +31,6 @@ from training.contexts.statistics import EpisodeStatistic, Fold, MeanAbsolute
 from training.contexts.round_hook import ContextRoundHook
 from training.contexts.constraints import AdditiveConstraint, NetworkConstraint
 from training.contexts.learner import CONSTRAINTS, POLICY_CONTEXTS, Learner
-from training.contexts.memory import MEMORY_OBSERVATION_KEY, MemoryObservationWrapper
 from training.contexts.networks import make_contextual_ppo_networks
 from training.contexts.observation import CONTEXT_OBSERVATION_KEY, SENSORS_KEY, ContextObservationWrapper
 from training.contexts.setup import (
@@ -70,8 +69,6 @@ __all__ = [
     "DEPLOYMENT_EVALUATION",
     "Evaluation",
     "Learner",
-    "MEMORY_OBSERVATION_KEY",
-    "MemoryObservationWrapper",
     "POLICY_CONTEXTS",
     "AdditiveConstraint",
     "NetworkConstraint",

@@ -109,7 +109,7 @@ def _train_and_checkpoint(checkpoints: pathlib.Path, learner: contexts.Learner) 
                   save_checkpoint_path=str(checkpoints))
     return argparse.Namespace(
         env_name=ENV_NAME, difficulty=1, env_kwargs={"backend": "mjx"}, episode_length=TINY["episode_length"],
-        constraint=learner.constraint, policy_context=learner.policy_context, memory_time_constant=learner.memory_time_constant,
+        constraint=learner.constraint, policy_context=learner.policy_context,
         discounting=0.97, reward_scaling=1.0, gae_lambda=0.95, vision=False,
     )
 

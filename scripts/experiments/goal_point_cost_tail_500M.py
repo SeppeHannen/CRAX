@@ -10,9 +10,13 @@ touches). Two things the observation lacks, each one arm, and their combination:
 * ``hazard_lidar=surface_by_kind`` — the hazard lidar as two arrays, passable and solid, reading
   the closeness of the nearest *surface* over the arc each hazard subtends (``crax/envs/safe_goal.py``,
   ``HazardLidar``): the fact that the gap is closed, in the present observation;
-* ``--memory_time_constant 32`` — an exponential trace of (sensors, action, cost) with the median
-  inter-touch interval as its time constant (``training/contexts/memory.py``): that the agent has
-  been touching, and not moving, for a while.
+* a memory — an exponential trace of (sensors, action, cost) with the median inter-touch interval,
+  32 steps, as its time constant: that the agent has been touching, and not moving, for a while.
+
+**The memory was removed from the code after this experiment** (it changed neither the tail nor
+the return; ``docs/acl/experiments/2026-10-19_goal_point_cost_tail_500M.md``). The two arms that
+used it, ``memory`` and ``geometry_memory``, ran from the tag ``experiments-2026-10`` and are no
+longer defined here; check that tag out to rerun or replay them.
 
 The control is the settled learner of 2026-10-15 (`uniform additive told`) rerun on the current
 code, with the context normaliser fix. Everything else is the sensors run of 2026-10-15. Judged
@@ -35,7 +39,6 @@ from training.experiments import Arm, Experiment
 
 UNIFORM = ("--context_distribution", "uniform")
 GEOMETRY = ("--env_kwargs", '{"hazard_lidar": "surface_by_kind"}')
-MEMORY = ("--memory_time_constant", "32")
 
 EXPERIMENT = Experiment(
     group="goal_point_cost_tail_500M",
@@ -53,8 +56,6 @@ EXPERIMENT = Experiment(
     arms=(
         Arm("control", UNIFORM),
         Arm("geometry", (*UNIFORM, *GEOMETRY)),
-        Arm("memory", (*UNIFORM, *MEMORY)),
-        Arm("geometry_memory", (*UNIFORM, *GEOMETRY, *MEMORY)),
         Arm("plr_geometry", ("--context_distribution", "plr", *GEOMETRY)),
     ),
 )

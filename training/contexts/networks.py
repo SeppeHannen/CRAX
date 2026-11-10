@@ -2,7 +2,6 @@
 observation it is allowed to see.
 
 The observation is ``{"sensors": o, "context": ω}`` (:mod:`observation`), plus
-``"memory"`` when the learner keeps a trace (:mod:`memory`) and
 ``"pixels/<camera>"`` parts when the run trains from pixels (``--vision``;
 ``GpuPixelObservationWrapper`` adds them outermost). The critics always read every
 part: the cost critic has to estimate cost per context for a per-context

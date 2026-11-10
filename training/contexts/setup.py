@@ -93,13 +93,13 @@ EnvironmentOverrides = Mapping[str, Any]
 
 def arm_label(training_spec: str, learner: Learner, environment_overrides: EnvironmentOverrides) -> str:
     """The arm as the dashboard legend shows it: ``"staged:1,2,3 additive told"``,
-    ``"uniform additive told memory32 hazard_lidar=surface_by_kind"``."""
+    ``"uniform additive told hazard_lidar=surface_by_kind"``."""
     overrides = "".join(f" {key}={value}" for key, value in sorted(environment_overrides.items()))
     return f"{training_spec} {learner.label}{overrides}"
 
 
 def run_name_fragment(training_spec: str, learner: Learner, environment_overrides: EnvironmentOverrides) -> str:
-    """The arm in a run name: ``staged123_additive_told``, ``uniform_additive_told_memory32_hazard_lidar_surface_by_kind``."""
+    """The arm in a run name: ``staged123_additive_told``, ``uniform_additive_told_hazard_lidar_surface_by_kind``."""
     overrides = "".join(f"_{key}_{value}" for key, value in sorted(environment_overrides.items()))
     return re.sub(r"[^A-Za-z0-9_]", "", f"{spec_label(training_spec)}_{learner.label.replace(' ', '_')}{overrides}")
 
@@ -135,12 +135,11 @@ class ContextTrainingSetup:
         episodes' return, cost and length (``episodic/*``) once per round, the
         same cadence as every other training-side metric on the dashboard.
         """
-        memory = self.learner.memory_time_constant
         return {
-            "wrap_env_fn": make_wrap_env_fn(self.distribution, memory),
+            "wrap_env_fn": make_wrap_env_fn(self.distribution),
             "round_hook": ContextRoundHook(self.distribution, num_slots=self.num_envs),
             "evaluation_wrap_env_fns": {
-                evaluation.name: make_evaluation_wrap_env_fn(evaluation.distribution, memory) for evaluation in self.evaluations
+                evaluation.name: make_evaluation_wrap_env_fn(evaluation.distribution) for evaluation in self.evaluations
             },
             "training_metrics_steps": self.steps_per_round,
             **self.learner.train_kwargs(self.suite.space),
@@ -159,7 +158,6 @@ class ContextTrainingSetup:
             "deployment_distribution": self.deployment_spec,
             "constraint": self.learner.constraint,
             "policy_context": self.learner.policy_context,
-            "memory_time_constant": self.learner.memory_time_constant,
             "arm": self.arm,
             "evaluations": {evaluation.name: evaluation.label for evaluation in self.evaluations},
             "num_rounds": self.total_rounds,

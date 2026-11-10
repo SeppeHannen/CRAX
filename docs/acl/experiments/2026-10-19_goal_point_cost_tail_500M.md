@@ -5,6 +5,12 @@ Done 2026-10-19/20 on Snellius (five arms, 1 h 52 each on an A100). W&B group
 `fd8a8ec` (the fifth; the difference is the experiment definition), branch
 `cost-tail`. Plan task 1b.
 
+**Code status.** This experiment ran from the tag `experiments-2026-10`. The
+memory trace (`--memory_time_constant`, `training/contexts/memory.py`) has
+since been removed from the working branch, because it changed neither the
+tail nor the return. To rerun or replay the `memory` and `geometry + memory`
+arms, check out that tag.
+
 ## Question
 
 The per-context learner meets the level-3 budget in the mean, but the mean is
