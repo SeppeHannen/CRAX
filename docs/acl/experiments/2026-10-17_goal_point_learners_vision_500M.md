@@ -6,6 +6,12 @@ Done 2026-10-17 on Snellius: 15 arms in parallel, 5 h 30–44 each on an A100,
 `2026-10-15_goal_point_learners_500M.md`, with the observation changed; that
 report is the comparison throughout.
 
+**Code status.** Training a context run from pixels (camera frames next to
+`{sensors, context}`) was removed from the working branch after the tag
+`experiments-2026-10`, which contains this experiment's commit. To rerun or
+replay it, or to review its recorded episodes with the policy's camera view,
+check out that tag.
+
 **In one paragraph.** With a camera next to the sensors, the per-context
 constraint still holds the level-3 budget where the scalar one does not (7 of 10
 told arms end within 25, 2 of 5 scalar arms, one of them standing still), but the return it buys changed

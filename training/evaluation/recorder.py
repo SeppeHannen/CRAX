@@ -10,10 +10,9 @@ is the one door: whoever owns it (the entry point puts it inside the W&B run
 directory) decides where the records end up.
 
 The recorder sits below the trainers (``training/acting.py`` imports this package),
-so it knows nothing of the contexts package or the pixel wrapper: the labels it needs —
-which part of the observation dict is the sensors, which parts are the camera frames
-the policy saw, which ``state.info`` field holds the transition's context — are handed
-in by whoever builds it, who knows the run.
+so it knows nothing of the contexts package: the labels it needs — which part of the
+observation dict is the sensors, which ``state.info`` field holds the transition's
+context — are handed in by whoever builds it, who knows the run.
 """
 from __future__ import annotations
 
@@ -56,7 +55,6 @@ class EpisodeRecorder:
     num_episodes: int
     sensors_key: str  # the part of the observation dict the record keeps as `observation`
     context_key: str  # the `state.info` field holding the context the transition started from
-    image_keys: Tuple[str, ...]  # the parts of the observation dict that are camera frames; () for a state-based run
     written: Callable[[pathlib.Path], None]  # told of every record file once it exists (the run hands it to W&B)
 
     @property
@@ -94,7 +92,6 @@ class EpisodeRecorder:
                 mocap_pos=scene.mocap_pos[steps, k],
                 mocap_quat=scene.mocap_quat[steps, k],
                 observation=unroll.observation[self.sensors_key][steps, k],  # the context is its own field
-                images={key: unroll.observation[key][steps, k] for key in self.image_keys},
                 action=unroll.action[steps, k],
                 reward=unroll.reward[steps, k],
                 cost=state_extras[COST_KEY][steps, k],

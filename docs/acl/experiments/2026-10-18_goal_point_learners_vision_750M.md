@@ -5,6 +5,12 @@ Done 2026-10-18 on Snellius: 6 arms in parallel, 8 h 13–28 each on an A100,
 `e636e71`. The six arms shared with `2026-10-15` (sensors) and `2026-10-17`
 (pixels, eight times the dual ascent per step) are compared across all three.
 
+**Code status.** Training a context run from pixels (camera frames next to
+`{sensors, context}`) was removed from the working branch after the tag
+`experiments-2026-10`, which contains this experiment's commit. To rerun or
+replay it, or to review its recorded episodes with the policy's camera view,
+check out that tag.
+
 **In one paragraph.** The 2026-10-17 report left two candidate causes for the
 evaluation-to-evaluation swings: the camera, and a multiplier stepping eight
 times as often per environment step. This run keeps the camera and matches the

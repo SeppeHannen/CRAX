@@ -6,6 +6,10 @@ there, one step per section, each stating what was observed and what was
 concluded from it. The experiment reports hold the numbers; this holds the
 argument.
 
+**Code status (2026-11-10).** The code that trained a context run from pixels
+was removed from the working branch; it is at the tag `experiments-2026-10`.
+The benchmark's own vision training (a stock run with `--vision`) is unchanged.
+
 ## 1. The budget is met in the mean while one episode in two hundred costs ten times the budget (2026-10-16)
 
 Replaying the best policy of the state-based learners experiment on level 3

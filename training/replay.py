@@ -14,7 +14,7 @@ page plays (scene, observation, action, reward, cost per step), so a replayed
 episode is reviewed exactly like one recorded during training.
 
 **The learner's view comes from the whole learner.** A checkpoint holds the policy
-tuple (normaliser, policy, reward critic, encoder) and, next to it, the learner's
+tuple (normaliser, policy, reward critic) and, next to it, the learner's
 state: the cost critic and the constraint's multipliers (``checkpoint.save_learner_state``).
 The view of every replayed episode — V, V_c, λ at each step, the three advantages — is
 then the agent's own :func:`training.agents.ppo_lag.train.learner_view_function`, the
@@ -43,7 +43,6 @@ import numpy as np
 import wandb
 
 from crax import envs
-from crax.envs.limb_colors import colorize_env_limbs
 from training import acting
 from training import checkpoint as checkpoint_module
 from training import contexts
@@ -56,7 +55,6 @@ from training.agents.ppo_lag.train import learner_view_function
 from training.config import WANDB_ENTITY, WANDB_PROJECT
 from training.contexts.wrapper import wrap_for_context_evaluation
 from training.evaluation import EpisodeRecorder, LearnerView
-from training.pixels import PixelObservation
 from training.types import Transition
 
 CHECKPOINTS_DIRECTORY = "checkpoints"
@@ -132,10 +130,9 @@ class Learner:
 
     @property
     def policy_tuple(self) -> Tuple[Any, ...]:
-        """(normaliser, policy, value[, encoder]): what the inference function consumes, the
-        trainer's ``_policy_params_tuple`` (the encoder slot exists iff the network has one)."""
-        base = (self.normaliser, self.parameters.policy, self.parameters.value)
-        return base + (self.parameters.encoder,) if self.network.encoder_network is not None else base
+        """(normaliser, policy, value): what the inference function consumes, the trainer's
+        ``_policy_params_tuple`` for a run without pixels."""
+        return (self.normaliser, self.parameters.policy, self.parameters.value)
 
     def view(self, episodes: Transition, run_config: argparse.Namespace) -> LearnerView:
         """The agent's own view of ``episodes`` (``[K, T, ...]``), as the trainer records it."""
@@ -154,28 +151,20 @@ def learner_from_checkpoint(checkpoint_directory: pathlib.Path, run_config: argp
     network = checkpoint_module.get_network(config, spec.train_kwargs(space)["network_factory"].func)
     # PPO-Lagrange's constraint for this learner: λ(ω) if it holds one, else the agent's own scalar λ.
     constraint: LagrangeConstraint = spec.per_context_constraint(space) if spec.holds_constraint_per_context else ScalarConstraint()
-    # (normaliser, policy, value[, encoder]): the trainer's policy tuple, the encoder slot iff the
-    # network the same config builds has one.
-    normaliser, policy, value, *encoder = checkpoint_module.load(checkpoint_directory)
+    # (normaliser, policy, value): the trainer's policy tuple of a run without pixels.
+    normaliser, policy, value = checkpoint_module.load(checkpoint_directory)
     # The learner state's structure is the agent's own: a fresh learner's, before any training.
     learner_state = checkpoint_module.load_learner_state(checkpoint_directory, like={
         LEARNER_COST_VALUE: network.cost_value_network.init(jax.random.PRNGKey(0)),
         LEARNER_AUX_STATE: constraint.initial_multipliers(0.0),
     })
-    parameters = PPONetworkParams(policy=policy, value=value, cost_value=learner_state[LEARNER_COST_VALUE], encoder=encoder[0] if encoder else None)
+    parameters = PPONetworkParams(policy=policy, value=value, cost_value=learner_state[LEARNER_COST_VALUE])
     return Learner(network, normaliser, parameters, learner_state[LEARNER_AUX_STATE], constraint)
 
 
 def environment_of(run_config: argparse.Namespace) -> envs.Env:
-    """The unwrapped environment the run trained in (``train_env.py``): its level and kwargs; for
-    a vision run the MJX backend the renderer needs and, if the run asked, the coloured limbs."""
-    env_kwargs = dict(run_config.env_kwargs or {})
-    if run_config.vision:
-        env_kwargs.setdefault("backend", "mjx")
-    env = envs.get_environment(run_config.env_name, level=run_config.difficulty, **env_kwargs)
-    if run_config.vision and run_config.vision_limb_colors:
-        colorize_env_limbs(env, run_config.env_name)
-    return env
+    """The unwrapped environment the run trained in (``train_env.py``): its level and kwargs."""
+    return envs.get_environment(run_config.env_name, level=run_config.difficulty, **dict(run_config.env_kwargs or {}))
 
 
 def replay_context(
@@ -186,12 +175,6 @@ def replay_context(
     suite = contexts.suite_contexts(run_config.env_name)
     distribution = contexts.parse_distribution(context_spec, suite, total_rounds=1)
     env = wrap_for_context_evaluation(environment_of(run_config), distribution, episode_length=run_config.episode_length)
-    pixel_observation = PixelObservation.from_config(run_config)
-    if pixel_observation is not None:
-        # Outermost, over the fully batched stack, as the trainer's `_maybe_wrap_env` does.
-        from crax.envs.wrappers.pixel_observation_gpu import GpuPixelObservationWrapper  # needs Warp and a GPU
-
-        env = GpuPixelObservationWrapper(env, num_envs=episodes, **pixel_observation.wrapper_kwargs())
     evaluator = acting.Evaluator(
         env, functools.partial(ppo_networks.make_inference_fn(learner.network), deterministic=deterministic),
         num_eval_envs=episodes, episode_length=run_config.episode_length, action_repeat=1,
@@ -229,12 +212,10 @@ def main() -> None:
         f"{'deterministic' if deterministic else 'sampling'} policy (the run evaluated with deterministic_eval={run_config.deterministic_eval})"
     )
     learner = learner_from_checkpoint(checkpoint_directory, run_config)
-    pixel_observation = PixelObservation.from_config(run_config)
     recorder = EpisodeRecorder(
         directory=arguments.output_directory / run.name / f"seed{arguments.seed}", env_name=run_config.env_name, run_name=run.name,
         arm=run.config["arm"], num_episodes=arguments.episodes,
         sensors_key=contexts.SENSORS_KEY, context_key=contexts.TRANSITION_CONTEXT_KEY,
-        image_keys=(pixel_observation.key,) if pixel_observation is not None else (),
         written=lambda path: None,  # a replay's records are local files; there is no run to hand them to
     )
 

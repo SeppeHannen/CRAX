@@ -16,7 +16,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import pathlib
-from typing import Iterator, Mapping, Tuple
+from typing import Iterator, Tuple
 
 import numpy as np
 
@@ -24,8 +24,8 @@ SUFFIX = ".episode.npz"
 # The subdirectory of a run's W&B files its records are written to and read from.
 RECORDS_DIRECTORY = "episodes"
 METADATA_KEY = "metadata"
-IMAGE_PARTS_KEY = "image_parts"  # in the metadata: the names of the image parts, in array order
-_IMAGE_ARRAY = "image_{index}"  # the npz entry of the i-th image part (part names hold '/')
+# The npz entries a record of a run from pixels holds (written at the tag experiments-2026-10 only).
+_CAMERA_FRAMES_PREFIX = "image_"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -47,7 +47,6 @@ class EpisodeRecord:
     mocap_quat: np.ndarray  # [T, nmocap, 4]
     # What the policy saw and did, and what happened
     observation: np.ndarray  # [T, obs]  the sensors the agent saw (a context run observes {sensors, context})
-    images: Mapping[str, np.ndarray]  # part name -> [T, H, W, C] uint8: the camera frames the policy saw, as stacked; {} for a run without pixels
     action: np.ndarray  # [T, A]
     reward: np.ndarray  # [T]  raw environment reward
     cost: np.ndarray  # [T]
@@ -73,11 +72,6 @@ class EpisodeRecord:
                 raise ValueError(f"EpisodeRecord.{name} must be one value per step, has shape {getattr(self, name).shape}")
         if self.context.ndim != 1:
             raise ValueError(f"EpisodeRecord.context must be one vector, has shape {self.context.shape}")
-        for name, image in self.images.items():
-            if image.ndim != 4 or image.shape[0] != length or image.dtype != np.uint8:
-                raise ValueError(
-                    f"EpisodeRecord.images[{name!r}] must be [T={length}, H, W, C] uint8, has shape {image.shape} dtype {image.dtype}"
-                )
 
     @property
     def length(self) -> int:
@@ -111,11 +105,9 @@ class EpisodeRecord:
             "evaluation_name": self.evaluation_name,
             "environment_steps": self.environment_steps,
             "episode_index": self.episode_index,
-            IMAGE_PARTS_KEY: list(self.images),
         }
         arrays = {name: getattr(self, name) for name in _PER_STEP_FIELDS + ("context",)}
-        images = {_IMAGE_ARRAY.format(index=index): image for index, image in enumerate(self.images.values())}
-        np.savez_compressed(path, **arrays, **images, **{METADATA_KEY: np.asarray(json.dumps(metadata))})
+        np.savez_compressed(path, **arrays, **{METADATA_KEY: np.asarray(json.dumps(metadata))})
         return path
 
     @classmethod
@@ -123,15 +115,12 @@ class EpisodeRecord:
         with np.load(path) as contents:
             metadata = json.loads(str(contents[METADATA_KEY]))
             arrays = {name: contents[name] for name in _PER_STEP_FIELDS + ("context",)}
-            # The image arrays the file holds; the metadata names them in order. A record of a
-            # state-based run holds none (records from before 2026-10-17 carry no names either).
-            image_arrays = sorted(name for name in contents.files if name.startswith(_IMAGE_ARRAY.format(index="")))
-            if image_arrays and IMAGE_PARTS_KEY not in metadata:
-                raise ValueError(f"{path} holds image arrays {image_arrays} but its metadata does not name the parts")
-            part_names = metadata[IMAGE_PARTS_KEY] if image_arrays else []
-            if len(part_names) != len(image_arrays):
-                raise ValueError(f"{path} names {len(part_names)} image parts but holds {len(image_arrays)} image arrays")
-            images = {name: contents[_IMAGE_ARRAY.format(index=index)] for index, name in enumerate(part_names)}
+            camera_frames = sorted(name for name in contents.files if name.startswith(_CAMERA_FRAMES_PREFIX))
+            if camera_frames:
+                raise ValueError(
+                    f"{path} is the record of a run from pixels (it holds {camera_frames}); the code that reads the "
+                    f"camera frames was removed after the tag experiments-2026-10: review it from a checkout of that tag"
+                )
         return cls(
             env_name=str(metadata["env_name"]),
             run_name=str(metadata["run_name"]),
@@ -139,7 +128,6 @@ class EpisodeRecord:
             evaluation_name=str(metadata["evaluation_name"]),
             environment_steps=int(metadata["environment_steps"]),
             episode_index=int(metadata["episode_index"]),
-            images=images,
             **arrays,
         )
 

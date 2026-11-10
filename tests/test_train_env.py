@@ -56,14 +56,13 @@ def test_the_entry_point_runs_a_tiny_context_run_and_leaves_records_and_a_whole_
 
     records = list(records_under(files / RECORDS_DIRECTORY))
     assert len(records) == 2 * 3 * 2, "2 episodes x 3 evaluation targets x 2 evaluations"
-    assert all(record.images == {} for record in records), "a state-based run records no frames"
     assert all(record.observation.shape[1] == sensors for record in records), "the record holds the sensors the arm observed"
     assert all(run_name_fragment in record.run_name for record in records), records[0].run_name
 
     steps = sorted(path for path in (files / checkpoint.RUN_CHECKPOINTS_DIRECTORY).iterdir() if path.is_dir())
     assert steps, "no checkpoint written"
     assert (steps[-1] / checkpoint.LEARNER_STATE_DIRECTORY).is_dir(), "the checkpoint holds the policy only"
-    assert len(checkpoint.load(steps[-1])) == 3, "(normaliser, policy, value): no encoder slot without --vision"
+    assert len(checkpoint.load(steps[-1])) == 3, "(normaliser, policy, value)"
 
     # W&B uploads only the files it is handed; an offline run's transaction log names exactly those
     # (verified: a file written into the run directory but not handed does not appear). The vision
