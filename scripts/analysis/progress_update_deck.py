@@ -3,7 +3,7 @@
     /tmp/deck-venv/bin/python -m scripts.analysis.progress_update_deck [--preview]
 
 Needs ``python-pptx`` and ``pillow`` (the project's environment has only the latter; a scratch
-``venv`` with both will do). Writes ``docs/acl/progress_update_2026-10-21.pptx``; with
+``venv`` with both will do). Writes ``docs/acl/archive/progress_update_2026-10-21.pptx``; with
 ``--preview``, also one PNG per slide under ``/tmp/deck_preview/`` drawn by PIL with the same
 geometry, so the layout can be looked at without PowerPoint. The videos are embedded as media
 and play from the slide.
@@ -27,7 +27,7 @@ from pptx.util import Emu, Inches, Pt
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 FIGURES = ROOT / "docs/acl/experiments/figures"
 TAIL = FIGURES / "2026-10-19_goal_point_cost_tail_500M"
-OUTPUT = ROOT / "docs/acl/progress_update_2026-10-21.pptx"
+OUTPUT = ROOT / "docs/acl/archive/progress_update_2026-10-21.pptx"
 PREVIEW = pathlib.Path("/tmp/deck_preview")
 
 SLIDE_W, SLIDE_H = Inches(13.333), Inches(7.5)

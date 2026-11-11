@@ -1,4 +1,4 @@
-"""The cost tail (plan task 1b): does the policy need to *see* that a gap is closed, to *remember*
+"""The cost tail: does the policy need to *see* that a gap is closed, to *remember*
 that it has tried it, or both?
 
 On level 3 the per-context learner's mean cost is carried by one episode in two hundred: the

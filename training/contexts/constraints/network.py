@@ -3,7 +3,7 @@ each round by PPO-Lagrange's integrator.
 
 A scalar λ is updated from the mean cost of whatever the curriculum sampled
 this round, so it settles where the policy is on budget for the training
-distribution and nowhere else (``research_design_brief.md`` §6). Here the
+distribution and nowhere else (``docs/acl/design/contextual_learner.md``). Here the
 constraint ``C(π, ω) ≤ d`` is held for every ω through a multiplier that is a
 function of the context: a small network ``f_ψ`` over the context, normalised to
 Ω's box, through a positive map. The policy loss weights each transition by the

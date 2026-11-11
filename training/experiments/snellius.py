@@ -127,13 +127,7 @@ def submit_experiment(
     """Prepare the group, the checkout and the log directory, then submit every job — or, with
     ``only``, just the jobs with those labels (an experiment that gained an arm after its first
     submission). Returns (job, job id) pairs."""
-    jobs = experiment.jobs()
-    if only:
-        labels = {job.label for job in jobs}
-        unknown = set(only) - labels
-        if unknown:
-            raise ValueError(f"{experiment.group!r} has no jobs {sorted(unknown)}; it has {sorted(labels)}")
-        jobs = tuple(job for job in jobs if job.label in only)
+    jobs = experiment.jobs_labelled(only)
     scripts = [job_script(cluster, resources, experiment, job, commit) for job in jobs]
     if dry_run:
         for script in scripts:

@@ -59,6 +59,18 @@ ARM_COLOURS: Mapping[str, str] = {
     # The cost-tail experiment (2026-10-19): the surface lidar by kind
     "uniform additive told hazard_lidar=surface_by_kind": "#2ca02c",
     "plr additive told hazard_lidar=surface_by_kind": "#8c6d31",
+    # The generalization evaluation (2026-11): the four learners on the surface lidar, each
+    # with its reference run in the lighter shade of its colour, and the curricula
+    "uniform scalar blind hazard_lidar=surface_by_kind": "#e377c2",
+    "uniform scalar blind reference hazard_lidar=surface_by_kind": "#f7b6d2",
+    "uniform scalar told hazard_lidar=surface_by_kind": "#ff7f0e",
+    "uniform scalar told reference hazard_lidar=surface_by_kind": "#ffbb78",
+    "uniform additive blind hazard_lidar=surface_by_kind": "#1f77b4",
+    "uniform additive blind reference hazard_lidar=surface_by_kind": "#aec7e8",
+    "uniform additive told reference hazard_lidar=surface_by_kind": "#98df8a",
+    "plr scalar blind hazard_lidar=surface_by_kind": "#d62728",
+    "plr:lagrangian scalar blind hazard_lidar=surface_by_kind": "#8c564b",
+    "plr:lagrangian additive told hazard_lidar=surface_by_kind": "#17becf",
     BUDGET_ARM: "#c7c7c7",
 }
 
@@ -203,7 +215,7 @@ LEGEND = (
     "**Legend.** Lines are grouped by `arm`: the distribution over contexts the run trained on, then how the "
     "constraint is held (`scalar` = one λ; `network` / `additive` = a multiplier λ(ω) that is a function of the context, "
     "an MLP or a sum of per-factor monotone terms) and what the policy observes of its context (`blind` = sensors only; "
-    "`told` = the context too; the critics always see it) — e.g. `uniform scalar blind`, `staged:1,2,3 additive told`. "
+    "`told` = the context too, except what a robot could not know, such as the drag; the critics always see all of it) — e.g. `uniform scalar blind`, `staged:1,2,3 additive told`. "
     "One line per arm, mean over its seeds, band = min–max "
     "over seeds. The legend does not indicate what a line was evaluated on; the panel title does."
 )

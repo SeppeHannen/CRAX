@@ -12,7 +12,7 @@ import dataclasses
 import importlib.util
 import pathlib
 import re
-from typing import Tuple
+from typing import Sequence, Tuple
 
 from training import contexts, dashboard
 from training.config import build_base_parser
@@ -68,15 +68,28 @@ class Experiment:
                 raise ValueError(f"{flag} is set from the experiment's `group`/`seeds` fields, not passed as a flag")
 
     def jobs(self) -> Tuple[Job, ...]:
-        """Every arm under every seed, parsed with the real CLI so a bad flag fails here."""
+        """Every arm under every seed, parsed with the real CLI so a bad flag fails here. Seed by
+        seed: jobs run one after another finish every arm once before any arm a second time."""
         parser = build_base_parser()
         jobs = []
-        for arm in self.arms:
-            for seed in self.seeds:
+        for seed in self.seeds:
+            for arm in self.arms:
                 argv = (*self.common, *arm.flags, "--wandb_group", self.group, "--seeds", str(seed))
                 label = arm.label if len(self.seeds) == 1 else f"{arm.label}_seed{seed}"
                 jobs.append(Job(label=label, argv=argv, arguments=parser.parse_args(list(argv))))
         return tuple(jobs)
+
+    def jobs_labelled(self, only: Sequence[str]) -> Tuple[Job, ...]:
+        """The jobs with these labels, in the experiment's order; every job when ``only`` is empty
+        (an experiment that gained an arm after it first ran, or one seed of a long chain)."""
+        jobs = self.jobs()
+        if not only:
+            return jobs
+        labels = {job.label for job in jobs}
+        unknown = set(only) - labels
+        if unknown:
+            raise ValueError(f"{self.group!r} has no jobs {sorted(unknown)}; it has {sorted(labels)}")
+        return tuple(job for job in jobs if job.label in only)
 
     def facts(self) -> RunFacts:
         """The dashboard facts all jobs share; raises if two jobs would not be allowed into one group."""
@@ -105,6 +118,8 @@ def run_facts(arguments: argparse.Namespace) -> RunFacts:
         arguments.context_distribution,
         arguments.deployment_distribution,
         contexts.Learner.from_flags(arguments),
+        protocol_name=arguments.evaluation_protocol,
+        reference=arguments.reference,
         environment_overrides=dict(arguments.env_kwargs or {}),
         num_timesteps=int(arguments.num_timesteps),
         num_envs=arguments.num_envs,

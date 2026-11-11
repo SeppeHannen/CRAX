@@ -16,9 +16,11 @@ from typing import Dict, List, Literal, Optional, Sequence, Tuple, get_args
 
 import jax
 import mujoco
+import numpy as np
 from jax import numpy as jp
 from mujoco import mjx
 
+from crax.base import System
 from crax.envs import context
 from crax.envs.arena import ArenaWalls
 from crax.envs.base import PipelineEnv, State
@@ -52,7 +54,7 @@ closeness of its *surface*, ``(max_dist − max(d − r, 0)) / max_dist`` with `
 footprint radius (the keepout radius placement uses), and it fills every sector within the
 angle it subtends, ``asin(r / d)``, fading over one sector beyond. What a range sensor would
 return, per kind: two solid surfaces 0.1 m away on either side read as a closed gap.
-Adopted for plan task 1b (``docs/acl/README.md``); changes the observation from 62 to 78 entries.
+Adopted for the cost-tail experiment (``docs/acl/experiments/2026-10-19_goal_point_cost_tail_500M.md``); changes the observation from 62 to 78 entries.
 """
 HAZARD_LIDARS: Tuple[str, ...] = get_args(HazardLidar)
 
@@ -119,6 +121,8 @@ class SafeGoal(PipelineEnv, ABC):
             healthy_z_range: Optional[Tuple[float, float]] = None,
             reset_noise_scale: float = 0.005,
             max_velocity: float = 5.0,
+            # How strongly the floor brakes the agent, as a multiple of the model's own (see `drag` below)
+            drag: float = 1.0,
             # Reward settings
             reward_goal: float = 1.0,
             reward_distance_scale: float = 0.0,
@@ -246,7 +250,12 @@ class SafeGoal(PipelineEnv, ABC):
 
         try:
             mj_model = mujoco.MjModel.from_xml_path(xml_path)
-            mj_model.opt.solver = mujoco.mjtSolver.mjSOL_CG
+            # Newton, not the stock CG: at these 4 iterations CG does not converge on a robot pressed against
+            # a wall or a solid hazard and kicks it at tens of metres per second, through the fence in 5 % of
+            # episodes of blind thrust; Newton does converge (0 of 4096 left, 13 % fewer steps per second on
+            # a GPU). MJX's documentation recommends Newton on GPU, and the benchmark's locomotion suites
+            # already use it. docs/acl/known_defects.md, 2026-11-11.
+            mj_model.opt.solver = mujoco.mjtSolver.mjSOL_NEWTON
             mj_model.opt.timestep = timestep
             mj_model.opt.iterations = 4
             mj_model.opt.ls_iterations = 4
@@ -269,6 +278,20 @@ class SafeGoal(PipelineEnv, ABC):
 
         # Pass physics settings to PipelineEnv
         super().__init__(sys, backend=backend, n_frames=n_frames)
+
+        # The context's drag multiplies the damping of the agent's slide joints: the only force that
+        # brakes it. (The floor's friction coefficients brake nothing: an agent on slide joints has no
+        # vertical degree of freedom, so its contact with the floor carries no normal force. Measured
+        # 2026-11-11, docs/acl/design/generalization_evaluation.md.) The yaw hinge is left alone: its
+        # velocity servo becomes unstable when its damping drops.
+        slide_joints = np.flatnonzero(mj_model.jnt_type == mujoco.mjtJoint.mjJNT_SLIDE)
+        if slide_joints.size == 0:
+            raise ValueError(
+                f"{type(self).__name__}: the context's drag scales the damping of the agent's slide joints; this model has none"
+            )
+        is_slide_dof = np.zeros(mj_model.nv, dtype=bool)
+        is_slide_dof[mj_model.jnt_dofadr[slide_joints]] = True
+        self._is_slide_dof = jp.asarray(is_slide_dof)
 
         # Episode length for this task
         self.episode_length = episode_length
@@ -353,6 +376,7 @@ class SafeGoal(PipelineEnv, ABC):
 
         # Placement
         self._placement_extents = placement_extents
+        self._fence = arena_walls.centre_lines(placement_extents)
         self._agent_keepout = agent_keepout
         self._placement_margin = placement_margin
         self._max_placement_attempts = max_placement_attempts
@@ -367,6 +391,9 @@ class SafeGoal(PipelineEnv, ABC):
                 f"got goal_type={goal_type!r} (crax/envs/difficulty.py uses cylinders at every level)"
             )
         self._goal_size = float(goal_size)
+        if drag <= 0.0:
+            raise ValueError(f"{type(self).__name__}: drag multiplies the slide joints' damping and must be positive, got {drag}")
+        self._drag = float(drag)
         self._active_hazard_counts = self._hazard_manager.validate_active_counts(type(self).__name__, active_hazard_counts)
 
         if self._debug:
@@ -387,15 +414,15 @@ class SafeGoal(PipelineEnv, ABC):
 
     @property
     def CONTEXT_PARAMETERS(self) -> Tuple[str, ...]:  # noqa: N802 — the name is the protocol's (crax/envs/context.py)
-        """One active-count dimension per variable hazard group, then the goal's radius."""
-        return tuple(group.context_name for group in self.hazard_groups) + ("goal_size",)
+        """One active-count dimension per variable hazard group, then the goal's radius and the drag."""
+        return tuple(group.context_name for group in self.hazard_groups) + ("goal_size", "drag")
 
     def default_context(self) -> jax.Array:
         counts = {
             group.context_name: float(count)
             for group, count in zip(self.hazard_groups, self._active_hazard_counts)
         }
-        return context.encode(self, **counts, goal_size=self._goal_size)
+        return context.encode(self, **counts, goal_size=self._goal_size, drag=self._drag)
 
     def _hazard_activation(self, episode_context: jax.Array) -> jax.Array:
         """``[num_hazards]`` of 0/1 for this episode, from the context's per-group counts (its leading entries)."""
@@ -404,6 +431,14 @@ class SafeGoal(PipelineEnv, ABC):
     def _goal_radius(self, episode_context: jax.Array) -> jax.Array:
         """This episode's goal radius, ``[num_goals]``: every goal is a cylinder of the context's goal_size."""
         return jp.broadcast_to(episode_context[self.CONTEXT_PARAMETERS.index("goal_size")], (self._num_goals,))
+
+    def _system_in(self, episode_context: jax.Array) -> System:
+        """The physics of this episode: the model with its slide joints' damping multiplied by the
+        context's drag. A value on the model, so every episode is the same compiled program. Only
+        ``step`` needs it: ``reset`` places the agent, and what its ``pipeline_init`` derives from the
+        damping (forces at rest) the first step computes again."""
+        drag = episode_context[self.CONTEXT_PARAMETERS.index("drag")]
+        return self.sys.replace(dof_damping=self.sys.dof_damping * jp.where(self._is_slide_dof, drag, 1.0))
 
     def reset(self, rng: jp.ndarray) -> State:
         return self.reset_with_context(rng, self.default_context())
@@ -508,7 +543,7 @@ class SafeGoal(PipelineEnv, ABC):
         """Execute one step in the environment."""
 
         data0 = state.pipeline_state
-        data = self.pipeline_step(data0, action)
+        data = self.pipeline_step(data0, action, self._system_in(state.info[context.CONTEXT_KEY]))
 
         # Get positions
         agent_pos = data.xpos[self._agent_body]
@@ -1085,10 +1120,18 @@ class SafeGoal(PipelineEnv, ABC):
                      dist_goal: jp.ndarray, last_dist_goal: jp.ndarray, ctrl_cost: jp.ndarray) -> Dict:
         """Get metrics dictionary."""
         agent_pos = data.xpos[self._agent_body]
+        # Under the stock solver a robot could be thrown through the fence (docs/acl/known_defects.md).
+        # Outside there is no goal and no hazard, so such an episode reads as cheap; this metric,
+        # summed over the episode, says how many steps it spent there. It should be 0.
+        west, south, east, north = self._fence
+        outside_arena = (
+            (agent_pos[0] < west) | (agent_pos[0] > east) | (agent_pos[1] < south) | (agent_pos[1] > north)
+        ).astype(jp.float32)
 
         return {
             'reward': reward,
             'cost': cost,
+            'outside_arena': outside_arena,
             'x_position': agent_pos[0],
             'y_position': agent_pos[1],
             'distance_to_goal': dist_goal,

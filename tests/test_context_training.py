@@ -62,37 +62,85 @@ def test_cost_tail_reads_a_population_of_episode_costs_against_the_budget():
 
 def test_distribution_specs_parse_and_reject_garbage():
     suite = C.suite_contexts(ENV_NAME)
-    assert isinstance(C.parse_distribution("uniform", suite, 10), C.UniformDistribution)
-    fixed = C.parse_distribution("level:2", suite, 10)
+    assert isinstance(C.parse_distribution("uniform", suite, suite.space, 10), C.UniformDistribution)
+    fixed = C.parse_distribution("level:2", suite, suite.space, 10)
     assert isinstance(fixed, C.FixedContext) and float(fixed.context[0]) == float(suite.level(2)[0])
-    staged = C.parse_distribution("staged:1,3", suite, 10)
+    staged = C.parse_distribution("staged:1,3", suite, suite.space, 10)
     assert isinstance(staged, C.StagedContexts) and list(staged.switch_rounds) == [5]
-    assert C.parse_distribution("plr", suite, 10).score is REWARD
-    assert C.parse_distribution("plr:cost", suite, 10).score is COST
-    assert C.parse_distribution("plr:lagrangian", suite, 10).score is LAGRANGIAN
+    assert C.parse_distribution("plr", suite, suite.space, 10).score is REWARD
+    assert C.parse_distribution("plr:cost", suite, suite.space, 10).score is COST
+    assert C.parse_distribution("plr:lagrangian", suite, suite.space, 10).score is LAGRANGIAN
     for bad in ("level", "uniform:2", "staged:", "gaussian", "plr:0.5", "plr:return", "plr:REWARD_ADVANTAGE"):
         with pytest.raises(ValueError):
-            C.parse_distribution(bad, suite, 10)
+            C.parse_distribution(bad, suite, suite.space, 10)
     assert C.spec_label("staged:1,2,3") == "staged123"
 
 
-def test_setup_evaluates_on_every_region_the_suite_registers():
-    """w and r always; then one evaluator per `EvaluationRegion`, named and labelled by the
-    region itself. A suite with no regions gets exactly two."""
+def test_a_protocol_decides_what_a_run_trains_on_and_every_run_of_it_is_evaluated_alike():
+    """Without a protocol: trained on Ω, scored on w and on Ω. Under goal-point's hazard-total
+    protocol: the training distribution samples the training contexts only, the reference run
+    all of the protocol's contexts, and both are scored on the same five targets — w, the
+    protocol's contexts, the training contexts and the two held-out bands — so they compare
+    evaluation by evaluation. The reference is a different arm. The learner is built over the
+    protocol's contexts: a coordinate the protocol fixes is no factor of the multiplier."""
     common = dict(environment_overrides={}, num_timesteps=1000, num_envs=4, batch_size=4, unroll_length=5, num_minibatches=2)
-    velocity = C.context_training_setup(ENV_NAME, "uniform", "level:3", C.DEFAULT_LEARNER, **common)
-    goal = C.context_training_setup("safe_goal_point", "uniform", "level:3", C.DEFAULT_LEARNER, **common)
-    assert [e.name for e in velocity.evaluations] == [C.DEPLOYMENT_EVALUATION, C.UNIFORM_EVALUATION]
-    assert [e.name for e in goal.evaluations] == [C.DEPLOYMENT_EVALUATION, C.UNIFORM_EVALUATION, C.OUT_OF_DISTRIBUTION_EVALUATION]
-    assert set(goal.train_kwargs()["evaluation_wrap_env_fns"]) == {e.name for e in goal.evaluations}
-    region = goal.suite.region(C.OUT_OF_DISTRIBUTION_EVALUATION)
-    assert goal.wandb_config()["evaluations"][C.OUT_OF_DISTRIBUTION_EVALUATION] == region.label
-    out_of_distribution = goal.evaluations[2].distribution
-    assert isinstance(out_of_distribution, C.UniformDistribution) and out_of_distribution.space == region.space
-    # a region may not shadow the two built-in evaluations
-    clashing = dataclasses.replace(region, name=C.UNIFORM_EVALUATION)
+    setup = lambda env_name, spec, protocol_name, reference: C.context_training_setup(
+        env_name, spec, "level:3", C.DEFAULT_LEARNER, protocol_name=protocol_name, reference=reference, **common)
+    velocity = setup(ENV_NAME, "uniform", C.NO_PROTOCOL, False)
+    plain = setup("safe_goal_point", "uniform", C.NO_PROTOCOL, False)
+    assert [e.name for e in velocity.evaluations] == [e.name for e in plain.evaluations] == [C.DEPLOYMENT_EVALUATION, C.UNIFORM_EVALUATION]
+    assert plain.distribution.space == plain.suite.space
+
+    held_out = setup("safe_goal_point", "uniform", C.HAZARD_TOTAL_PROTOCOL, False)
+    reference = setup("safe_goal_point", "uniform", C.HAZARD_TOTAL_PROTOCOL, True)
+    protocol = held_out.suite.protocol(C.HAZARD_TOTAL_PROTOCOL)
+    assert held_out.distribution.space == protocol.training and reference.distribution.space == protocol.contexts
+    names = [C.DEPLOYMENT_EVALUATION, C.UNIFORM_EVALUATION, C.TRAINING_EVALUATION, "interpolation", "extrapolation"]
+    assert [e.name for e in held_out.evaluations] == [e.name for e in reference.evaluations] == names
+    assert set(held_out.train_kwargs()["evaluation_wrap_env_fns"]) == set(names)
+    assert held_out.wandb_config()["evaluations"] == reference.wandb_config()["evaluations"]
+    assert held_out.wandb_config()["evaluations"]["interpolation"] == protocol.held_out[0].label
+    by_name = {e.name: e.distribution.space for e in held_out.evaluations}
+    assert by_name[C.UNIFORM_EVALUATION] == protocol.contexts and by_name[C.TRAINING_EVALUATION] == protocol.training
+    assert by_name["interpolation"] == protocol.held_out[0].space and by_name["extrapolation"] == protocol.held_out[1].space
+    assert held_out.suite.level(3) is not None and isinstance(held_out.evaluations[0].distribution, C.FixedContext)  # w may be held out
+    assert (held_out.arm, reference.arm) == ("uniform scalar blind", "uniform scalar blind reference")
+    assert (held_out.wandb_config()["evaluation_protocol"], held_out.wandb_config()["reference"], reference.wandb_config()["reference"]) == (
+        C.HAZARD_TOTAL_PROTOCOL, False, True)
+
+    # training on a held-out level is refused; a curriculum over the levels is, as soon as one of its levels is held out
+    for spec in ("level:3", "staged:1,2,3"):
+        with pytest.raises(ValueError, match="not among the contexts"):
+            setup("safe_goal_point", spec, C.HAZARD_TOTAL_PROTOCOL, False)
+    assert isinstance(setup("safe_goal_point", "level:2", C.HAZARD_TOTAL_PROTOCOL, False).distribution, C.FixedContext)
+    assert isinstance(setup("safe_goal_point", "staged:1,2,3", C.HAZARD_TOTAL_PROTOCOL, True).distribution, C.StagedContexts)
+    assert setup("safe_goal_point", "plr", C.HAZARD_TOTAL_PROTOCOL, False).distribution.space == protocol.training
+    with pytest.raises(ValueError, match="holds none out"):
+        setup("safe_goal_point", "uniform", C.NO_PROTOCOL, True)
+    with pytest.raises(ValueError, match="need a context distribution"):
+        setup("safe_goal_point", C.NO_DISTRIBUTION, C.HAZARD_TOTAL_PROTOCOL, False)
+    # a held-out region may not shadow a built-in evaluation
+    clashing = dataclasses.replace(protocol, held_out=(dataclasses.replace(protocol.held_out[0], name=C.UNIFORM_EVALUATION), protocol.held_out[1]))
     with pytest.raises(ValueError, match="collides"):
-        C.evaluations_for(dataclasses.replace(goal.suite, evaluation_regions=(clashing,)), "level:3", total_rounds=1)
+        C.evaluations_for(held_out.suite, clashing, "level:3", total_rounds=1)
+
+    # the multiplier has a factor per coordinate that varies in the protocol's contexts: not the drag
+    # when the protocol fixes it, the drag too when it varies; the policy is told neither way
+    additive = C.Learner(constraint="additive", policy_context="told")
+    factors = lambda protocol_name: [
+        factor.dimension.name
+        for factor in C.context_training_setup(
+            "safe_goal_point", "uniform", "level:3", additive, protocol_name=protocol_name, reference=False, **common
+        ).train_kwargs()["lagrange_constraint"].factors
+    ]
+    hazards_and_goal = list(held_out.suite.space.names[:5])
+    assert factors(C.HAZARD_TOTAL_PROTOCOL) == hazards_and_goal
+    assert factors(C.DRAG_PROTOCOL) == factors(C.COMBINATION_PROTOCOL) == [*hazards_and_goal, "drag"]
+    drag_run = C.context_training_setup("safe_goal_point", "plr", "level:3", additive, protocol_name=C.DRAG_PROTOCOL, reference=False, **common)
+    assert drag_run.train_kwargs()["network_factory"].keywords["policy_context_columns"] == (0, 1, 2, 3, 4)
+    assert [e.name for e in drag_run.evaluations] == names and drag_run.distribution.space == drag_run.protocol.training
+    combination = setup("safe_goal_point", "uniform", C.COMBINATION_PROTOCOL, False)
+    assert [e.name for e in combination.evaluations] == [C.DEPLOYMENT_EVALUATION, C.UNIFORM_EVALUATION, C.TRAINING_EVALUATION, "combination"]
 
 
 def _synthetic_round() -> C.RoundRollout:
@@ -147,7 +195,7 @@ def test_training_curriculum_metrics_give_intended_sampled_experienced_and_value
     import wandb
 
     suite = C.suite_contexts(ENV_NAME)
-    distribution = C.parse_distribution("staged:1,2,3", suite, total_rounds=6)
+    distribution = C.parse_distribution("staged:1,2,3", suite, suite.space, total_rounds=6)
     data = _synthetic_round()
     metrics = C.training_curriculum_metrics(distribution, distribution.initialise(), data)
     assert all(key.startswith(CURRICULUM) for key in metrics)
@@ -184,7 +232,7 @@ def test_trainer_refuses_a_teacher_whose_signals_the_agent_does_not_produce_befo
     """`plr:cost` needs the cost advantage; an agent that only produces the reward advantage
     is refused in argument validation — no environment is reset, nothing is compiled."""
     suite = C.suite_contexts(ENV_NAME)
-    hook = C.ContextRoundHook(C.parse_distribution("plr:cost", suite, total_rounds=1), num_slots=4)
+    hook = C.ContextRoundHook(C.parse_distribution("plr:cost", suite, suite.space, total_rounds=1), num_slots=4)
     assert hook.required_signals == {COST}
     never_called = lambda *args, **kwargs: pytest.fail("compute ran: validation did not happen first")
     reward_only = LearningSignalsFunction(produces=frozenset({REWARD}), compute=never_called)
@@ -249,7 +297,7 @@ def _run(
         training_spec,
         "level:3",
         learner,
-        environment_overrides={},
+        protocol_name=C.NO_PROTOCOL, reference=False, environment_overrides={},
         num_timesteps=NUM_TIMESTEPS,
         num_envs=TINY["num_envs"],
         batch_size=TINY["batch_size"],
@@ -307,7 +355,7 @@ def test_end_to_end_one_round_per_call_with_both_evaluations(training_spec):
     rounds_with_completed_episodes = [step for step, m in round_entries if m[CURRICULUM + "num_completed_episodes"] > 0]
     assert len(rounds_with_completed_episodes) >= TOTAL_ROUNDS - 1
     # The stock logger's `episodic/*` keys are not compared against ours: its two
-    # `jax.debug.callback`s share unlocked state and race (README, Known defects).
+    # `jax.debug.callback`s share unlocked state and race (docs/acl/known_defects.md).
 
     # evaluation on w and r, at the initial eval and after each of the 2 blocks
     evaluation_entries = [(s, m) for s, m in history if f"evaluation/{C.DEPLOYMENT_EVALUATION}/episode_reward" in m]
@@ -532,7 +580,7 @@ def test_per_context_constraint_needs_ppo_lagrange():
     """PPO-PID has no `lagrange_constraint` argument: the setup's kwargs are refused by the trainer
     (the CLI turns this into its 'does not accept' message before anything runs)."""
     told = C.Learner(constraint="additive", policy_context="told")
-    setup = C.context_training_setup("safe_lift_ant", "uniform", "level:3", told, environment_overrides={}, num_timesteps=NUM_TIMESTEPS,
+    setup = C.context_training_setup("safe_lift_ant", "uniform", "level:3", told, protocol_name=C.NO_PROTOCOL, reference=False, environment_overrides={}, num_timesteps=NUM_TIMESTEPS,
                                      num_envs=TINY["num_envs"], batch_size=TINY["batch_size"],
                                      unroll_length=TINY["unroll_length"], num_minibatches=TINY["num_minibatches"])
     with pytest.raises(TypeError, match="lagrange_constraint"):

@@ -17,7 +17,7 @@ import sys
 
 import pytest
 
-from training import checkpoint
+from training import checkpoint, contexts
 from training.evaluation import RECORDS_DIRECTORY, records_under
 
 TINY_RUN = (
@@ -28,17 +28,20 @@ TINY_RUN = (
     "--num_timesteps", "160", "--num_evals", "2", "--num_eval_envs", "4", "--episode_length", "20",
     "--record_episodes", "2", "--store_model", "true", "--skip_rollout", "--skip_video", "--quiet", "--seeds", "0",
 )
-# The observation of every arm since the cost-tail experiment (scripts/experiments/goal_point_cost_tail_500M.py):
-# the by-kind surface lidar (78 sensors).
-GEOMETRY = ("--env_kwargs", '{"hazard_lidar": "surface_by_kind"}')
+# Arms of the generalization baselines (scripts/experiments/generalization.py): the by-kind surface
+# lidar (78 sensors) under an evaluation protocol, which adds an evaluation target for the training
+# contexts and one per held-out region to the deployment task and the protocol's contexts.
+SURFACE_LIDAR = ("--env_kwargs", '{"hazard_lidar": "surface_by_kind"}')
 
 
-@pytest.mark.parametrize("extra_flags, sensors, run_name_fragment", [
-    ((), 62, "_ctx_uniform_additive_told_ppo_lag_"),
-    (GEOMETRY, 78, "_ctx_uniform_additive_told_hazard_lidar_surface_by_kind_ppo_lag_"),
+@pytest.mark.parametrize("extra_flags, protocol_name, sensors, targets, run_name_fragment", [
+    ((), "none", 62, 2, "_ctx_uniform_additive_told_ppo_lag_"),
+    (SURFACE_LIDAR, "hazard_total", 78, 5, "_ctx_uniform_additive_told_hazard_lidar_surface_by_kind_ppo_lag_"),
+    (SURFACE_LIDAR, "drag", 78, 5, "_ctx_uniform_additive_told_hazard_lidar_surface_by_kind_ppo_lag_"),
+    ((*SURFACE_LIDAR, "--reference"), "combination", 78, 4, "_ctx_uniform_additive_told_reference_hazard_lidar_surface_by_kind_ppo_lag_"),
 ])
 def test_the_entry_point_runs_a_tiny_context_run_and_leaves_records_and_a_whole_learner_checkpoint(
-    tmp_path: pathlib.Path, extra_flags, sensors, run_name_fragment
+    tmp_path: pathlib.Path, extra_flags, protocol_name, sensors, targets, run_name_fragment
 ):
     environment = {
         **os.environ, "JAX_PLATFORMS": "cpu", "WANDB_MODE": "offline", "WANDB_DIR": str(tmp_path), "WANDB_SILENT": "true",
@@ -46,7 +49,8 @@ def test_the_entry_point_runs_a_tiny_context_run_and_leaves_records_and_a_whole_
         "PYTHONPATH": str(pathlib.Path(__file__).resolve().parents[1]),
     }
     completed = subprocess.run(
-        [sys.executable, "-m", "training.train_env", *TINY_RUN, *extra_flags], env=environment, capture_output=True, text=True, timeout=900
+        [sys.executable, "-m", "training.train_env", *TINY_RUN, *extra_flags, "--evaluation_protocol", protocol_name],
+        env=environment, capture_output=True, text=True, timeout=900,
     )
     assert completed.returncode == 0, completed.stderr[-4000:]
 
@@ -55,7 +59,16 @@ def test_the_entry_point_runs_a_tiny_context_run_and_leaves_records_and_a_whole_
     files = run_directories[0]
 
     records = list(records_under(files / RECORDS_DIRECTORY))
-    assert len(records) == 2 * 3 * 2, "2 episodes x 3 evaluation targets x 2 evaluations"
+    assert len(records) == 2 * targets * 2, f"2 episodes x {targets} evaluation targets x 2 evaluations"
+    # every episode recorded on a region of the protocol ran in a context of that region
+    protocol = contexts.suite_contexts("safe_goal_point").protocol(protocol_name)
+    regions = {contexts.TRAINING_REGION: protocol.training, **{region.name: region.space for region in protocol.held_out}}
+    evaluation_names = {record.evaluation_name for record in records}
+    assert evaluation_names == {"deployment", "uniform", *(regions if protocol.held_out else ())}
+    for record in records:
+        if record.evaluation_name in regions:
+            assert bool(regions[record.evaluation_name].contains(record.context[None])[0]), (record.evaluation_name, record.context)
+        assert bool(protocol.contexts.contains(record.context[None])[0]), record.context
     assert all(record.observation.shape[1] == sensors for record in records), "the record holds the sensors the arm observed"
     assert all(run_name_fragment in record.run_name for record in records), records[0].run_name
 

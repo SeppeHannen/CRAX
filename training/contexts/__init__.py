@@ -22,9 +22,17 @@ See ``docs/acl/design/`` for the constraints this design follows.
 """
 
 from training.contexts.distribution import ContextDistribution, DistributionParameters
-from training.contexts.distributions import FixedContext, PrioritizedLevelReplay, StagedContexts, UniformDistribution
+from training.contexts.distributions import AssignedContexts, FixedContext, PrioritizedLevelReplay, StagedContexts, UniformDistribution
 from training.contexts.training_curriculum import training_curriculum_metrics
-from training.contexts.registry import EvaluationRegion, SuiteContexts, registered_environments, suite_contexts
+from training.contexts.protocol import NO_PROTOCOL, TRAINING_REGION, Cell, EvaluationProtocol, HeldOutRegion
+from training.contexts.registry import (
+    COMBINATION_PROTOCOL,
+    DRAG_PROTOCOL,
+    HAZARD_TOTAL_PROTOCOL,
+    SuiteContexts,
+    registered_environments,
+    suite_contexts,
+)
 from training.contexts.episodes import EpisodeTracker
 from training.contexts.rollout import SLOT_INDEX_KEY, TRANSITION_CONTEXT_KEY, CompletedEpisodes, RoundRollout, Transitions
 from training.contexts.statistics import EpisodeStatistic, Fold, MeanAbsolute
@@ -37,7 +45,7 @@ from training.contexts.setup import (
     DEFAULT_LEARNER,
     DEPLOYMENT_EVALUATION,
     NO_DISTRIBUTION,
-    OUT_OF_DISTRIBUTION_EVALUATION,
+    TRAINING_EVALUATION,
     UNIFORM_EVALUATION,
     ContextTrainingSetup,
     Evaluation,
@@ -48,7 +56,7 @@ from training.contexts.setup import (
     run_name_fragment,
     spec_label,
 )
-from training.contexts.space import Bounds, Context, Contexts, ContextSpace, Dimension, box, scale_to_bounds
+from training.contexts.space import Bounds, Context, Contexts, ContextSpace, ContextUnion, Dimension, box, scale_to_bounds, union
 from training.contexts.wrapper import (
     CONTEXT_KEY,
     ContextualAutoResetWrapper,
@@ -74,7 +82,18 @@ __all__ = [
     "NetworkConstraint",
     "SENSORS_KEY",
     "ContextObservationWrapper",
-    "OUT_OF_DISTRIBUTION_EVALUATION",
+    "TRAINING_EVALUATION",
+    "COMBINATION_PROTOCOL",
+    "DRAG_PROTOCOL",
+    "HAZARD_TOTAL_PROTOCOL",
+    "NO_PROTOCOL",
+    "TRAINING_REGION",
+    "AssignedContexts",
+    "Cell",
+    "EvaluationProtocol",
+    "HeldOutRegion",
+    "ContextUnion",
+    "union",
     "NO_DISTRIBUTION",
     "SLOT_INDEX_KEY",
     "TRANSITION_CONTEXT_KEY",
@@ -91,7 +110,6 @@ __all__ = [
     "Dimension",
     "EpisodeStatistic",
     "EpisodeTracker",
-    "EvaluationRegion",
     "FixedContext",
     "Fold",
     "DistributionParameters",

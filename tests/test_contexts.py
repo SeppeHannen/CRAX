@@ -154,38 +154,178 @@ def test_integer_total_floor_mirrors_the_cap():
         C.ContextSpace(dims, integer_total_cap=2, integer_total_floor=3)
 
 
-def test_goal_point_out_of_distribution_region_is_disjoint_from_omega():
-    """The region shares Ω's dimensions and no point: denser than the cap and a smaller goal."""
-    suite = C.suite_contexts("safe_goal_point")
-    region = suite.region("out_of_distribution")
-    assert region.relation == "disjoint_from" and region.space.names == suite.space.names
-    draws = region.space.sample_uniform(jax.random.PRNGKey(0), 2000)
-    assert not bool(suite.space.contains(draws).any()) and bool(region.space.contains(draws).all())
-    assert bool(jnp.all(draws[:, :4].sum(axis=1) > suite.space.integer_total_cap))
-    assert float(draws[:, 4].max()) < float(suite.space.low[4])
-    assert C.suite_contexts("safe_velocity_ant").evaluation_regions == ()
-    with pytest.raises(KeyError, match="no evaluation region"):
-        suite.region("skill/navigate")
+def test_a_region_is_the_same_space_with_fewer_admissible_integer_totals_or_a_narrower_interval():
+    """`with_integer_total` keeps the box and narrows the totals; `with_interval` narrows one
+    continuous coordinate, down to a fixed value. A range that reaches outside the space is
+    refused. Regions of one space know whether they nest and whether they overlap."""
+    dims = (C.Dimension("a", 0, 3, "integer"), C.Dimension("b", 0, 2, "integer"), C.Dimension("x", 0.0, 1.0))
+    space = C.ContextSpace(dims, integer_total_cap=4)
+    band = space.with_integer_total(2, 3)
+    assert band.dimensions == space.dimensions
+    assert {tuple(p) for p in band.integer_points} == {(a, b) for a in range(4) for b in range(3) if 2 <= a + b <= 3}
+    assert band.is_within(space) and not space.is_within(band)
+    assert band.is_disjoint_from(space.with_integer_total(4, 4)) and not band.is_disjoint_from(space.with_integer_total(3, 4))
+    assert band.measure == len(band.integer_points) * 1.0 and space.boxes == (space,)
+    with pytest.raises(ValueError, match="reaches outside"):
+        space.with_integer_total(3, 5)
+    with pytest.raises(ValueError, match="low"):
+        space.with_integer_total(3, 2)
+    # a fixed value overlaps the same fixed value and an interval that contains it; intervals that only touch do not overlap
+    fixed = C.ContextSpace((C.Dimension("x", 1.0, 1.0),))
+    assert not fixed.is_disjoint_from(fixed) and not fixed.is_disjoint_from(C.box(x=(0.5, 1.5)))
+    assert C.box(x=(0.0, 0.5)).is_disjoint_from(C.box(x=(0.5, 1.0)))
+
+    half = space.with_interval("x", 0.25, 0.75)
+    assert half.is_within(space) and half.measure == pytest.approx(space.measure / 2) and half.integer_total_cap == 4
+    assert half.is_disjoint_from(space.with_interval("x", 0.75, 1.0)) and not half.is_disjoint_from(space.with_interval("x", 0.5, 1.0))
+    draws = np.asarray(half.sample_uniform(jax.random.PRNGKey(0), 500))
+    assert 0.25 <= draws[:, 2].min() and draws[:, 2].max() <= 0.75
+    pinned = space.with_interval("x", 0.5, 0.5)
+    assert np.all(np.asarray(pinned.sample_uniform(jax.random.PRNGKey(0), 50))[:, 2] == 0.5) and pinned.is_within(half)
+    assert pinned.measure == len(space.integer_points), "a fixed value counts as 1, so regions that fix the same value compare"
+    with pytest.raises(ValueError, match="not an interval within"):
+        space.with_interval("x", 0.5, 1.5)
+    with pytest.raises(ValueError, match="not a continuous coordinate"):
+        space.with_interval("a", 0, 1)
 
 
-def test_evaluation_regions_state_their_relation_to_omega_and_it_is_checked():
-    """A region declared disjoint must share no point with Ω; one declared within must lie
-    inside it; names must be unique."""
+def test_a_union_of_regions_samples_uniformly_over_all_its_contexts():
+    """The training contexts on either side of a held-out band: every admissible tuple of either
+    part is equally likely, none of the band's is ever drawn, and the box is Ω's."""
+    dims = (C.Dimension("a", 0, 6, "integer"), C.Dimension("b", 0, 3, "integer"), C.Dimension("x", 0.0, 1.0))
+    omega = C.ContextSpace(dims, integer_total_cap=8)
+    low, band, high = omega.with_integer_total(0, 2), omega.with_integer_total(3, 5), omega.with_integer_total(6, 8)
+    training = C.union(omega, low, high)
+    assert training.dimensions == omega.dimensions and training.bounds == omega.bounds
+    assert training.is_within(omega) and training.is_disjoint_from(band) and not training.is_disjoint_from(low)
+    assert training.measure == pytest.approx(low.measure + high.measure)
+    admissible = {tuple(p) for p in low.integer_points} | {tuple(p) for p in high.integer_points}
+    assert {tuple(p) for p in training.integer_points} == admissible
+
+    samples = np.asarray(jax.jit(lambda key: training.sample_uniform(key, 30_000))(jax.random.PRNGKey(0)))
+    assert bool(training.contains(jnp.asarray(samples)).all()) and not bool(band.contains(jnp.asarray(samples)).any())
+    tuples, counts = np.unique(samples[:, :2].astype(int), axis=0, return_counts=True)
+    assert {tuple(point) for point in tuples} == admissible
+    expected = 30_000 / len(admissible)
+    assert np.all(np.abs(counts - expected) < 4 * np.sqrt(expected)), counts  # uniform over the union, not per part
+    assert 0.0 <= samples[:, 2].min() < 0.05 and 0.95 < samples[:, 2].max() <= 1.0
+
+    with pytest.raises(ValueError, match="overlap"):
+        C.union(omega, low, omega.with_integer_total(2, 4))
+    with pytest.raises(ValueError, match="at least two parts"):
+        C.union(omega, low)
+    with pytest.raises(ValueError, match="outside its box"):
+        C.union(C.ContextSpace(dims[:2] + (C.Dimension("x", 0.0, 0.5),)), low, high)
+    with pytest.raises(ValueError, match="bounded by its parts"):
+        training.with_integer_total(0, 1)
+
+    # parts that differ in a continuous interval: everything but one corner of the box
+    corner = high.with_interval("x", 0.0, 0.25)
+    all_but_the_corner = C.union(omega, omega.with_integer_total(0, 5), high.with_interval("x", 0.25, 1.0))
+    assert all_but_the_corner.is_disjoint_from(corner) and all_but_the_corner.measure + corner.measure == pytest.approx(omega.measure)
+    draws = all_but_the_corner.sample_uniform(jax.random.PRNGKey(1), 20_000)
+    assert bool(all_but_the_corner.contains(draws).all()) and not bool((corner.contains(draws) & (draws[:, 2] < 0.25)).any())
+    share_in_high = float(high.contains(draws).mean())
+    assert share_in_high == pytest.approx(0.75 * high.measure / all_but_the_corner.measure, abs=0.02), "a part is drawn by its measure"
+
+
+def test_goal_points_hazard_total_protocol_holds_two_bands_out_of_training():
+    """The protocol of docs/acl/design/generalization_evaluation.md: totals 0–10 and 14–16 are
+    trained on, 11–13 (between) and 17–20 (beyond) are held out; the four are all of the
+    protocol's contexts, which are Ω at the benchmark's drag. Of the benchmark's levels only
+    level 2 is trained on. Every suite has the protocol that holds nothing out."""
     suite = C.suite_contexts("safe_goal_point")
-    overlapping = C.ContextSpace(suite.space.dimensions, integer_total_floor=10)  # shares tuples 10..20 with Ω
-    outside = suite.region("out_of_distribution").space
-    make = lambda **fields: C.EvaluationRegion(**{"name": "probe", "space": outside, "label": "", "relation": "disjoint_from", **fields})
-    with pytest.raises(ValueError, match="overlaps"):
-        dataclasses.replace(suite, evaluation_regions=(make(space=overlapping),))
+    protocol = suite.protocol(C.HAZARD_TOTAL_PROTOCOL)
+    assert protocol.contexts == suite.space.with_interval("drag", 1.0, 1.0)
+    assert [region.name for region in protocol.held_out] == ["interpolation", "extrapolation"]
+    totals = lambda space: sorted(set(space.integer_points.sum(axis=1).tolist()))
+    assert totals(protocol.training) == [*range(0, 11), 14, 15, 16]
+    assert totals(protocol.held_out[0].space) == [11, 12, 13] and totals(protocol.held_out[1].space) == [17, 18, 19, 20]
+    assert [len(space.integer_points) for space in (*protocol.training.boxes, *(region.space for region in protocol.held_out))] == [835, 877, 774, 980]
+    in_training = [bool(protocol.training.contains(suite.level(level)[None])[0]) for level in (1, 2, 3)]
+    assert in_training == [False, True, False]
+    draws = protocol.training.sample_uniform(jax.random.PRNGKey(0), 4000)
+    assert not any(bool(region.space.contains(draws).any()) for region in protocol.held_out)
+    assert np.all(np.asarray(draws)[:, suite.space.index("drag")] == 1.0), "the drag is the benchmark's in every context of this protocol"
+    assert protocol.training_contexts(reference=False) is protocol.training and protocol.training_contexts(reference=True) is protocol.contexts
+    assert [dict(cell.coordinates) for cell in protocol.cells] == [{"hazard_total": float(total)} for total in range(21)]
+    assert [protocol.region_of(cell) for cell in protocol.cells] == (
+        ["training"] * 11 + ["interpolation"] * 3 + ["training"] * 3 + ["extrapolation"] * 4
+    )
+
+    nothing_held_out = C.suite_contexts("safe_velocity_ant").protocol(C.NO_PROTOCOL)
+    assert nothing_held_out.training == nothing_held_out.contexts and nothing_held_out.held_out == ()
+    assert [cell.space for cell in nothing_held_out.cells] == [nothing_held_out.contexts], "scored as one cell"
+    with pytest.raises(KeyError, match="no evaluation protocol"):
+        suite.protocol("friction")
+
+
+def test_goal_points_drag_protocol_holds_two_bands_of_drag_out_of_training():
+    """Every hazard total is trained on; drag 0.95–1.1 (in the middle of the trained values) and
+    0.5–0.65 (below every trained value) are held out. The benchmark's drag, 1, is in the
+    interpolation band, so no level is trained on. The cells are bands of drag, each within one region."""
+    suite = C.suite_contexts("safe_goal_point")
+    protocol = suite.protocol(C.DRAG_PROTOCOL)
+    drag = suite.space.index("drag")
+    assert protocol.contexts == suite.space and [region.name for region in protocol.held_out] == ["interpolation", "extrapolation"]
+    for level in (1, 2, 3):
+        assert not bool(protocol.training.contains(suite.level(level)[None])[0])
+        assert bool(protocol.held_out[0].space.contains(suite.level(level)[None])[0])
+    draws = np.asarray(protocol.training.sample_uniform(jax.random.PRNGKey(0), 20_000))
+    assert not np.any((draws[:, drag] > 0.95) & (draws[:, drag] < 1.1)) and draws[:, drag].min() >= 0.65
+    assert sorted(set(draws[:, :4].sum(axis=1).astype(int).tolist())) == list(range(21))
+    assert float(np.mean(draws[:, drag] <= 0.95)) == pytest.approx(0.3 / 0.7, abs=0.01), "uniform over both trained ranges together"
+    by_region = {}
+    for cell in protocol.cells:
+        by_region.setdefault(protocol.region_of(cell), []).append(dict(cell.coordinates)["drag"])
+    assert by_region["extrapolation"] == pytest.approx([0.525, 0.575, 0.625]) and by_region["interpolation"] == pytest.approx([0.975, 1.025, 1.075])
+    assert len(by_region["training"]) == 14
+
+
+def test_goal_points_combination_protocol_never_trains_on_many_hazards_and_a_slippery_floor_together():
+    """Every hazard total and every drag is trained on, but totals 11–20 never at drag below 0.9:
+    that corner is the test. The cells are a hazard total by a band of drag."""
+    suite = C.suite_contexts("safe_goal_point")
+    protocol = suite.protocol(C.COMBINATION_PROTOCOL)
+    drag = suite.space.index("drag")
+    draws = np.asarray(protocol.training.sample_uniform(jax.random.PRNGKey(0), 40_000))
+    totals = draws[:, :4].sum(axis=1)
+    assert not np.any((totals >= 11) & (draws[:, drag] < 0.9)), "the held-out corner is never drawn"
+    assert set(totals.astype(int).tolist()) == set(range(21)) and draws[:, drag].min() < 0.52 and draws[:, drag].max() > 1.48
+    assert np.any((totals <= 10) & (draws[:, drag] < 0.9)) and np.any((totals >= 11) & (draws[:, drag] >= 0.9))
+    (corner,) = protocol.held_out
+    held = np.asarray(corner.space.sample_uniform(jax.random.PRNGKey(1), 2000))
+    assert held[:, :4].sum(axis=1).min() >= 11 and held[:, drag].max() <= 0.9
+    assert len(protocol.cells) == 21 * 10
+    in_corner = [dict(cell.coordinates) for cell in protocol.cells if protocol.region_of(cell) == "combination"]
+    assert len(in_corner) == 10 * 4 and all(c["hazard_total"] >= 11 and c["drag"] < 0.9 for c in in_corner)
+
+
+def test_a_protocol_is_a_partition_of_its_contexts_and_that_is_checked():
+    """Held-out regions are disjoint from the training contexts and from each other, lie within
+    the protocol's contexts, and leave no context neither trained on nor tested. Every cell
+    lies within one region, and the cells leave no context unscored."""
+    space = C.suite_contexts("safe_goal_point").space
+    totals = space.with_integer_total
+    region = lambda name, low, high: C.HeldOutRegion(name, totals(low, high), label="")
+    whole = (C.Cell((), space),)
+    make = lambda training, *held_out, cells=whole: C.EvaluationProtocol("probe", contexts=space, training=training, held_out=held_out, cells=cells)
+    per_total = tuple(C.Cell((("hazard_total", float(n)),), totals(n, n)) for n in range(21))
+    assert make(totals(0, 16), region("beyond", 17, 20), cells=per_total).region_of(per_total[18]) == "beyond"
+    with pytest.raises(ValueError, match="training and beyond overlap"):
+        make(totals(0, 17), region("beyond", 17, 20))
+    with pytest.raises(ValueError, match="between and beyond overlap"):
+        make(totals(0, 10), region("between", 11, 17), region("beyond", 17, 20))
+    with pytest.raises(ValueError, match="training and held-out regions cover"):
+        make(totals(0, 15), region("beyond", 17, 20))
+    with pytest.raises(ValueError, match="distinct names"):
+        make(totals(0, 10), region("beyond", 11, 15), region("beyond", 16, 20))
     with pytest.raises(ValueError, match="not within"):
-        dataclasses.replace(suite, evaluation_regions=(make(space=outside, relation="within"),))
-    dense_corner = C.ContextSpace(suite.space.dimensions, integer_total_cap=20, integer_total_floor=18)  # a slice of Ω
-    within = dataclasses.replace(suite, evaluation_regions=(make(space=dense_corner, relation="within"),))
-    assert within.region("probe").space is dense_corner
-    with pytest.raises(ValueError, match="share a name"):
-        dataclasses.replace(suite, evaluation_regions=(make(), make()))
-    with pytest.raises(ValueError, match="dimensions"):
-        dataclasses.replace(suite, evaluation_regions=(make(space=C.box(x=(0.0, 1.0))),))
+        C.EvaluationProtocol("probe", contexts=totals(0, 16), training=totals(0, 10), held_out=(region("beyond", 11, 20),), cells=whole)
+    with pytest.raises(ValueError, match="within exactly one of"):
+        make(totals(0, 16), region("beyond", 17, 20))  # the one cell, all of Ω, straddles both regions
+    with pytest.raises(ValueError, match="the cells cover"):
+        make(totals(0, 16), region("beyond", 17, 20), cells=per_total[:-1])
 
 
 # --------------------------------------------------------------------------- #
@@ -287,7 +427,7 @@ def test_staged_switches_without_recompiling(suite, env):
     from jax._src import monitoring
     from jax._src.dispatch import BACKEND_COMPILE_EVENT
 
-    staged = C.parse_distribution("staged:1,2,3", suite, total_rounds=3)
+    staged = C.parse_distribution("staged:1,2,3", suite, suite.space, total_rounds=3)
     reset, step = build(env, staged)
     state = _strip_weak_type(reset(jax.random.split(jax.random.PRNGKey(2), NUM_SLOTS)))
     parameters = C.current_parameters(state)
@@ -491,9 +631,9 @@ def test_plr_scores_by_the_chosen_signal(suite):
         assert sorted(np.asarray(parameters.scores).tolist()) == expected_scores, score
     with pytest.raises(TypeError, match="Signal"):
         C.PrioritizedLevelReplay(suite.space, score="cost")
-    assert C.parse_distribution("plr:cost", suite, total_rounds=1).score is COST
+    assert C.parse_distribution("plr:cost", suite, suite.space, total_rounds=1).score is COST
     with pytest.raises(ValueError, match="plr:<signal>"):
-        C.parse_distribution("plr:return", suite, total_rounds=1)
+        C.parse_distribution("plr:return", suite, suite.space, total_rounds=1)
 
 
 def test_plr_replay_weights_are_rank_mixed_with_staleness():
@@ -592,7 +732,7 @@ def test_observation_is_the_sensors_and_the_running_episodes_context(env, suite)
         assert ended > 0, "no episode ended; the at-done case was not exercised"
 
 
-def test_networks_read_every_labelled_part_the_policy_all_but_the_context_unless_told():
+def test_networks_read_every_labelled_part_the_policy_all_but_the_context_columns_it_is_not_handed():
     """A new labelled part is read by the policy and both critics without a change to the
     factory; only the context is withheld from a blind policy."""
     from training.acme import running_statistics, specs
@@ -605,7 +745,7 @@ def test_networks_read_every_labelled_part_the_policy_all_but_the_context_unless
     other_new_part = {**base, new_part: -jnp.ones((3, 9))}
     networks = C.make_contextual_ppo_networks(
         observation_size, action_size=2, preprocess_observations_fn=running_statistics.normalize,
-        policy_observes_context=False, context_bounds={"low": (-2.0, -2.0), "high": (2.0, 2.0)},
+        policy_context_columns=(), context_bounds={"low": (-2.0, -2.0), "high": (2.0, 2.0)},
     )
     keys = jax.random.split(jax.random.PRNGKey(2), 3)
     for network, key in ((networks.policy_network, keys[0]), (networks.value_network, keys[1]), (networks.cost_value_network, keys[2])):
@@ -613,36 +753,41 @@ def test_networks_read_every_labelled_part_the_policy_all_but_the_context_unless
         assert not np.allclose(network.apply(normalizer, params, base), network.apply(normalizer, params, other_new_part)), "every network reads the new part"
     with pytest.raises(KeyError, match="'sensors'"):
         C.make_contextual_ppo_networks(
-            {C.CONTEXT_OBSERVATION_KEY: (2,)}, action_size=2, policy_observes_context=False, context_bounds={"low": (-2.0, -2.0), "high": (2.0, 2.0)},
+            {C.CONTEXT_OBSERVATION_KEY: (2,)}, action_size=2, policy_context_columns=(), context_bounds={"low": (-2.0, -2.0), "high": (2.0, 2.0)},
         )
+    with pytest.raises(ValueError, match="not distinct columns"):
+        C.make_contextual_ppo_networks(observation_size, action_size=2, policy_context_columns=(0, 2), context_bounds={"low": (-2.0, -2.0), "high": (2.0, 2.0)})
 
 
 def test_networks_read_the_context_where_the_learner_allows_it():
-    """Blind policy: a function of the sensors only. Told policy and both critics: the
-    context changes their output."""
+    """Blind policy: a function of the sensors only. A told policy reads the context columns it
+    is handed and no other (a hidden coordinate is not among them). Both critics read every
+    column."""
     from training.acme import running_statistics, specs
 
     observation_size = {C.SENSORS_KEY: (6,), C.CONTEXT_OBSERVATION_KEY: (2,)}
     normalizer = running_statistics.init_state({key: specs.Array(shape, jnp.float32) for key, shape in observation_size.items()})
     sensors = jax.random.normal(jax.random.PRNGKey(1), (3, 6))
-    observation = {C.SENSORS_KEY: sensors, C.CONTEXT_OBSERVATION_KEY: jnp.ones((3, 2))}
-    other_context = {C.SENSORS_KEY: sensors, C.CONTEXT_OBSERVATION_KEY: -jnp.ones((3, 2))}
-    for policy_observes_context in (False, True):
+    with_context = lambda first, second: {C.SENSORS_KEY: sensors, C.CONTEXT_OBSERVATION_KEY: jnp.tile(jnp.asarray([first, second]), (3, 1))}
+    observation, other_first, other_second = with_context(1.0, 1.0), with_context(-1.0, 1.0), with_context(1.0, -1.0)
+    for policy_context_columns in ((), (0,), (0, 1)):
         networks = C.make_contextual_ppo_networks(
             observation_size, action_size=2, preprocess_observations_fn=running_statistics.normalize,
-            policy_observes_context=policy_observes_context, context_bounds={"low": (-2.0, -2.0), "high": (2.0, 2.0)},
+            policy_context_columns=policy_context_columns, context_bounds={"low": (-2.0, -2.0), "high": (2.0, 2.0)},
         )
         keys = jax.random.split(jax.random.PRNGKey(2), 3)
         policy_params = networks.policy_network.init(keys[0])
         logits = lambda obs: networks.policy_network.apply(normalizer, policy_params, obs)
         assert logits(observation).shape == (3, 4)  # mean and std per action
-        policy_sees_it = not np.allclose(logits(observation), logits(other_context))
-        assert policy_sees_it == policy_observes_context
+        for column, changed in ((0, other_first), (1, other_second)):
+            policy_sees_it = not np.allclose(logits(observation), logits(changed))
+            assert policy_sees_it == (column in policy_context_columns), (policy_context_columns, column)
         for critic, key in ((networks.value_network, keys[1]), (networks.cost_value_network, keys[2])):
             params = critic.init(key)
             value = lambda obs: critic.apply(normalizer, params, obs)
             assert value(observation).shape == (3,)
-            assert not np.allclose(value(observation), value(other_context)), "a critic must see the context"
+            for changed in (other_first, other_second):
+                assert not np.allclose(value(observation), value(changed)), "a critic must see the whole context"
 
 
 def test_scale_to_bounds_maps_omega_to_the_unit_box_and_a_degenerate_dimension_to_zero():
@@ -774,16 +919,16 @@ def test_additive_constraint_is_monotone_in_difficulty_and_transfers_across_fact
     harder when *lower*, so cost at small goals raises λ at small goals, not large ones; λ₀ = 0 is
     allowed; and the fit reports which factors carry the difficulty."""
     suite = C.suite_contexts("safe_goal_point")
-    space = suite.space
+    space = suite.protocol(C.HAZARD_TOTAL_PROTOCOL).contexts  # the drag fixed: no factor of the multiplier
     constraint = C.AdditiveConstraint(space)
     steps_per_count = sum(int(d.high) - int(d.low) for d in space.integer_dimensions)  # one increment per value past the easiest
     assert constraint.num_difficulty_features == steps_per_count + (CONTINUOUS_BINS - 1)  # counts + goal-size inner bin edges
     multipliers = constraint.initial_multipliers(0.0)
     at = lambda m, **values: float(constraint.multipliers_at(m, space.encode(**values)[None])[0])
-    base = dict(active_cylinders=0, active_collidable_cylinders=0, active_cubes=0, active_collidable_cubes=0, goal_size=0.2)
+    base = dict(active_cylinders=0, active_collidable_cylinders=0, active_cubes=0, active_collidable_cubes=0, goal_size=0.2, drag=1.0)
     assert at(multipliers, **base) == 0.0
     easiest = space.encode(**{**base, "goal_size": 0.3})
-    hardest = space.encode(active_cylinders=12, active_collidable_cylinders=12, active_cubes=12, active_collidable_cubes=12, goal_size=0.1)
+    hardest = space.encode(active_cylinders=12, active_collidable_cylinders=12, active_cubes=12, active_collidable_cubes=12, goal_size=0.1, drag=1.0)
     np.testing.assert_allclose(np.asarray(constraint.difficulty_at(multipliers, jnp.stack([easiest, hardest]))), [0.0, 1.0], atol=1e-6)
 
     # cost rises with cylinders, everything else fixed: 0, 4, 8 cylinders at per-step cost 0.02, 0.05, 0.08 vs budget 0.025
@@ -838,19 +983,25 @@ def test_lagrangian_advantage_takes_lambda_per_transition_in_the_datas_layout():
 
 def test_learner_names_the_arm_and_hands_the_trainer_what_realises_it():
     told = C.Learner(constraint="additive", policy_context="told")
-    assert C.arm_label("staged:1,2,3", told, {}) == "staged:1,2,3 additive told"
-    assert C.run_name_fragment("staged:1,2,3", told, {}) == "staged123_additive_told"
-    assert C.arm_label("uniform", C.DEFAULT_LEARNER, {}) == "uniform scalar blind"
-    # An environment override is part of what differs between arms, so of the label
-    assert C.arm_label("uniform", told, {"hazard_lidar": "surface_by_kind"}) == "uniform additive told hazard_lidar=surface_by_kind"
-    assert C.run_name_fragment("uniform", told, {"hazard_lidar": "surface_by_kind"}) == "uniform_additive_told_hazard_lidar_surface_by_kind"
+    assert C.arm_label("staged:1,2,3", told, False, {}) == "staged:1,2,3 additive told"
+    assert C.run_name_fragment("staged:1,2,3", told, False, {}) == "staged123_additive_told"
+    assert C.arm_label("uniform", C.DEFAULT_LEARNER, False, {}) == "uniform scalar blind"
+    # Being the reference run and an environment override are part of what differs between arms, so of the label
+    lidar = {"hazard_lidar": "surface_by_kind"}
+    assert C.arm_label("uniform", told, False, lidar) == "uniform additive told hazard_lidar=surface_by_kind"
+    assert C.arm_label("uniform", told, True, lidar) == "uniform additive told reference hazard_lidar=surface_by_kind"
+    assert C.run_name_fragment("uniform", told, True, lidar) == "uniform_additive_told_reference_hazard_lidar_surface_by_kind"
     flags = argparse.Namespace(constraint="scalar", policy_context="blind")
     assert C.Learner.from_flags(flags) == C.DEFAULT_LEARNER
     kwargs = told.train_kwargs(C.suite_contexts(LIFT).space)
     assert isinstance(kwargs["lagrange_constraint"], C.AdditiveConstraint)
     assert kwargs["network_factory"].keywords == {
-        "policy_observes_context": True, "context_bounds": {"low": (0.0,) * 4, "high": (1.0,) * 4},
+        "policy_context_columns": (0, 1, 2, 3), "context_bounds": {"low": (0.0,) * 4, "high": (1.0,) * 4},
     }
+    # goal point's drag is hidden: a told policy reads the hazard counts and the goal radius, never the drag
+    goal = C.suite_contexts("safe_goal_point").space
+    assert goal.names[5] == "drag" and told.policy_context_columns(goal) == (0, 1, 2, 3, 4)
+    assert C.DEFAULT_LEARNER.policy_context_columns(goal) == ()
     assert set(C.DEFAULT_LEARNER.train_kwargs(C.suite_contexts(LIFT).space)) == {"network_factory"}
     network = C.Learner(constraint="network", policy_context="blind")
     assert isinstance(network.train_kwargs(C.suite_contexts(ENV_NAME).space)["lagrange_constraint"], C.NetworkConstraint)  # any Ω
@@ -858,7 +1009,7 @@ def test_learner_names_the_arm_and_hands_the_trainer_what_realises_it():
         C.DEFAULT_LEARNER.per_context_constraint(C.suite_contexts(LIFT).space)
     with pytest.raises(ValueError):
         C.Learner(constraint="per_episode", policy_context="told")
-    tiny = dict(environment_overrides={}, num_timesteps=10, num_envs=1, batch_size=1, unroll_length=1, num_minibatches=1)
+    tiny = dict(protocol_name=C.NO_PROTOCOL, reference=False, environment_overrides={}, num_timesteps=10, num_envs=1, batch_size=1, unroll_length=1, num_minibatches=1)
     with pytest.raises(ValueError, match="need a context distribution"):
         C.context_training_setup(ENV_NAME, C.NO_DISTRIBUTION, "level:3", told, **tiny)
     assert C.context_training_setup(ENV_NAME, C.NO_DISTRIBUTION, "level:3", C.DEFAULT_LEARNER, **tiny) is None

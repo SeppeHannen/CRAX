@@ -4,7 +4,8 @@ A context run's learner is named by how it holds the **constraint** — one λ f
 the whole training distribution (``scalar``), or a function of the context
 λ(ω) in one of two function classes (``network``, ``additive``;
 ``training/contexts/constraints/``) — and by what the **policy** observes — its
-sensors only (blind), or its context too (told). The critics observe the
+sensors only (blind), or its context too (told), except the coordinates no
+deployed robot could know (``Dimension.hidden``). The critics observe the whole
 context in every context run. The reasons are
 ``docs/acl/design/contextual_learner.md``; this module turns the words into the
 trainer arguments that realise them and into the arm label the dashboard groups
@@ -72,8 +73,16 @@ class Learner:
             return AdditiveConstraint(space)
         raise ValueError(f"the {self.constraint!r} learner holds no per-context constraint")
 
+    def policy_context_columns(self, space: ContextSpace) -> Tuple[int, ...]:
+        """The columns of ω the policy reads: none when blind; when told, every coordinate a
+        deployed robot could know."""
+        if self.policy_context == "blind":
+            return ()
+        return tuple(index for index, dimension in enumerate(space.dimensions) if not dimension.hidden)
+
     def train_kwargs(self, space: ContextSpace) -> Dict[str, Any]:
-        """``network_factory`` always (every context run observes ``{sensors, context}``);
+        """The trainer arguments for a run whose contexts lie in ``space`` (its protocol's contexts).
+        ``network_factory`` always (every context run observes ``{sensors, context}``);
         ``lagrange_constraint`` only for λ(ω), since a scalar λ is every constrained agent's own
         default and only PPO-Lagrange takes a ``lagrange_constraint``. The key differs from the
         CLI flag ``--constraint`` on purpose: the entry point forwards every CLI flag that shares
@@ -82,7 +91,7 @@ class Learner:
         kwargs: Dict[str, Any] = {
             "network_factory": functools.partial(
                 make_contextual_ppo_networks,
-                policy_observes_context=self.policy_context == "told",
+                policy_context_columns=self.policy_context_columns(space),
                 context_bounds=dataclasses.asdict(space.bounds),
             ),
         }

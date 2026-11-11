@@ -5,8 +5,9 @@ The observation is ``{"sensors": o, "context": ω}`` (:mod:`observation`). The
 critics always read every part: the cost critic has to estimate cost per context
 for a per-context constraint to be about something, and a critic exists only in
 training, so what a deployed robot would know is no concern. The policy reads
-every part but the context, and the context too when it is *told* — the input it
-needs to hold a different reward–cost trade-off per context
+every other part, and of the context the columns it is handed: none when it is
+blind; when it is *told*, the coordinates a deployed robot could know — the
+input it needs to hold a different reward–cost trade-off per context
 (``docs/acl/design/contextual_learner.md`` §2). A new labelled part is read by
 every network without a change here.
 
@@ -45,36 +46,37 @@ def make_contextual_ppo_networks(
     action_size: int,
     preprocess_observations_fn: types.PreprocessObservationFn = types.identity_observation_preprocessor,
     *,
-    policy_observes_context: bool,
+    policy_context_columns: Sequence[int],
     context_bounds: Mapping[str, Sequence[float]],
 ) -> PPONetworks:
-    """Policy over every labelled part but the context (and the context too when
-    ``policy_observes_context``); reward and cost critics over every labelled part.
+    """Policy over every labelled part, reading ``policy_context_columns`` of the context
+    (none for a blind policy); reward and cost critics over every labelled part, whole.
 
     Both keywords are bound by :meth:`training.contexts.learner.Learner.train_kwargs`;
-    the trainer supplies the positional arguments. ``context_bounds`` is Ω's bounds,
-    ``{"low": [...], "high": [...]}`` — ``ContextSpace.bounds`` as a mapping, so it survives
-    the checkpoint's JSON config.
+    the trainer supplies the positional arguments. ``context_bounds`` is the bounds of the
+    run's contexts, ``{"low": [...], "high": [...]}`` — ``ContextSpace.bounds`` as a mapping,
+    so it survives the checkpoint's JSON config, as the columns do.
     """
     bounds = Bounds(low=tuple(context_bounds["low"]), high=tuple(context_bounds["high"]))
-    if len(bounds.low) != observation_size[CONTEXT_OBSERVATION_KEY][-1]:
-        raise ValueError(
-            f"context_bounds has {len(bounds.low)} dimensions, the context observation {observation_size[CONTEXT_OBSERVATION_KEY][-1]}"
-        )
-    critics_read = labelled_parts(observation_size)
-    policy_reads = critics_read if policy_observes_context else tuple(part for part in critics_read if part != CONTEXT_OBSERVATION_KEY)
+    context_size = observation_size[CONTEXT_OBSERVATION_KEY][-1]
+    if len(bounds.low) != context_size:
+        raise ValueError(f"context_bounds has {len(bounds.low)} dimensions, the context observation {context_size}")
+    policy_columns = tuple(int(column) for column in policy_context_columns)
+    if len(set(policy_columns)) != len(policy_columns) or any(not 0 <= column < context_size for column in policy_columns):
+        raise ValueError(f"policy_context_columns {policy_columns} are not distinct columns of a context of {context_size} dimensions")
+    parts = labelled_parts(observation_size)
     action_distribution = distribution.NormalTanhDistribution(event_size=action_size)
     return PPONetworks(
         policy_network=_mlp_over_parts(
-            observation_size, policy_reads, preprocess_observations_fn, bounds,
+            observation_size, parts, preprocess_observations_fn, bounds, policy_columns,
             layer_sizes=(*POLICY_HIDDEN_LAYER_SIZES, action_distribution.param_size), squeeze_output=False,
         ),
         value_network=_mlp_over_parts(
-            observation_size, critics_read, preprocess_observations_fn, bounds,
+            observation_size, parts, preprocess_observations_fn, bounds, tuple(range(context_size)),
             layer_sizes=(*VALUE_HIDDEN_LAYER_SIZES, 1), squeeze_output=True,
         ),
         cost_value_network=_mlp_over_parts(
-            observation_size, critics_read, preprocess_observations_fn, bounds,
+            observation_size, parts, preprocess_observations_fn, bounds, tuple(range(context_size)),
             layer_sizes=(*VALUE_HIDDEN_LAYER_SIZES, 1), squeeze_output=True,
         ),
         parametric_action_distribution=action_distribution,
@@ -95,17 +97,19 @@ def _mlp_over_parts(
     parts: Sequence[str],
     preprocess_observations_fn: types.PreprocessObservationFn,
     bounds: Bounds,
+    context_columns: Tuple[int, ...],
     layer_sizes: Sequence[int],
     squeeze_output: bool,
 ) -> networks.FeedForwardNetwork:
     """An MLP whose input is the concatenation of the named observation parts: the sensors
-    through the running normaliser, the context scaled to Ω's box."""
+    through the running normaliser, and ``context_columns`` of the context scaled to ``bounds``."""
     module = networks.MLP(layer_sizes=list(layer_sizes), activation=linen.swish, kernel_init=jax.nn.initializers.lecun_uniform())
-    input_size = sum(observation_size[part][-1] for part in parts)
+    input_size = sum(len(context_columns) if part == CONTEXT_OBSERVATION_KEY else observation_size[part][-1] for part in parts)
+    columns = jnp.asarray(context_columns, dtype=jnp.int32)
 
     def scaled(part: str, processor_params: running_statistics.RunningStatisticsState, values: jax.Array) -> jax.Array:
         if part == CONTEXT_OBSERVATION_KEY:
-            return scale_to_bounds(values, bounds)
+            return scale_to_bounds(values, bounds)[..., columns]
         return preprocess_observations_fn(values, networks.normalizer_select(processor_params, part))
 
     def apply(processor_params: running_statistics.RunningStatisticsState, params: types.Params, observation: Mapping[str, jax.Array]) -> jax.Array:

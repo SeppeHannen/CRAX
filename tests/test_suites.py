@@ -35,11 +35,11 @@ SUITES = C.registered_environments()
 NUM_SLOTS = 2
 EPISODE_LENGTH = 5
 
-# Button's Ω contains layouts its arena cannot hold (docs/acl/README.md, Known defects):
+# Button's Ω contains layouts its arena cannot hold (docs/acl/known_defects.md):
 # Uniform(Ω) reaches them and the reset raises. Strict, so the day Ω is fixed this flips.
 _UNIFORM_BUTTON_IS_INFEASIBLE = pytest.mark.xfail(
     strict=True, raises=Exception,
-    reason="safe_button_point: Uniform(Ω) samples layouts that do not fit the 2 m square (README, Known defects)",
+    reason="safe_button_point: Uniform(Ω) samples layouts that do not fit the 2 m square (docs/acl/known_defects.md)",
 )
 SUITES_UNDER_UNIFORM = [
     pytest.param(name, marks=_UNIFORM_BUTTON_IS_INFEASIBLE) if name == "safe_button_point" else name for name in SUITES
@@ -64,10 +64,15 @@ def _logged_keys(env_name: str) -> List[str]:
     def zero_policy(_params):  # the context stacks observe {sensors, context}
         return lambda observation, key: (jnp.zeros((observation[C.SENSORS_KEY].shape[0], env.action_size)), {})
 
-    # One evaluator per target the run would be scored on, each on its own evaluation stack --
-    # the targets come from the same function `context_training_setup` uses.
+    # One evaluator per target a run would be scored on under any of the suite's protocols, each
+    # on its own evaluation stack -- the targets come from the same function `context_training_setup` uses.
     suite = C.suite_contexts(env_name)
-    for evaluation in C.evaluations_for(suite, deployment_spec="level:3", total_rounds=1):
+    evaluations = {
+        evaluation.name: evaluation
+        for protocol in (suite.protocol(C.NO_PROTOCOL), *suite.protocols)
+        for evaluation in C.evaluations_for(suite, protocol, deployment_spec="level:3", total_rounds=1)
+    }
+    for evaluation in evaluations.values():
         evaluation_env = C.wrap_for_context_evaluation(env, evaluation.distribution, episode_length=EPISODE_LENGTH)
         evaluator = Evaluator(evaluation_env, zero_policy, num_eval_envs=NUM_SLOTS, episode_length=EPISODE_LENGTH,
                               action_repeat=1, key=jax.random.PRNGKey(1), cost_tail=CostTail(budget=25.0))
@@ -205,7 +210,7 @@ def test_driving_into_the_fence_is_free_and_invisible():
     env = envs.get_environment("safe_goal_point", level=1).unwrapped
     suite = C.suite_contexts("safe_goal_point")
     counts = {name: 0.0 for name in suite.space.names if name.startswith("active_")}
-    state = jax.jit(env.reset_with_context)(jax.random.PRNGKey(0), context.encode(env, **counts, goal_size=0.2))
+    state = jax.jit(env.reset_with_context)(jax.random.PRNGKey(0), context.encode(env, **counts, goal_size=0.2, drag=1.0))
     step = jax.jit(env.step)
     thrust = jnp.zeros((env.action_size,)).at[0].set(1.0)
     hazard_lidar = slice(12 + env._lidar_num_bins, 12 + 2 * env._lidar_num_bins)
@@ -216,11 +221,62 @@ def test_driving_into_the_fence_is_free_and_invisible():
         assert np.all(np.abs(position) < arena_half_width), f"the robot left the arena at {position}"
         assert float(state.info["cost"]) == 0.0
         assert float(jnp.max(state.obs[hazard_lidar])) == 0.0
+        assert float(state.metrics["outside_arena"]) == 0.0
     assert abs(position[0]) > env._placement_extents[2], "the robot never reached the fence"
 
 
+def test_blind_thrust_into_the_fence_throws_no_robot_out():
+    """Goal-point's solver converges on a robot pressed into a wall (Newton; crax/envs/safe_goal.py):
+    64 robots in an empty arena under full thrust with a small constant turn for 300 steps, a slide
+    along a wall into a corner, all end inside. Under the stock CG solver 7 % of such episodes left
+    the arena (docs/acl/known_defects.md), so 64 staying in is not chance."""
+    env = envs.get_environment("safe_goal_point", level=3).unwrapped
+    empty = jnp.zeros(len(env.CONTEXT_PARAMETERS)).at[-2:].set(jnp.asarray([0.2, 1.0]))  # no hazards, goal 0.2, drag 1
+
+    def episode(key: jax.Array) -> Tuple[jax.Array, jax.Array]:
+        reset_key, turn_key = jax.random.split(key)
+        action = jnp.asarray([1.0, jax.random.uniform(turn_key, (), minval=-0.3, maxval=0.3)])
+
+        def step(state: State, _: None) -> Tuple[State, Tuple[jax.Array, jax.Array]]:
+            state = env.step(state, action)
+            return state, (jnp.abs(state.pipeline_state.qpos[:2]).max(), state.metrics["outside_arena"])
+
+        _, (reach, outside) = jax.lax.scan(step, env.reset_with_context(reset_key, empty), None, length=300)
+        return reach.max(), outside.sum()
+
+    reach, steps_outside = jax.jit(jax.vmap(episode))(jax.random.split(jax.random.PRNGKey(0), 64))
+    assert float(steps_outside.sum()) == 0.0, f"a robot left the arena: furthest {np.sort(np.asarray(reach))[-3:]}"
+    assert float(reach.max()) > env._placement_extents[2], "no robot reached the fence"
+
+
+def test_the_drag_is_a_value_of_the_episode_that_sets_how_fast_the_robot_goes_and_how_far_it_coasts():
+    """goal-point's hidden factor (docs/acl/design/generalization_evaluation.md): the same thrust
+    takes the robot further the lower the drag, and it coasts further once the thrust stops; the
+    benchmark's drag, 1, is every level's. One compiled program serves every drag."""
+    env = envs.get_environment("safe_goal_point", level=1).unwrapped
+    assert env.CONTEXT_PARAMETERS[-1] == "drag" and float(env.default_context()[-1]) == 1.0
+    counts = {name: 0.0 for name in env.CONTEXT_PARAMETERS if name.startswith("active_")}
+    thrust_steps, coast_steps = 12, 12
+
+    def distances(drag: jax.Array) -> Tuple[jax.Array, jax.Array]:
+        episode_context = jnp.concatenate([jnp.zeros(len(counts)), jnp.asarray([0.2]), drag[None]])
+        state = env.reset_with_context(jax.random.PRNGKey(0), episode_context)
+        start = state.pipeline_state.qpos[:2]
+        actions = jnp.zeros((thrust_steps + coast_steps, env.action_size)).at[:thrust_steps, 0].set(1.0)
+        _, positions = jax.lax.scan(lambda s, a: (env.step(s, a),) * 2, state, actions)
+        path = positions.pipeline_state.qpos[:, :2]
+        return jnp.linalg.norm(path[thrust_steps - 1] - start), jnp.linalg.norm(path[-1] - path[thrust_steps - 1])
+
+    driven, coasted = jax.jit(jax.vmap(distances))(jnp.asarray([0.5, 0.75, 1.0, 1.5]))
+    assert np.all(np.diff(np.asarray(driven)) < 0) and np.all(np.diff(np.asarray(coasted)) < 0), (driven, coasted)
+    assert float(driven[0]) < 2.0, "the robot must not have reached the fence, or the distances say nothing"
+    assert float(coasted[0]) > 2.0 * float(coasted[2]), "half the drag: more than twice the coasting distance"
+    with pytest.raises(ValueError, match="must be positive"):
+        envs.get_environment("safe_goal_point", level=1, drag=0.0)
+
+
 def test_the_surface_lidar_by_kind_tells_a_solid_wall_from_a_passable_disc():
-    """`hazard_lidar="surface_by_kind"` (crax/envs/safe_goal.py, plan task 1b) replaces the 16 hazard
+    """`hazard_lidar="surface_by_kind"` (crax/envs/safe_goal.py) replaces the 16 hazard
     sectors by 16 passable + 16 solid; everything else in the observation is the centre lidar's.
     A solid cylinder just ahead reads near 1 in the solid array's forward sectors and 0 in the
     passable array; the same scene with the hazard's kind swapped reads the other way round —

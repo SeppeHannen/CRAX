@@ -4,7 +4,9 @@
 
 Each job's console output goes to ``runs/logs/<group>_<label>_<timestamp>.log``.
 A job that fails stops the chain: the remaining arms would join a group whose
-result is already in question. Run detached so the chain survives the terminal:
+result is already in question. ``--only <label> ...`` runs just those jobs (one
+seed of a long chain, or the jobs left after a chain stopped); ``--list`` prints
+every job's label and starts nothing. Run detached so the chain survives the terminal:
 
     setsid nohup .venv/bin/python -m training.experiments.local <definition> \\
         > runs/logs/<group>_chain.log 2>&1 < /dev/null & disown
@@ -25,10 +27,15 @@ LOG_DIRECTORY = pathlib.Path("runs/logs")
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("definition", type=pathlib.Path, help="Python file exporting EXPERIMENT")
+    parser.add_argument("--only", nargs="+", default=(), metavar="LABEL", help="run only the jobs with these labels")
+    parser.add_argument("--list", action="store_true", help="print the labels of the jobs, in the order they would run, and exit")
     arguments = parser.parse_args()
 
     experiment = load_experiment(arguments.definition)
-    jobs = experiment.jobs()
+    jobs = experiment.jobs_labelled(tuple(arguments.only))
+    if arguments.list:
+        print("\n".join(job.label for job in jobs))
+        return
     prepare_group(experiment)
     LOG_DIRECTORY.mkdir(parents=True, exist_ok=True)
     for job in jobs:

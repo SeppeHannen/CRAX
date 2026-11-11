@@ -118,8 +118,19 @@ def add_shared_training_args(parser: argparse.ArgumentParser) -> argparse.Argume
                              "objective A_r - λ A_c the policy loss optimises (docs/acl/design/prioritized_level_replay.md).")
     parser.add_argument("--deployment_distribution", type=str, default="level:3",
                         help="Distribution w the policy is for; evaluated on it (evaluation/deployment/*) next to "
-                             "Uniform(Ω) (evaluation/uniform/*) and, on suites that define one, Uniform(Ω₂) "
-                             "(evaluation/out_of_distribution/*). Same grammar as --context_distribution.")
+                             "the protocol's contexts, uniformly (evaluation/uniform/*). Same grammar as "
+                             "--context_distribution; it may name contexts the evaluation protocol holds out of training.")
+    parser.add_argument("--evaluation_protocol", type=str, default="none",
+                        help="Which contexts are held out of training to test the policy on "
+                             "(docs/acl/design/generalization_evaluation.md). 'none' (default) = train on all of Ω. "
+                             "A suite's named protocol ('hazard_total', 'drag' or 'combination' on safe_goal_point): "
+                             "the training distribution samples only the protocol's training contexts, and the policy "
+                             "is also evaluated on them (evaluation/training/*) and on each held-out region "
+                             "(evaluation/<region>/*).")
+    parser.add_argument("--reference", action="store_true",
+                        help="With --evaluation_protocol: train on all of the protocol's contexts, held-out regions "
+                             "included. The reference run shows what return and cost were achievable on the "
+                             "held-out regions; it is evaluated exactly as the run it is the reference for.")
     # The learner of a context run (docs/acl/design/contextual_learner.md). The critics
     # see the context in every context run; these two switches say how the constraint
     # is held and whether the policy sees the context. Both need --context_distribution.

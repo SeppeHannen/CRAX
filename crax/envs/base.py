@@ -134,12 +134,20 @@ class PipelineEnv(Env):
     """Initializes the pipeline state."""
     return self._pipeline.init(self.sys, q, qd, act, ctrl, self._debug)
 
-  def pipeline_step(self, pipeline_state: Any, action: jax.Array) -> base.State:
-    """Takes a physics step using the physics pipeline."""
+  def pipeline_step(
+      self, pipeline_state: Any, action: jax.Array, sys: Optional[base.System] = None
+  ) -> base.State:
+    """Takes a physics step using the physics pipeline.
+
+    ``sys``: the system to step, for an environment whose physics parameters are
+    per-episode values (``self.sys`` with some fields replaced); ``self.sys`` when
+    not given.
+    """
+    system = self.sys if sys is None else sys
 
     def f(state, _):
       return (
-          self._pipeline.step(self.sys, state, action, self._debug),
+          self._pipeline.step(system, state, action, self._debug),
           None,
       )
 

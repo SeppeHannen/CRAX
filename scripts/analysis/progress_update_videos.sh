@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The side-by-side videos of docs/acl/progress_update_2026-10-21.md §5: the published baseline
+# The side-by-side videos of docs/acl/archive/progress_update_2026-10-21.md §5: the published baseline
 # (uniform, scalar λ, blind policy; trained 2026-10-15) against the best contextual policy
 # (PLR, λ(ω) additive, told, surface lidar by kind; trained 2026-10-19) on levels 1-3.
 # Per level the episode nearest each policy's median cost among its above-median-return

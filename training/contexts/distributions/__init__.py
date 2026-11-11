@@ -4,6 +4,7 @@ Non-adaptive:
 * :class:`UniformDistribution` — r = Uniform(Ω), the domain-randomisation baseline.
 * :class:`FixedContext` — a single context (one difficulty level; the target w).
 * :class:`StagedContexts` — a fixed sequence switched at fixed rounds (the manual curriculum).
+* :class:`AssignedContexts` — one given context per slot (a scoring run).
 
 Adaptive:
 * :class:`PrioritizedLevelReplay` — PLR (Jiang et al. 2021) in its unbounded-level form:
@@ -11,12 +12,15 @@ Adaptive:
   (``docs/acl/design/prioritized_level_replay.md``).
 """
 
+from training.contexts.distributions.assigned import AssignedContexts, AssignedParameters
 from training.contexts.distributions.fixed import FixedContext, FixedParameters
 from training.contexts.distributions.prioritized_level_replay import PrioritizedLevelReplay, PrioritizedLevelReplayParameters
 from training.contexts.distributions.staged import StagedContexts, StagedParameters
 from training.contexts.distributions.uniform import UniformDistribution, UniformParameters
 
 __all__ = [
+    "AssignedContexts",
+    "AssignedParameters",
     "FixedContext",
     "FixedParameters",
     "PrioritizedLevelReplay",

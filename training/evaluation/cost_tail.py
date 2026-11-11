@@ -4,7 +4,7 @@ A constraint on the mean cost is met by a policy whose failures are few and
 large as readily as by one whose cost is spread evenly: on ``safe_goal_point``
 the typical level-3 episode of the per-context learner costs half the budget
 while one episode in two hundred costs ten times it, and that tail sets the
-multiplier (``docs/acl/README.md``, plan task 1b). The evaluator logs each
+multiplier (``docs/acl/experiments/2026-10-19_goal_point_cost_tail_500M.md``). The evaluator logs each
 evaluation's mean and standard deviation of cost; these three numbers say
 where the mean comes from:
 

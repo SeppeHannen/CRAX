@@ -24,9 +24,13 @@ STAGED = Arm("staged123", ("--context_distribution", "staged:1,2,3"))
 def test_an_experiment_expands_to_one_job_per_arm_and_seed_with_the_full_argument_list():
     experiment = Experiment(group="g", common=COMMON, arms=(UNIFORM, STAGED), seeds=(0, 7))
     jobs = experiment.jobs()
-    assert [job.label for job in jobs] == ["uniform_seed0", "uniform_seed7", "staged123_seed0", "staged123_seed7"]
-    assert jobs[1].argv == (*COMMON, "--context_distribution", "uniform", "--wandb_group", "g", "--seeds", "7")
-    assert jobs[1].arguments.seeds == [7] and jobs[1].arguments.wandb_group == "g"
+    assert [job.label for job in jobs] == ["uniform_seed0", "staged123_seed0", "uniform_seed7", "staged123_seed7"]  # seed by seed
+    assert jobs[2].argv == (*COMMON, "--context_distribution", "uniform", "--wandb_group", "g", "--seeds", "7")
+    assert jobs[2].arguments.seeds == [7] and jobs[2].arguments.wandb_group == "g"
+    assert [job.label for job in experiment.jobs_labelled(("staged123_seed7", "uniform_seed0"))] == ["uniform_seed0", "staged123_seed7"]
+    assert experiment.jobs_labelled(()) == jobs
+    with pytest.raises(ValueError, match="has no jobs"):
+        experiment.jobs_labelled(("uniform_seed1",))
     assert jobs[3].arguments.context_distribution == "staged:1,2,3"
     assert [job.label for job in Experiment(group="g", common=COMMON, arms=(UNIFORM,)).jobs()] == ["uniform"]
 
@@ -77,11 +81,39 @@ def test_facts_need_what_the_run_would_otherwise_read_off_the_environment():
         run_facts(Experiment(group="g", common=COMMON, arms=(Arm("none", ("--context_distribution", "none")),)).jobs()[0].arguments)
 
 
-@pytest.mark.parametrize("name", ["snellius_smoke", "goal_point_learners_500M"])
+@pytest.mark.parametrize("name", [
+    "snellius_smoke", "goal_point_learners_500M", "goal_point_hazard_total_500M", "goal_point_drag_500M",
+    "goal_point_combination_500M", "goal_point_hazard_total_curricula_500M",
+])
 def test_the_committed_definitions_load_and_their_arms_share_facts(name: str):
     experiment = load_experiment(REPOSITORY / "scripts" / "experiments" / f"{name}.py")
     assert len(experiment.jobs()) >= 2
     experiment.facts()
+
+
+@pytest.mark.parametrize("name, protocol", [("goal_point_hazard_total_500M", "hazard_total"), ("goal_point_drag_500M", "drag"), ("goal_point_combination_500M", "combination")])
+def test_a_generalization_baseline_is_every_learner_held_out_and_as_reference_seed_by_seed(name: str, protocol: str):
+    jobs = load_experiment(REPOSITORY / "scripts" / "experiments" / f"{name}.py").jobs()
+    assert len(jobs) == 4 * 2 * 3 and [job.arguments.seeds for job in jobs[:8]] == [[0]] * 8
+    assert {(job.arguments.constraint, job.arguments.policy_context, job.arguments.reference) for job in jobs[:8]} == {
+        (constraint, policy_context, reference)
+        for constraint in ("scalar", "additive") for policy_context in ("blind", "told") for reference in (False, True)
+    }
+    assert {job.arguments.evaluation_protocol for job in jobs} == {protocol} and {job.arguments.context_distribution for job in jobs} == {"uniform"}
+
+
+def test_the_curricula_train_on_the_baselines_training_set_and_share_its_flags():
+    """Step 5 is compared run by run with the hazard-total baseline: apart from the training
+    distribution, a curriculum job's flags are those of the baseline job of the same learner and seed."""
+    load = lambda name: load_experiment(REPOSITORY / "scripts" / "experiments" / f"{name}.py").jobs()
+    baseline = {(job.arguments.constraint, job.arguments.policy_context, job.arguments.seeds[0]): job
+                for job in load("goal_point_hazard_total_500M") if not job.arguments.reference}
+    curricula = load("goal_point_hazard_total_curricula_500M")
+    assert sorted({job.arguments.context_distribution for job in curricula}) == ["plr", "plr:lagrangian"] and len(curricula) == 12
+    for job in curricula:
+        twin = baseline[(job.arguments.constraint, job.arguments.policy_context, job.arguments.seeds[0])]
+        differing = {key for key, value in vars(job.arguments).items() if value != getattr(twin.arguments, key)}
+        assert differing == {"context_distribution", "wandb_group"}, differing
 
 
 def test_load_experiment_names_what_is_wrong(tmp_path: pathlib.Path):

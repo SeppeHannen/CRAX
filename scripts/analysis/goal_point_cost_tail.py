@@ -7,7 +7,7 @@ Each root holds the episode records of one arm's replays (``python -m training.r
 
 * the **tail**: mean, median, p99 and worst episode cost, and the share of episodes over the
   budget and over four times it — the numbers the constraint's meaning rests on
-  (``docs/acl/README.md``, plan task 1b);
+  (``docs/acl/experiments/2026-10-19_goal_point_cost_tail_500M.md``);
 * the **traps**: a trap is repeated solid-hazard contact in one spot — at least ``MIN_TRAP_TOUCHES``
   touches on the same pair (or single) of solid hazards, each within ``--trap_gap`` steps of the
   previous; fewer touches are a brush. Entering a trap and leaving it are different skills; the

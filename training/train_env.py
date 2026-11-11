@@ -69,6 +69,8 @@ def main():
             config.context_distribution,
             config.deployment_distribution,
             learner,
+            protocol_name=config.evaluation_protocol,
+            reference=config.reference,
             environment_overrides=environment_overrides,
             num_timesteps=int(config.num_timesteps),
             num_envs=config.num_envs,

@@ -11,11 +11,12 @@ register it. The level contexts are not written down: the levels are those
 ``crax/envs/context.py``), so ``FixedContext(level(3))`` is the level-3 task by
 construction and cannot drift from the difficulty module.
 
-Besides Ω a suite may name further **regions** of the same dimensions the policy
-is scored on (:class:`EvaluationRegion`): goal-point's Ω₂, later the skill
-subspaces of ``docs/acl/README.md`` goal 2. Each states its relation to Ω
-(disjoint from it, or within it), which is checked here; ``setup.py`` turns the
-list into evaluators without knowing what any region is.
+Besides Ω a suite may name **evaluation protocols**
+(:class:`~training.contexts.protocol.EvaluationProtocol`): which contexts a run
+trains on and which are held out to test it on
+(``docs/acl/design/generalization_evaluation.md``). ``setup.py`` turns a
+protocol into the training distribution's support and into evaluators without
+knowing what any region is.
 
 Every suite of the benchmark is registered. Value-typed knobs (a threshold, a
 radius) are read from the context where the constant used to be; count-typed
@@ -25,9 +26,12 @@ levels (``docs/acl/design/hazard_activation.md``).
 from __future__ import annotations
 
 import dataclasses
-from typing import Callable, Dict, Literal, Mapping, Tuple
+from typing import Callable, Dict, Mapping, Tuple
 
-from training.contexts.space import Context, ContextSpace, Dimension
+from training.contexts.protocol import (
+    NO_PROTOCOL, Cell, EvaluationProtocol, HeldOutRegion, no_protocol, split_by_integer_total, split_by_interval,
+)
+from training.contexts.space import Context, ContextSpace, Dimension, union
 
 
 @dataclasses.dataclass(frozen=True)
@@ -49,35 +53,6 @@ class TaskDescription:
     episode_ends_early: bool
 
 
-# The W&B name of the one region defined so far; ``evaluation/<name>/*`` keys.
-OUT_OF_DISTRIBUTION_REGION = "out_of_distribution"
-
-
-@dataclasses.dataclass(frozen=True)
-class EvaluationRegion:
-    """A named region of Ω's dimensions the policy is scored on, next to Ω itself and w.
-
-    ``name`` becomes the metric prefix ``evaluation/<name>/``; ``label`` is what the
-    dashboard calls it. ``relation`` is the region's invariant against Ω, checked
-    when the suite is built: ``"disjoint_from"`` for a generalisation target no
-    training distribution over Ω can reach (goal-point's Ω₂), ``"within"`` for a
-    subspace of Ω where a particular skill is required (README goal 2).
-    """
-
-    name: str
-    space: ContextSpace
-    label: str
-    relation: Literal["disjoint_from", "within"]
-
-    def check_against(self, omega: ContextSpace, env_name: str) -> None:
-        if self.space.names != omega.names:
-            raise ValueError(f"{env_name}: region {self.name!r} must have Ω's dimensions {omega.names}, has {self.space.names}")
-        if self.relation == "disjoint_from" and not _disjoint(omega, self.space):
-            raise ValueError(f"{env_name}: region {self.name!r} overlaps Ω\n{omega.describe()}\n{self.space.describe()}")
-        if self.relation == "within" and not _within(self.space, omega):
-            raise ValueError(f"{env_name}: region {self.name!r} is not within Ω\n{omega.describe()}\n{self.space.describe()}")
-
-
 @dataclasses.dataclass(frozen=True)
 class SuiteContexts:
     """Everything the context machinery needs to know about one environment."""
@@ -89,8 +64,8 @@ class SuiteContexts:
     # The difficulty levels as points of Ω, keyed by level; from crax/envs/difficulty.py.
     level_contexts: Mapping[int, Context]
     task: TaskDescription
-    # Further named regions the policy is evaluated on, in panel order; empty for most suites.
-    evaluation_regions: Tuple[EvaluationRegion, ...] = ()
+    # The suite's evaluation protocols besides NO_PROTOCOL; empty for most suites.
+    protocols: Tuple[EvaluationProtocol, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.level_contexts:
@@ -100,49 +75,26 @@ class SuiteContexts:
                 raise ValueError(f"{self.env_name}: level {level} context has shape {context.shape}, Ω has {self.space.size} dimensions")
             if not bool(self.space.contains(context[None])[0]):
                 raise ValueError(f"{self.env_name}: level {level} context {self.space.decode(context)} lies outside Ω\n{self.space.describe()}")
-        names = [region.name for region in self.evaluation_regions]
-        if len(set(names)) != len(names):
-            raise ValueError(f"{self.env_name}: evaluation regions share a name: {names}")
-        for region in self.evaluation_regions:
-            region.check_against(self.space, self.env_name)
+        names = [protocol.name for protocol in self.protocols]
+        if len(set(names)) != len(names) or NO_PROTOCOL in names:
+            raise ValueError(f"{self.env_name}: protocol names must be distinct and not {NO_PROTOCOL!r}, got {names}")
+        for protocol in self.protocols:
+            if not protocol.contexts.is_within(self.space):
+                raise ValueError(f"{self.env_name}: protocol {protocol.name!r} reaches outside Ω\n{protocol.contexts.describe()}\n{self.space.describe()}")
 
     def level(self, level: int) -> Context:
         if level not in self.level_contexts:
             raise KeyError(f"{self.env_name}: no level {level}; have {sorted(self.level_contexts)}")
         return self.level_contexts[level]
 
-    def region(self, name: str) -> EvaluationRegion:
-        for region in self.evaluation_regions:
-            if region.name == name:
-                return region
-        raise KeyError(f"{self.env_name}: no evaluation region {name!r}; have {[r.name for r in self.evaluation_regions]}")
-
-
-def _disjoint(first: ContextSpace, second: ContextSpace) -> bool:
-    """No point of positive measure lies in both: either no admissible integer tuple is shared,
-    or some continuous interval does not overlap (touching endpoints do not count)."""
-    shared_integer_tuples = bool(len(
-        {tuple(p) for p in first.integer_points.tolist()} & {tuple(p) for p in second.integer_points.tolist()}
-    )) if first.integer_dimensions else True
-    continuous_overlap = all(
-        a.low < b.high and b.low < a.high
-        for a, b in zip(first.dimensions, second.dimensions) if a.kind == "continuous"
-    )
-    return not (shared_integer_tuples and continuous_overlap)
-
-
-def _within(inner: ContextSpace, outer: ContextSpace) -> bool:
-    """Every admissible integer tuple of ``inner`` is one of ``outer``'s, and every continuous
-    interval of ``inner`` lies inside ``outer``'s."""
-    integer_inside = (
-        {tuple(p) for p in inner.integer_points.tolist()} <= {tuple(p) for p in outer.integer_points.tolist()}
-        if inner.integer_dimensions else True
-    )
-    continuous_inside = all(
-        o.low <= i.low and i.high <= o.high
-        for i, o in zip(inner.dimensions, outer.dimensions) if i.kind == "continuous"
-    )
-    return integer_inside and continuous_inside
+    def protocol(self, name: str) -> EvaluationProtocol:
+        """The named protocol; ``NO_PROTOCOL`` is every suite's: train on all of Ω, hold nothing out."""
+        if name == NO_PROTOCOL:
+            return no_protocol(self.space)
+        for protocol in self.protocols:
+            if protocol.name == name:
+                return protocol
+        raise KeyError(f"{self.env_name}: no evaluation protocol {name!r}; have {[NO_PROTOCOL, *(p.name for p in self.protocols)]}")
 
 
 _REGISTRY: Dict[str, Callable[[], SuiteContexts]] = {}
@@ -436,8 +388,8 @@ def _pathway_walker2d() -> SuiteContexts:
 # The environment is the union model of the three levels (crax/envs/hazard_union.py,
 # docs/acl/design/hazard_activation.md): every hazard kind any level uses, at its
 # maximum count. Ω has one integer dimension per kind — how many are active this
-# episode — from 0 to that maximum, plus the goal radius. The levels are three
-# points: L1 = (12, 0, 0, 0, 0.20), L2 = (8, 8, 0, 0, 0.18), L3 = (6, 4, 6, 4, 0.16).
+# episode — from 0 to that maximum, plus the goal radius and the drag. The levels are three
+# points: L1 = (12, 0, 0, 0, 0.20, 1), L2 = (8, 8, 0, 0, 0.18, 1), L3 = (6, 4, 6, 4, 0.16, 1).
 # Uniform over Ω therefore includes layouts no level has (many cubes *and* many
 # cylinders); that is the point of Ω, and is said in the thesis.
 #
@@ -451,12 +403,115 @@ _GOAL_MAX_ACTIVE_HAZARDS = 20
 _GOAL_SIZE_LOW = 0.14
 _GOAL_SIZE_HIGH = 0.22
 
-# Ω₂, the out-of-distribution evaluation region (plan item 3). PLACEHOLDER VALUES:
-# the design question is open (docs/acl/design/goal_point_out_of_distribution.md).
-# As it stands: denser than the cap allows — 21 to all 30 hazards — and a goal
-# smaller than Ω's smallest, so every point is outside Ω on both counts at once.
-_GOAL_OUT_OF_DISTRIBUTION_MIN_ACTIVE_HAZARDS = _GOAL_MAX_ACTIVE_HAZARDS + 1
-_GOAL_OUT_OF_DISTRIBUTION_GOAL_SIZE_LOW = 0.10
+# How strongly the robot is braked, as a multiple of the benchmark's (the damping of its slide
+# joints, crax/envs/safe_goal.py). A robot cannot know it; no policy is told it. At 0.5 the robot's
+# top speed and the time it takes to stop are both twice the benchmark's, at 1.5 two thirds of it
+# (measured 2026-11-11, docs/acl/design/generalization_evaluation.md).
+_GOAL_DRAG_LOW = 0.5
+_GOAL_DRAG_HIGH = 1.5
+
+# The evaluation protocols (docs/acl/design/generalization_evaluation.md). Each holds part of Ω
+# out of training; the goal radius is sampled the same way everywhere.
+#
+# hazard_total: the total number of active hazards is the factor, the drag is the benchmark's.
+# Two bands of totals are held out, one between trained totals and one beyond them. Of the
+# benchmark's levels (totals 12, 16, 20) only level 2 is trained on.
+HAZARD_TOTAL_PROTOCOL = "hazard_total"
+_GOAL_TRAINED_TOTALS = ((0, 10), (14, 16))
+_GOAL_INTERPOLATION_TOTALS = (11, 13)
+_GOAL_EXTRAPOLATION_TOTALS = (17, _GOAL_MAX_ACTIVE_HAZARDS)
+
+# drag: the drag is the factor, every hazard total is trained on. Two bands of drag are held out
+# the same way; the lower the drag, the harder the robot is to stop. The interpolation band sits
+# in the middle of the trained range (0.65–1.5), twice its own width away from the extrapolation
+# band. It holds the benchmark's drag, 1: in this protocol no level is trained on.
+DRAG_PROTOCOL = "drag"
+_GOAL_TRAINED_DRAGS = ((1.1, _GOAL_DRAG_HIGH), (0.65, 0.95))
+_GOAL_INTERPOLATION_DRAGS = (0.95, 1.1)
+_GOAL_EXTRAPOLATION_DRAGS = (_GOAL_DRAG_LOW, 0.65)
+_GOAL_DRAG_BAND_WIDTH = 0.05  # of a score cell
+
+# combination: every hazard total and every drag is trained on, but many hazards and a slippery
+# floor never together.
+COMBINATION_PROTOCOL = "combination"
+_GOAL_FEW_HAZARDS = (0, 10)
+_GOAL_MANY_HAZARDS = (11, _GOAL_MAX_ACTIVE_HAZARDS)
+_GOAL_SLIPPERY = (_GOAL_DRAG_LOW, 0.9)
+_GOAL_NOT_SLIPPERY = (0.9, _GOAL_DRAG_HIGH)
+_GOAL_COMBINATION_DRAG_BAND_WIDTH = 0.1  # of a score cell
+
+HAZARD_TOTAL_FACTOR = "hazard_total"
+DRAG_DIMENSION = "drag"
+
+
+def _drag_edges(band_width: float) -> Tuple[float, ...]:
+    """The borders of drag bands of this width over Ω, as the decimals the regions are written in
+    (a cell is matched to its region by comparing bounds)."""
+    bands = round((_GOAL_DRAG_HIGH - _GOAL_DRAG_LOW) / band_width)
+    return tuple(round(_GOAL_DRAG_LOW + band_width * index, 6) for index in range(bands + 1))
+
+
+def _hazard_total_protocol(space: ContextSpace, benchmark_drag: float) -> EvaluationProtocol:
+    contexts = space.with_interval(DRAG_DIMENSION, benchmark_drag, benchmark_drag)
+    return EvaluationProtocol(
+        name=HAZARD_TOTAL_PROTOCOL,
+        contexts=contexts,
+        training=union(contexts, *(contexts.with_integer_total(low, high) for low, high in _GOAL_TRAINED_TOTALS)),
+        held_out=(
+            HeldOutRegion(
+                "interpolation", contexts.with_integer_total(*_GOAL_INTERPOLATION_TOTALS),
+                "held-out hazard totals {}–{}, between trained totals (interpolation)".format(*_GOAL_INTERPOLATION_TOTALS),
+            ),
+            HeldOutRegion(
+                "extrapolation", contexts.with_integer_total(*_GOAL_EXTRAPOLATION_TOTALS),
+                "held-out hazard totals {}–{}, beyond trained totals (extrapolation)".format(*_GOAL_EXTRAPOLATION_TOTALS),
+            ),
+        ),
+        cells=split_by_integer_total((Cell((), contexts),), HAZARD_TOTAL_FACTOR),
+    )
+
+
+def _drag_protocol(space: ContextSpace) -> EvaluationProtocol:
+    def drags(low: float, high: float) -> ContextSpace:
+        return space.with_interval(DRAG_DIMENSION, low, high)
+
+    return EvaluationProtocol(
+        name=DRAG_PROTOCOL,
+        contexts=space,
+        training=union(space, *(drags(low, high) for low, high in _GOAL_TRAINED_DRAGS)),
+        held_out=(
+            HeldOutRegion(
+                "interpolation", drags(*_GOAL_INTERPOLATION_DRAGS),
+                "held-out drag {}–{}, between trained values (interpolation)".format(*_GOAL_INTERPOLATION_DRAGS),
+            ),
+            HeldOutRegion(
+                "extrapolation", drags(*_GOAL_EXTRAPOLATION_DRAGS),
+                "held-out drag {}–{}, below every trained value (extrapolation)".format(*_GOAL_EXTRAPOLATION_DRAGS),
+            ),
+        ),
+        cells=split_by_interval((Cell((), space),), DRAG_DIMENSION, _drag_edges(_GOAL_DRAG_BAND_WIDTH)),
+    )
+
+
+def _combination_protocol(space: ContextSpace) -> EvaluationProtocol:
+    few, many = space.with_integer_total(*_GOAL_FEW_HAZARDS), space.with_integer_total(*_GOAL_MANY_HAZARDS)
+    return EvaluationProtocol(
+        name=COMBINATION_PROTOCOL,
+        contexts=space,
+        training=union(space, few, many.with_interval(DRAG_DIMENSION, *_GOAL_NOT_SLIPPERY)),
+        held_out=(
+            HeldOutRegion(
+                "combination", many.with_interval(DRAG_DIMENSION, *_GOAL_SLIPPERY),
+                "held-out combination: hazard totals {}–{} at drag {}–{}, each trained on but never together".format(
+                    *_GOAL_MANY_HAZARDS, *_GOAL_SLIPPERY
+                ),
+            ),
+        ),
+        cells=split_by_interval(
+            split_by_integer_total((Cell((), space),), HAZARD_TOTAL_FACTOR), DRAG_DIMENSION, _drag_edges(_GOAL_COMBINATION_DRAG_BAND_WIDTH)
+        ),
+    )
+
 
 _HAZARD_KIND_WORDS = {
     ("cylinder", False): "flat discs the robot can drive over",
@@ -479,29 +534,28 @@ def _goal_point() -> SuiteContexts:
             description=f"how many of the model's {group.count} {_HAZARD_KIND_WORDS[(group.hazard_type, group.collidable)]} "
             f"are in the arena this episode (the rest are parked out of reach)",
         ))
-    goal_size = "the radius in metres of the goal disc the robot has to reach; smaller = harder to hit"
-    hazard_dimensions = tuple(dimensions)
+    dimensions.append(Dimension(
+        "goal_size", low=_GOAL_SIZE_LOW, high=_GOAL_SIZE_HIGH, harder_when="lower",
+        description="the radius in metres of the goal disc the robot has to reach; smaller = harder to hit",
+    ))
+    dimensions.append(Dimension(
+        DRAG_DIMENSION, low=_GOAL_DRAG_LOW, high=_GOAL_DRAG_HIGH, harder_when="lower", hidden=True,
+        description="how strongly the floor brakes the robot, as a multiple of the benchmark's (1); lower = faster and "
+        "slower to stop. Not told to any policy",
+    ))
+    space = ContextSpace(tuple(dimensions), integer_total_cap=_GOAL_MAX_ACTIVE_HAZARDS)
+    benchmark_drag = float(space.component(environment.default_context(), DRAG_DIMENSION))
     return SuiteContexts(
         env_name=env_name,
-        space=ContextSpace(
-            hazard_dimensions + (Dimension("goal_size", low=_GOAL_SIZE_LOW, high=_GOAL_SIZE_HIGH, description=goal_size, harder_when="lower"),),
-            integer_total_cap=_GOAL_MAX_ACTIVE_HAZARDS,
-        ),
-        evaluation_regions=(EvaluationRegion(
-            name=OUT_OF_DISTRIBUTION_REGION,
-            space=ContextSpace(
-                hazard_dimensions + (Dimension("goal_size", low=_GOAL_OUT_OF_DISTRIBUTION_GOAL_SIZE_LOW, high=_GOAL_SIZE_LOW, description=goal_size, harder_when="lower"),),
-                integer_total_floor=_GOAL_OUT_OF_DISTRIBUTION_MIN_ACTIVE_HAZARDS,
-            ),
-            label="outside Ω (uniform over Ω₂: denser than the cap, smaller goal)",
-            relation="disjoint_from",
-        ),),
+        space=space,
+        protocols=(_hazard_total_protocol(space, benchmark_drag), _drag_protocol(space), _combination_protocol(space)),
         level_contexts=_level_contexts(env_name),
         task=TaskDescription(
             agent="A wheeled point robot in a 5 m × 5 m arena that has to drive to a goal disc, avoiding hazards "
             "placed at random when the episode starts: flat discs and squares it can drive over (a proximity cost) "
             "and solid cylinders and cubes it bumps into (a contact cost). A fence around the arena keeps the robot "
-            "in; it is not observed and costs nothing. Actions are two wheel torques in [−1, 1]. When the robot "
+            "in; it is not observed and costs nothing. Actions are two wheel torques in [−1, 1]; how strongly the "
+            "floor brakes the robot is the episode's drag, which it does not observe. When the robot "
             "reaches the goal, the goal respawns elsewhere and the episode continues; an episode ends at the step "
             "limit, or earlier if the robot flips or leaves its healthy height range.",
             reward="Per step: 1 each time the robot enters the goal disc (the dense distance term is off). The return "

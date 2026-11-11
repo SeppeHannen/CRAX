@@ -20,7 +20,7 @@ from typing import Any, Dict
 
 _TASK_DIFFICULTY_CONFIGS: dict[str, dict[int, dict[str, Any]]] = {
     # Goal navigation task - navigate to goal while avoiding hazards. One goal: the
-    # observation's goal compass reads one goal (docs/acl/README.md, Decisions). The
+    # observation's goal compass reads one goal (docs/acl/decisions/standing_decisions.md). The
     # arena fence is the environment's, not a hazard (crax/envs/arena.py).
     "goal": {
         1: {

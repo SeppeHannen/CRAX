@@ -70,6 +70,8 @@ POLICY_CODE: Tuple[str, ...] = (
     "training/contexts/networks.py",
     "training/contexts/observation.py",
     "training/contexts/space.py",
+    "training/contexts/protocol.py",
+    "training/contexts/registry.py",
     "training/contexts/wrapper.py",
     "training/contexts/distributions/",
 )
@@ -142,12 +144,17 @@ class Learner:
         )
 
 
+def protocol_of(run_config: argparse.Namespace) -> contexts.EvaluationProtocol:
+    """The evaluation protocol the run trained under; its contexts are what the run's learner was built over."""
+    return contexts.suite_contexts(run_config.env_name).protocol(run_config.evaluation_protocol)
+
+
 def learner_from_checkpoint(checkpoint_directory: pathlib.Path, run_config: argparse.Namespace) -> Learner:
     """The run's learner: networks from the checkpoint's config under the run's :class:`contexts.Learner`,
     the policy tuple and the learner state from its files, the constraint from the run's flags."""
     config = checkpoint_module.load_config(checkpoint_directory / NETWORK_CONFIG_FILE)
     spec = contexts.Learner.from_flags(run_config)
-    space = contexts.suite_contexts(run_config.env_name).space
+    space = protocol_of(run_config).contexts
     network = checkpoint_module.get_network(config, spec.train_kwargs(space)["network_factory"].func)
     # PPO-Lagrange's constraint for this learner: λ(ω) if it holds one, else the agent's own scalar λ.
     constraint: LagrangeConstraint = spec.per_context_constraint(space) if spec.holds_constraint_per_context else ScalarConstraint()
@@ -173,7 +180,7 @@ def replay_context(
 ) -> ContextOutcome:
     """Roll the policy out for ``episodes`` whole episodes in one context, at once, and record them."""
     suite = contexts.suite_contexts(run_config.env_name)
-    distribution = contexts.parse_distribution(context_spec, suite, total_rounds=1)
+    distribution = contexts.parse_distribution(context_spec, suite, protocol_of(run_config).contexts, total_rounds=1)
     env = wrap_for_context_evaluation(environment_of(run_config), distribution, episode_length=run_config.episode_length)
     evaluator = acting.Evaluator(
         env, functools.partial(ppo_networks.make_inference_fn(learner.network), deterministic=deterministic),
@@ -190,7 +197,8 @@ def replay_context(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--run", required=True, help="W&B run name (== id) of a context run trained with --store_model true")
-    parser.add_argument("--contexts", nargs="+", required=True, help="context specs, e.g. level:1 level:2 level:3 or uniform")
+    parser.add_argument("--contexts", nargs="+", required=True,
+                        help="context specs within the run's evaluation protocol, e.g. level:1 level:2 level:3, or uniform")
     parser.add_argument("--episodes", type=int, default=64, help="episodes per context, rolled out in parallel")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--deterministic", action="store_true", help="the mean action instead of the sampling policy the run was evaluated with")

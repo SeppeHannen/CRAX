@@ -258,9 +258,9 @@ def test_runs_are_coloured_by_arm_not_by_palette_order():
         by_arm[path[0]["value"]] = colour
     assert by_arm == dict(dashboard.view.ARM_COLOURS)
     told = contexts.Learner(constraint="additive", policy_context="told")
-    assert {contexts.arm_label("uniform", contexts.DEFAULT_LEARNER, {}), contexts.arm_label("staged:1,2,3", told, {}),
-            contexts.arm_label("plr:cost", contexts.DEFAULT_LEARNER, {}),
-            contexts.arm_label("uniform", told, {"hazard_lidar": "surface_by_kind"})} <= set(by_arm)
+    assert {contexts.arm_label("uniform", contexts.DEFAULT_LEARNER, False, {}), contexts.arm_label("staged:1,2,3", told, False, {}),
+            contexts.arm_label("plr:cost", contexts.DEFAULT_LEARNER, False, {}),
+            contexts.arm_label("uniform", told, False, {"hazard_lidar": "surface_by_kind"})} <= set(by_arm)
 
 
 def test_run_facts_round_trip_through_json():
