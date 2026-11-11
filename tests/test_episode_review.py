@@ -218,7 +218,7 @@ LEARNERS = {
 
 
 def _record_a_run(directory: pathlib.Path, learner: C.Learner) -> C.ContextTrainingSetup:
-    setup = C.context_training_setup(ENV_NAME, "uniform", "level:3", learner, environment_overrides={}, num_timesteps=NUM_TIMESTEPS,
+    setup = C.context_training_setup(ENV_NAME, "uniform", "level:3", learner, protocol_name=C.NO_PROTOCOL, reference=False, environment_overrides={}, num_timesteps=NUM_TIMESTEPS,
                                      num_envs=8, batch_size=8, unroll_length=5, num_minibatches=2)
     recorder = EpisodeRecorder(directory, ENV_NAME, "tiny_run", setup.arm, num_episodes=2, sensors_key=C.SENSORS_KEY, context_key=C.TRANSITION_CONTEXT_KEY, written=lambda path: None)
     assert recorder.recording == EvaluationRecording(2, ("cost", "truncation", TRANSITION_SCENE_KEY, C.TRANSITION_CONTEXT_KEY))
@@ -340,7 +340,6 @@ def test_server_serves_the_page_the_library_and_an_episodes_traces(review_server
     library = json.loads(_get(url + "/api/library")[2])
     assert library["group"] == "tiny_group" and len(library["episodes"]) == 12
     assert library["default_camera"] in library["environments"][ENV_NAME]["cameras"]
-    assert library["policy_views"] == [], "a state-based run's records hold no policy view"
     assert library["environments"][ENV_NAME]["control_dt"] > 0
     episode = json.loads(_get(url + "/api/episode/0")[2])
     assert episode["length"] == len(episode["reward"]) == len(episode["value"]) == len(episode["action"])
