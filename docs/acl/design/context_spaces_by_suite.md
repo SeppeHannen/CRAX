@@ -48,6 +48,8 @@ every level present at max count, with per-slot masks. Concretely for Goal:
   per-group size (V).
 - Level 1 = (12, 0, 0, 0, goal 0.2); level 2 = (8, 8, 0, 0, 0.18); level 3 =
   (6, 4, 6, 4, 0.16). All three are the same compiled program.
+- Since 2026-11-11 Ω also has `drag` (V, 0.5 to 1.5, 1 at every level): how
+  strongly the floor brakes the robot (`generalization_evaluation.md`).
 - `collidable` is a **contact-pair property in the MuJoCo model** — not a
   per-slot value. Hence collidable and non-collidable hazards are *different
   groups*, and "turning collision on" for a slot means activating a collidable

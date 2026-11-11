@@ -3,7 +3,7 @@
 Done 2026-10-12. W&B group `goal_point_plr_scores_500M`. One seed. Plan item 2:
 the three PLR score variants against the two manual baselines, on the same stack
 as the 2026-10-08 experiment plus the third evaluation target Ω₂ (placeholder
-values, `design/goal_point_out_of_distribution.md`).
+values, `archive/goal_point_out_of_distribution.md`).
 
 Only the two new PLR arms are run. The other three arms are the 2026-10-08 v2
 runs, reused: the diff between the code they ran on (`242f0a6`) and this one
@@ -95,7 +95,7 @@ Mean of the last five evaluations (400–510 M); Ω₂ exists for the new arms o
   end) and is recovering.
 - **Ω₂ ranks the two new arms the same way Ω does**, at lower return and
   ~4× the cost. With one shift confounded with another and no reference arm,
-  that is all it can say (`design/goal_point_out_of_distribution.md`).
+  that is all it can say (`archive/goal_point_out_of_distribution.md`).
 
 ### Why: λ, again — and this time the curriculum pulled the trigger
 

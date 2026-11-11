@@ -3,7 +3,7 @@
 `training/performance` records how fast a training run is and, on request,
 where its time goes. It is off by default and has no effect on the compiled
 program when on. The reasoning behind the tool choice is in
-[`profiling_options.md`](profiling_options.md); measurements so far are under
+[`archive/profiling_options.md`](archive/profiling_options.md); measurements so far are under
 [`measurements/`](measurements/).
 
 **Weights & Biases is the system of record.** Every training entry point checks

@@ -1,13 +1,18 @@
 # Agent instructions for this repository
 
 This is Giuseppe Hannen's fork of CRAX (Constrained RL Accelerated with JAX),
-extended with automated curriculum learning (ACL) for his TU/e graduation project.
+extended for his TU/e graduation project: whether a constrained policy stays
+within its cost budget on environments it has not seen. Curriculum methods
+come in later, on the same evaluation.
 
 ## Before doing anything
 
-1. **Read `docs/acl/README.md`.** It is the task board. Find the task being
+1. **Read `docs/acl/README.md`.** It is the task board. Find the step being
    worked on, then read the documents listed under its *read first* column and
-   open the files under *touches*. Do not start from the code alone.
+   open the files under *touches*. Do not start from the code alone. The design
+   every current experiment follows is `docs/acl/design/generalization_evaluation.md`.
+   Nothing under `docs/acl/archive/` is current; do not read it to find out
+   what to do.
 2. Skim `/memories/repo/project.md` if available for the condensed history.
    When it disagrees with `docs/acl/README.md`, the README wins.
 3. **Before calling work done, review the whole `git diff` as a stranger.**
@@ -29,10 +34,18 @@ extended with automated curriculum learning (ACL) for his TU/e graduation projec
 - Contexts are **values on the `num_envs` axis, never shapes**. A new compiled
   program costs ~50 s; a per-slot value costs nothing.
 - Vocabulary: *context* $\omega \in \Omega$, *distribution* (not "teacher"),
-  $r$ = uniform over $\Omega$, $w$ = deployment, *round* = one training step,
-  $q$ intended vs $\hat q$ realised curriculum. Defined in `docs/acl/README.md`.
+  *evaluation protocol* (which contexts are held out of training), *region*,
+  *cell*, *reference run*, *learner*, *arm*, *drag*, *round* = one training
+  step. Defined in `docs/acl/README.md`.
 - Anything that changes the upstream benchmark's behaviour (baselines, wrappers,
-  models) must be flagged so it can be raised with Tristan (upstream author).
+  models) must be added to `docs/acl/upstream_notes.md` so it can be raised with
+  Tristan (upstream author).
+- A local experiment chain starts each job from the working folder. Do not edit
+  code in a folder a chain is running from; use a second checkout
+  (`git worktree add`).
+- Code is removed, not kept "available and off". The experiments that used it
+  stay reproducible through a git tag named in their write-ups
+  (`docs/acl/README.md`, *Code that was removed*).
 - Leave code uncommitted until Giuseppe has reviewed it; he asks for the
   commit. Then commit in small, described steps. Never push unasked.
 
@@ -113,8 +126,9 @@ three figures, each followed by a few bullets saying what they show → what
 this changes in the plan. About a hundred lines. Figures come from a kept,
 typed script in `scripts/analysis/` and live in `figures/<experiment>/`. The
 document states the result, not how it was arrived at: no superseded runs, no
-narration of the analysis; a bug found on the way goes in the README's *Known
-defects*. Say what a number means (a motionless policy "meets the budget").
+narration of the analysis; a bug found on the way goes in
+`docs/acl/known_defects.md`. Say what a number means (a motionless policy
+"meets the budget").
 
 Two rules for the analysis behind it. **Before attributing an effect to a
 change, show the change happened in that window** — "the curriculum fed harder

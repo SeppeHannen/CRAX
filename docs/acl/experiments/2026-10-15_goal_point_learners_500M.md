@@ -10,7 +10,7 @@ commit `eb19638` (branch `experiment/goal_point_learners_500M` =
 Every run so far ended with cost at the budget on the training distribution and
 three to four times the budget on level 3, because PPO-Lagrange's one multiplier
 settles where the policy is on budget for whatever the curriculum samples
-(`research_design_brief.md` §6). Task 1 makes the CMDP contextual: the policy is
+(`archive/research_design_brief.md` §6). Task 1 makes the CMDP contextual: the policy is
 told its context and the multiplier is a function of the context, λ(ω), in one
 of two function classes (`design/contextual_learner.md`). Does that put cost on
 level 3 at the budget, for every training distribution, and what does the

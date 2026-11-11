@@ -11,11 +11,13 @@ GPU (`safe_velocity_ant`, `staged:1,2,3`, 8192 envs, 10 rounds — W&B group
 ```
 training/rounds.py             RoundHook (Protocol) + LearningSignals — the trainer-side contract, curriculum-agnostic
 training/contexts/
-  space.py                     ContextSpace, Dimension, box()      — Ω as a typed box; encode/decode/sample/contains
+  space.py                     ContextSpace, Dimension, box()      — Ω as a typed box; encode/decode/sample/contains. A Dimension may be hidden (no policy is told it). A region of Ω is the same space with fewer admissible integer totals (with_integer_total), a narrower or fixed continuous coordinate (with_interval), or a ContextUnion of such regions (union); uniform sampling over a union is uniform over all its contexts
   distribution.py              ContextDistribution (Protocol), DistributionParameters
   distributions/{uniform,fixed,staged}.py   r, FixedContext (level / w), StagedContexts (manual curriculum)
+  distributions/assigned.py    AssignedContexts: one given context per slot, for a scoring run (training/score.py)
   distributions/prioritized_level_replay.py  PLR (design/prioritized_level_replay.md)
-  registry.py                  suite_contexts(env_name) -> SuiteContexts {space, level_contexts, task}
+  protocol.py                  EvaluationProtocol {contexts, training, held_out, cells}: which contexts a run trains on, which are held out to test it on, and the cells (one value of each factor) the final policy is scored on; checked to be a partition, every cell within one region (design/generalization_evaluation.md)
+  registry.py                  suite_contexts(env_name) -> SuiteContexts {space, level_contexts, task, protocols}; goal-point's three protocols: hazard_total, drag, combination
   wrapper.py                   ContextualAutoResetWrapper; wrap_for_context_{training,evaluation} / make_{,evaluation_}wrap_env_fn; attach_parameters, current_*
   rollout.py                   RoundRollout = Transitions ([slots, steps] per-slot time series; signals: Mapping[Signal, array]) + CompletedEpisodes (per ended episode; statistics: Mapping[EpisodeStatistic, array])
   statistics.py                Fold protocol (associative ufunc combine, map, finalise), MeanAbsolute, EpisodeStatistic(signal, fold) — what a distribution requires (design/learning_signals.md)
@@ -23,13 +25,14 @@ training/contexts/
   training_curriculum.py       the training_curriculum/* metrics: intended (q), sampled, experienced (q̂), <objective>_value_loss, distribution/*
   round_hook.py                ContextRoundHook(RoundHook): store rollout + signals, lay out per slot, close episodes, update φ, attach it, return the round's metrics
   observation.py               ContextObservationWrapper: obs = {"sensors": o, "context": ω}, outermost in both stacks (design/contextual_learner.md §2)
-  networks.py                  make_contextual_ppo_networks: policy over every labelled part but the context (+ context when told), critics over every labelled part
+  networks.py                  make_contextual_ppo_networks: policy over every labelled part, of the context only the columns it is handed (none when blind; when told, every coordinate that is not hidden); critics over every labelled part, whole
   constraints/                 λ(ω) as a function of the context, two classes behind one ppo_lag LagrangeConstraint (design/contextual_learner.md §1):
     fitted.py                  the integrator's targets and the metrics both share
     network.py                 NetworkConstraint: softplus(MLP(ω̃))
     additive.py                AdditiveConstraint: f(Σ h_i(ω_i)), monotone per factor, additive difficulty
   learner.py                   Learner(constraint, policy_context) -> train(network_factory=, lagrange_constraint=); Learner.from_flags, the one reading of the two CLI flags
-  setup.py                     '--context_distribution' / '--deployment_distribution' specs + the Learner + the run's --env_kwargs -> train(**kwargs); arm_label (distribution, learner, environment overrides)
+  setup.py                     '--context_distribution' / '--deployment_distribution' specs + '--evaluation_protocol' / '--reference' + the Learner + the run's --env_kwargs -> train(**kwargs); the training distribution samples the protocol's training contexts (all of them for a reference run); the learner is built over the protocol's contexts; arm_label (distribution, learner, reference, environment overrides)
+training/score.py                 after training: every final policy of a group rolled out on every cell of its protocol, one table per run (runs/scores/<group>/)
 tests/test_contexts.py            wrapper mechanics, round layout, episode tracker, PLR unit tests (CPU, ~40 s)
 tests/test_context_training.py    specs, rollout, metrics, tiny PPO-Lag runs per distribution incl. plr (CPU, ~4 min)
 ```

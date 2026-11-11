@@ -77,11 +77,12 @@ slightly bigger than the paper's). Flagged to Tristan; a `size` dimension per
 group is a later addition if the difference matters.
 
 Ω for goal: one integer dimension per group (`active_cylinders`,
-`active_collidable_cylinders`, `active_cubes`, `active_collidable_cubes`) and
-`goal_size`. A count `n` for a group activates its first `n` hazards — which
-`n` is a value, and since positions are random the identity of the hazard
-does not matter. Levels: L1 = (12, 0, 0, 0, 0.20), L2 = (8, 8, 0, 0, 0.18),
-L3 = (6, 4, 6, 4, 0.16).
+`active_collidable_cylinders`, `active_cubes`, `active_collidable_cubes`),
+`goal_size`, and since 2026-11-11 `drag` (1 at every level;
+`generalization_evaluation.md`). A count `n` for a group activates its first
+`n` hazards — which `n` is a value, and since positions are random the
+identity of the hazard does not matter. Levels: L1 = (12, 0, 0, 0, 0.20, 1),
+L2 = (8, 8, 0, 0, 0.18, 1), L3 = (6, 4, 6, 4, 0.16, 1).
 
 ## Where the code goes
 

@@ -23,7 +23,7 @@ problem side. One by-product is collected, because a supervisor will ask:
 
 ## Candidate properties (hypotheses going in)
 
-These come from the notebook (`docs/notebook/1-3.xml` p.2) and from reading the
+These come from the notebook (`docs/acl/archive/notebook/1-3.xml` p.2) and from reading the
 three surveys. The review tests whether each has evidence, and is explicitly
 asked to add properties that are **not** on this list.
 

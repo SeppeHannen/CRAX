@@ -7,7 +7,7 @@
 PPO-Lagrange keeps one multiplier λ and updates it from the mean cost of each
 round's training batch, so λ settles where the policy is on budget for whatever
 the curriculum is sampling now; the same policy then costs three to four times
-the budget on level 3 (`research_design_brief.md` §6). This change gives every
+the budget on level 3 (`archive/research_design_brief.md` §6). This change gives every
 context run two switches. The **constraint** is held either with that one
 scalar λ or with a multiplier that is a function of the context, λ(ω), moved
 at each context by the cost observed there, in one of two function classes: a
@@ -154,10 +154,12 @@ config can rebuild the network. Test:
 | policy, `--policy_context told` | `sensors`, `context` | can hold a different trade-off per context; for goal-point's layout factors this is what a deployed robot could be told (brief §4) |
 | reward critic, cost critic | `sensors`, `context` | always: the cost critic must estimate cost per context for λ(ω) to be about something; the critic exists only in training, so what a robot knows is no concern |
 
-Which factors a policy may be told will be decided per factor when dynamics
-factors arrive (friction, actuator gain cannot be told). Today every dimension
-of goal-point's Ω is a layout factor, so `told` is all of ω. The next instance
-is a `told` subset chosen by the wrapper, not a change to the networks.
+Which factors a policy may be told is decided per factor. A factor a deployed
+robot could not know is marked hidden in Ω (`Dimension.hidden`); goal-point's
+drag is (2026-11-11). `told` is every factor but the hidden ones: the learner
+hands the policy network the columns of ω it reads
+(`Learner.policy_context_columns`), and the observation is unchanged, so the
+critics and the Lagrange function still read all of ω.
 
 ## 3. Two CLI switches name the learner; every arm can run under any combination
 
@@ -255,4 +257,3 @@ signals are the critics' quantities. Open, below.
 - λ_ψ over each dimension of Ω as a heatmap over rounds, the way the value
   losses are: the function can be read anywhere (`multipliers_at`), so this is
   a round-hook metric away.
-- A `told` subset of ω chosen per factor, for dynamics factors.
