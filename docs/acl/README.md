@@ -41,19 +41,28 @@ kicked a robot away from a hazard it pressed on and so made that cheaper than
 it is. The solver was replaced on 2026-11-11 (`known_defects.md`). Costs from
 then on are not comparable with these numbers.
 
+Under the new solver, seed 0 of step 1 (six of eight runs,
+`experiments/2026-11-12_goal_point_hazard_total_500M.md`) leans the same way
+as points 1 and 2: one multiplier costs about 50 on hazard totals 17 to 20
+even when it trains on them, and only the Lagrange function with a told policy
+stays under the budget there, at half the return. It also shows that the end
+of a run is not a settled state: with totals held out, one multiplier falls to
+zero for about a sixth of the run.
+
 ## The plan
 
 | # | Step | Status | Read first | Touches |
 |---|---|---|---|---|
-| 1 | **Baseline on hazard totals.** Four learners (one multiplier or a Lagrange function, policy sees the context or not), each with two bands of hazard totals held out and as a reference trained on everything. Uniform sampling, three seeds. | built, CPU-tested, not run | `design/generalization_evaluation.md` | `scripts/experiments/goal_point_hazard_total_500M.py`; `training/contexts/{space,protocol,registry,setup}.py` |
-| 2 | **Cost and return per hazard total** from the final checkpoints, and the main figure. | built, CPU-tested; needs the runs of step 1 | same, *Measurement* | `training/score.py`; `scripts/analysis/generalization_figures.py` |
+| 1 | **Baseline on hazard totals.** Four learners (one multiplier or a Lagrange function, policy sees the context or not), each with two bands of hazard totals held out and as a reference trained on everything. Uniform sampling, three seeds. | seed 0: six of eight runs done, two references training (2026-11-12); written up in `experiments/2026-11-12_goal_point_hazard_total_500M.md`, which also lists what to settle before seeds 1 and 2 | `design/generalization_evaluation.md` | `scripts/experiments/goal_point_hazard_total_500M.py`; `training/contexts/{space,protocol,registry,setup}.py` |
+| 2 | **Cost and return per hazard total** from the final checkpoints, and the main figure. | drawn for seed 0. Open: score the last five checkpoints and give every cell a standard error (the write-up of step 1, *What this changes*) | same, *Measurement* | `training/score.py`; `scripts/analysis/generalization_figures.py`, `generalization_training_figures.py` |
 | 3 | **Drag as a hidden factor.** A context value the Lagrange function and the critics see and the policy does not; an interpolation and an extrapolation band. | built, CPU-tested, not run | same, *What varies* | `scripts/experiments/goal_point_drag_500M.py`; `crax/envs/safe_goal.py`, `training/contexts/{networks,learner,registry}.py` |
 | 4 | **The combinatorial test**: many hazards on a slippery floor, never seen together in training. | built, CPU-tested, not run | same, *The test sets* | `scripts/experiments/goal_point_combination_500M.py`; registry |
 | 5 | **Curriculum methods** (PLR, two scores) on the training and test sets of step 1. | built, CPU-tested, not run; compared with step 1's runs | `design/prioritized_level_replay.md` | `scripts/experiments/goal_point_hazard_total_curricula_500M.py` |
 
 Steps 1, 3 and 4 are the same experiment under three evaluation protocols:
-24 runs each, about 47 hours on this machine (1.9 hours a run at 74 000 steps
-per second, measured 2026-11-11). Step 5 is 12 runs, about 23 hours. The chain
+24 runs each, about 62 hours on this machine (2.6 hours a run with its
+evaluations, measured on the six runs of 2026-11-11 and 12). Step 5 is 12
+runs, about 31 hours. The chain
 that runs all of them was started on 2026-11-11 (*How to run*).
 
 Step 1 also answers an open question: whether a Lagrange function without
@@ -85,7 +94,7 @@ the plan:
 # the labels of the jobs, in the order they run (seed by seed)
 .venv/bin/python -m training.experiments.local scripts/experiments/goal_point_hazard_total_500M.py --list
 
-# all of them, one after another on this machine, detached (~1.9 h each)
+# all of them, one after another on this machine, detached (~2.6 h each)
 setsid nohup .venv/bin/python -m training.experiments.local scripts/experiments/goal_point_hazard_total_500M.py \
   > runs/logs/goal_point_hazard_total_500M_chain.log 2>&1 < /dev/null & disown
 
@@ -126,6 +135,10 @@ the runs trained on, or one that leaves the policy's code untouched:
 
 # the main figure and the numbers per learner and region -> docs/acl/experiments/figures/<group>/
 .venv/bin/python -m scripts.analysis.generalization_figures --groups goal_point_hazard_total_500M
+
+# how each run got there: cost per region and the multiplier through training, and the end state
+# (the mean of the last five evaluations) -> the same directory. Reads W&B, needs no score tables
+.venv/bin/python -m scripts.analysis.generalization_training_figures --group goal_point_hazard_total_500M
 
 # curricula next to the uniform baseline they are compared with
 .venv/bin/python -m scripts.analysis.generalization_figures \

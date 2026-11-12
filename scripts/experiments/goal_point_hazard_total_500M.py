@@ -20,7 +20,7 @@ main figure, are measured afterwards:
 The jobs run seed by seed, so the first eight are the whole comparison at seed 0:
 
     .venv/bin/python -m training.experiments.local scripts/experiments/goal_point_hazard_total_500M.py --list
-    # one after another on this machine (~1.9 h each at 74 k SPS: 16 h per seed, 47 h in all), detached:
+    # one after another on this machine (~2.6 h each with its evaluations: 21 h per seed, 62 h in all), detached:
     setsid nohup .venv/bin/python -m training.experiments.local scripts/experiments/goal_point_hazard_total_500M.py \\
         > runs/logs/goal_point_hazard_total_500M_chain.log 2>&1 < /dev/null & disown
     # or one A100 per job on Snellius:
