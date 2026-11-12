@@ -2,7 +2,9 @@
 
 Giuseppe Hannen's graduation project. Start here. This file says what the
 project asks, what is known, what is being done now, and how to run it. The
-reasons live in the documents it points to.
+reasons live in the documents it points to. The argument as a whole, in the
+order a paper would give it, is `thesis.md`; its §4 and §5 propose a plan
+(2026-11-12) that differs from the one below and is not yet agreed.
 
 ## The question
 
@@ -246,6 +248,7 @@ Arms added to `goal_point_learners_500M` on 2026-11-05 (`scalar told`,
 ```
 docs/acl/
   README.md                          this file
+  thesis.md                          the working paper: question, related work, problem, learners and hypotheses, experiments, results
   known_defects.md                   faults in code or recorded data that a reader of results must know
   upstream_notes.md                  upstream bugs, and where this fork changes the benchmark (numbered; for Tristan)
   performance_measurement.md         how to profile a run
