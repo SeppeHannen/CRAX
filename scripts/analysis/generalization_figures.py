@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import argparse
 import pathlib
-from typing import List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 import matplotlib
 import numpy as np
@@ -34,6 +34,7 @@ import pandas as pd
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.artist import Artist  # noqa: E402
 from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm  # noqa: E402
 from matplotlib.patches import Rectangle  # noqa: E402
 
@@ -120,8 +121,9 @@ def draw_one_factor(scores: pd.DataFrame, factor: str, path: pathlib.Path) -> No
                 per_seed = runs.pivot_table(index=factor, columns="run", values=measure)
                 axis.fill_between(per_seed.index, per_seed.min(axis=1), per_seed.max(axis=1), color=colour, alpha=0.18, linewidth=0)
                 axis.plot(per_seed.index, per_seed.mean(axis=1), color=colour, linestyle=style, linewidth=2.0, marker=marker,
-                          markersize=3.5, label=f"{label} ({per_seed.shape[1]} seeds)")
+                          markersize=3.5, label=label)
             if measure == "cost_mean":
+                budget_scaled_cost_axis(axis, budget, highest_cost=float(scores["cost_mean"].max()))
                 axis.axhline(budget, color=INK, linestyle=":", linewidth=1.0)
                 if column == len(learners) - 1:  # in the margin, clear of the curves
                     axis.annotate(f"budget {budget:g}", (1.0, budget), xycoords=("axes fraction", "data"), xytext=(4, 0),
@@ -132,9 +134,13 @@ def draw_one_factor(scores: pd.DataFrame, factor: str, path: pathlib.Path) -> No
                 axis.set_xlabel(FACTOR_WORDS[factor], color=INK)
             if column == 0:
                 axis.set_ylabel(unit, color=INK)
-            _quiet(axis)
-    figure.legend(*axes[0][0].get_legend_handles_labels(), fontsize=9, loc="lower center", ncol=2, frameon=False, bbox_to_anchor=(0.5, -0.04))
-    _save(figure, path)
+            quiet_axes(axis)
+    seeds = scores["seed"].nunique()
+    figure.text(0.5, -0.07, f"The final checkpoint of each run, {int(scores['episodes'].iloc[0])} episodes per cell. "
+                            f"Line: the mean over seeds; band: their range ({seeds} seed{'s' if seeds > 1 else ''}).",
+                fontsize=8, color=MUTED, ha="center")
+    legend_below(figure, axes[0])
+    save_figure(figure, path)
 
 
 def draw_two_factors(scores: pd.DataFrame, factors: Tuple[str, str], path: pathlib.Path) -> None:
@@ -172,16 +178,37 @@ def draw_two_factors(scores: pd.DataFrame, factors: Tuple[str, str], path: pathl
                 axis.set_xlabel(FACTOR_WORDS[across], color=INK)
             if column == 0:
                 axis.set_ylabel(FACTOR_WORDS[down], color=INK)
-            _quiet(axis, grid=False)
+            quiet_axes(axis, grid=False)
         bar = figure.colorbar(image, ax=list(axes[row]), fraction=0.025, pad=0.02)
         bar.set_label(words, fontsize=8, color=INK)
         bar.ax.tick_params(colors=MUTED, labelsize=8)
         bar.outline.set_visible(False)
     figure.text(0.01, 0.005, "outlined: held out of training; every cell outside the outline is trained on", fontsize=8, color=MUTED)
-    _save(figure, path, tight=False)
+    save_figure(figure, path, tight=False)
 
 
-def _quiet(axis: plt.Axes, grid: bool = True) -> None:
+def budget_scaled_cost_axis(axis: plt.Axes, budget: float, highest_cost: float) -> None:
+    """A cost axis in multiples of the budget: linear up to twice the budget and logarithmic above,
+    so that a cost just under the budget can be told from one on it in the same panel that holds a
+    cost of eight times the budget. The ticks are 0, the budget, and its doublings."""
+    ticks = [0.0, budget, 2.0 * budget]
+    while ticks[-1] < highest_cost:
+        ticks.append(2.0 * ticks[-1])
+    axis.set_yscale("symlog", linthresh=2.0 * budget, linscale=2.0)
+    axis.set_yticks(ticks, [f"{tick:g}" for tick in ticks])
+    axis.set_ylim(0.0, ticks[-1])
+
+
+def legend_below(figure: plt.Figure, top_row: Sequence[plt.Axes]) -> None:
+    """One legend under the figure: every labelled series once, whichever panels hold it."""
+    entries: Dict[str, Artist] = {}
+    for axis in top_row:
+        for handle, label in zip(*axis.get_legend_handles_labels()):
+            entries.setdefault(label, handle)
+    figure.legend(entries.values(), entries.keys(), fontsize=9, loc="lower center", ncol=2, frameon=False, bbox_to_anchor=(0.5, -0.04))
+
+
+def quiet_axes(axis: plt.Axes, grid: bool = True) -> None:
     """Recessive axes: hairline grid, no box, muted ticks."""
     for side in ("top", "right"):
         axis.spines[side].set_visible(False)
@@ -193,7 +220,7 @@ def _quiet(axis: plt.Axes, grid: bool = True) -> None:
         axis.set_axisbelow(True)
 
 
-def _save(figure: plt.Figure, path: pathlib.Path, tight: bool = True) -> None:
+def save_figure(figure: plt.Figure, path: pathlib.Path, tight: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if tight:
         figure.tight_layout()
